@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>廣告投放管理</title>
+  <link rel="stylesheet" href="app/styles.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-title">廣告投放管理</div>
+      <div class="brand-sub" id="brand-month">—</div>
+    </div>
+    <nav>
+      <a href="#dashboard" data-view="dashboard"><span class="nav-ico">■</span><span class="nav-label">概覽</span><span class="nav-badge" data-badge="dashboard"></span></a>
+      <a href="#products" data-view="products"><span class="nav-ico">●</span><span class="nav-label">產品</span></a>
+      <a href="#ads" data-view="ads"><span class="nav-ico">▲</span><span class="nav-label">廣告列表</span></a>
+      <a href="#perf-adjust" data-view="perf-adjust"><span class="nav-ico">★</span><span class="nav-label">權重調整</span></a>
+      <a href="#perf-report" data-view="perf-report"><span class="nav-ico">▤</span><span class="nav-label">成效報表</span></a>
+      <a href="#reverse" data-view="reverse"><span class="nav-ico">↺</span><span class="nav-label">採買建議</span></a>
+      <a href="#todos" data-view="todos"><span class="nav-ico">◆</span><span class="nav-label">待辦</span><span class="nav-badge" data-badge="todos"></span></a>
+      <a href="#settings" data-view="settings"><span class="nav-ico">⚙</span><span class="nav-label">設定</span></a>
+    </nav>
+    <div class="sidebar-footer">
+      <button id="btn-undo" class="undo-btn" disabled title="復原最近一次操作">↶ <span id="undo-label">復原</span></button>
+      <div class="rate-mini" id="rate-mini">匯率載入中…</div>
+    </div>
+  </aside>
+  <main id="view"></main>
+
+  <dialog id="modal"></dialog>
+  <div id="toast-host"></div>
+
+  <script type="module" src="app/main.js"></script>
+</body>
+</html>

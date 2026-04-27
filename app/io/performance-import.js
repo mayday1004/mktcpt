@@ -1,0 +1,221 @@
+import { getState, update } from "../state.js";
+import { METRICS } from "../schema.js";
+import { PERF_INPUT_SHEET, PERF_INPUT_HEADERS, PERF_INPUT_METRICS, normalizeAdCode } from "./sheets-schema.js";
+
+async function call(payload) {
+  const s = getState();
+  const url = s.settings.sheets_webapp_url;
+  if (!url) throw new Error("尚未設定 Apps Script Web App URL");
+  if (!s.settings.sheets_token) throw new Error("尚未設定 Token");
+
+  const fd = new FormData();
+  fd.append("payload", JSON.stringify({ ...payload, token: s.settings.sheets_token }));
+  const res = await fetch(url, { method: "POST", body: fd, redirect: "follow" });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); }
+  catch { throw new Error(`回應非 JSON（前 200 字）：${text.slice(0, 200)}`); }
+  if (json.error) throw new Error(json.error);
+  return json;
+}
+
+export async function ensurePerfInputSheet() {
+  const r = await call({ action: "readTable", sheetName: PERF_INPUT_SHEET });
+  const hasHeaders = r.headers && r.headers.length && r.headers[0] === PERF_INPUT_HEADERS[0];
+  if (!hasHeaders) {
+    await call({ action: "writeTable", sheetName: PERF_INPUT_SHEET, headers: PERF_INPUT_HEADERS, rows: [] });
+    return { created: true };
+  }
+  return { created: false, rowCount: r.rows.length };
+}
+
+export async function fetchPerfInput() {
+  const r = await call({ action: "readTable", sheetName: PERF_INPUT_SHEET });
+  return { headers: r.headers || [], rows: r.rows || [] };
+}
+
+export async function clearPerfInput() {
+  await call({ action: "writeTable", sheetName: PERF_INPUT_SHEET, headers: PERF_INPUT_HEADERS, rows: [] });
+}
+
+export async function pushPerfDataSheet() {
+  const { TABLES } = await import("./sheets-schema.js");
+  const perfTable = TABLES.find((t) => t.name === "成效資料");
+  const s = getState();
+  return await call({
+    action: "writeTable",
+    sheetName: perfTable.name,
+    headers: perfTable.headers,
+    rows: perfTable.toRows(s),
+  });
+}
+
+// 計算一筆廣告 (含多段) 在 [start, end) 區間內貢獻給某產品的花費（台幣）
+function computeSpend(ad, productId, start, end) {
+  const w = Number(ad.weights?.[productId]) || 0;
+  if (w <= 0) return 0;
+  const s = ad.start_date > start ? ad.start_date : start;
+  const e = ad.end_date < end ? ad.end_date : end;
+  if (s >= e) return 0;
+  const days = (Date.parse(e) - Date.parse(s)) / 86400000;
+  if (!Number.isFinite(days) || days <= 0) return 0;
+  return (Number(ad.daily_amort_twd) || 0) * (w / 100) * days;
+}
+
+// 解析成效輸入列。每列：(資料起始日, 資料結束日, 廣告代碼, 對應產品, 廣告分組, ...13 指標)。
+// 匹配規則：把輸入代碼正規化（去 dh 前綴 + 去英文字尾）後與 state.ads 的代碼正規化結果比對；
+// 同基本碼下挑「對應產品有權重 + 期間 [start, end) 重疊最大者」勝。
+// 重複多筆同重疊段 → conflicts，讓 modal 讓使用者選。
+export function parsePerfInputRows(headers, rows) {
+  const state = getState();
+  const productSet = new Set(state.products.map((p) => p.id));
+  const productByName = Object.fromEntries(state.products.map((p) => [p.name, p.id]));
+
+  const idx = Object.fromEntries(PERF_INPUT_HEADERS.map((h) => [h, headers.indexOf(h)]));
+  const missingCols = ["資料起始日", "資料結束日", "廣告代碼", "對應產品", "廣告分組"]
+    .filter((h) => idx[h] < 0);
+  if (missingCols.length) {
+    throw new Error(`成效輸入分頁缺欄位：${missingCols.join("、")}（請先按「初始化」建表頭）`);
+  }
+
+  const valid = [];
+  const errors = [];
+  const conflicts = [];
+
+  rows.forEach((r, i) => {
+    const rowNum = i + 2;
+    const get = (h) => (idx[h] >= 0 ? r[idx[h]] : "");
+    const periodStart = String(get("資料起始日") || "").slice(0, 10);
+    const periodEnd = String(get("資料結束日") || "").slice(0, 10);
+    const adCodeRaw = String(get("廣告代碼") || "").trim();
+    let productKey = String(get("對應產品") || "").trim();
+    const groupIn = String(get("廣告分組") || "").trim();
+
+    if (!adCodeRaw) { errors.push({ row: rowNum, msg: "廣告代碼空白" }); return; }
+    if (!periodStart || !periodEnd) { errors.push({ row: rowNum, msg: `期間缺漏 (${adCodeRaw})` }); return; }
+    if (!(periodStart < periodEnd)) { errors.push({ row: rowNum, msg: `期間起迄顛倒：${periodStart} → ${periodEnd} (${adCodeRaw})` }); return; }
+
+    if (!productSet.has(productKey)) {
+      if (productByName[productKey]) productKey = productByName[productKey];
+      else { errors.push({ row: rowNum, msg: `對應產品「${productKey}」不存在 (${adCodeRaw})` }); return; }
+    }
+
+    const inputBase = normalizeAdCode(adCodeRaw);
+    if (!inputBase) {
+      errors.push({ row: rowNum, msg: `代碼「${adCodeRaw}」正規化後為空` });
+      return;
+    }
+
+    // fuzzy match：基本碼相同、對應產品有權重、期間重疊
+    const candidates = state.ads.filter(
+      (a) => normalizeAdCode(a.ad_code) === inputBase
+        && Number(a.weights?.[productKey]) > 0
+        && a.start_date < periodEnd
+        && a.end_date > periodStart
+    );
+    if (candidates.length === 0) {
+      // 多診斷一點：是否有同基本碼但無此產品權重、或無期間重疊？
+      const sameBase = state.ads.filter((a) => normalizeAdCode(a.ad_code) === inputBase);
+      let detail = "";
+      if (sameBase.length === 0) detail = "（系統內找不到同基本碼的廣告）";
+      else detail = `（同基本碼找到 ${sameBase.length} 筆，但無對應產品「${productKey}」權重或期間不重疊）`;
+      errors.push({ row: rowNum, msg: `代碼「${adCodeRaw}」→ 基本碼「${inputBase}」在期間 ${periodStart}~${periodEnd} 內找不到匹配段 ${detail}` });
+      return;
+    }
+
+    // 重疊天數最多者勝；若並列第一 → 衝突
+    const withOverlap = candidates.map((a) => {
+      const os = a.start_date > periodStart ? a.start_date : periodStart;
+      const oe = a.end_date < periodEnd ? a.end_date : periodEnd;
+      const overlap = (Date.parse(oe) - Date.parse(os)) / 86400000;
+      return { ad: a, overlap };
+    }).sort((a, b) => b.overlap - a.overlap);
+
+    const topOverlap = withOverlap[0].overlap;
+    const ties = withOverlap.filter((x) => Math.abs(x.overlap - topOverlap) < 0.001);
+    if (ties.length > 1) {
+      conflicts.push({
+        rowNum,
+        adCodeRaw,
+        adName: ties[0].ad.ad_name,  // 顯示用
+        productKey,
+        periodStart,
+        periodEnd,
+        candidates: ties.map((x) => x.ad),
+        groupIn,
+        metrics: Object.fromEntries(PERF_INPUT_METRICS.map((m) => [m, Number(get(m)) || 0])),
+      });
+      return;
+    }
+
+    const ad = withOverlap[0].ad;
+    const spend = computeSpend(ad, productKey, periodStart, periodEnd);
+    const rec = {
+      ad_id: ad.id,
+      ad_code: ad.ad_code,           // 統一用 state 的標準代碼，不存外部變體
+      ad_name: ad.ad_name,
+      product_id: productKey,
+      group: groupIn || ad.group || "",
+      period_start: periodStart,
+      period_end: periodEnd,
+      "花費": Math.round(spend),
+    };
+    PERF_INPUT_METRICS.forEach((m) => { rec[m] = Number(get(m)) || 0; });
+    valid.push({ rowNum, rec, adCodeRaw, adName: ad.ad_name, productKey });
+  });
+
+  return { valid, errors, conflicts };
+}
+
+// 把使用者在 modal 解決的衝突（conflict → chosen ad_id）併入 valid
+export function resolveConflicts(conflicts, chosenByRowNum) {
+  const out = [];
+  for (const c of conflicts) {
+    const chosenId = chosenByRowNum[c.rowNum];
+    if (!chosenId) continue;
+    const ad = c.candidates.find((a) => a.id === chosenId);
+    if (!ad) continue;
+    const spend = computeSpend(ad, c.productKey, c.periodStart, c.periodEnd);
+    const rec = {
+      ad_id: ad.id,
+      ad_code: ad.ad_code,
+      ad_name: ad.ad_name,
+      product_id: c.productKey,
+      group: c.groupIn || ad.group || "",
+      period_start: c.periodStart,
+      period_end: c.periodEnd,
+      "花費": Math.round(spend),
+      ...c.metrics,
+    };
+    out.push({ rowNum: c.rowNum, rec, adCodeRaw: c.adCodeRaw, adName: ad.ad_name, productKey: c.productKey });
+  }
+  return out;
+}
+
+// 依 (廣告代碼, 對應產品) 自動覆寫 — 同 key 只保留最新一筆（本次匯入為準）。
+// 選項：
+//   replaceAll: true  — 清空 performance_data 後再匯入本批（避免歷史週期殘留）
+//   clearOlderThan: "YYYY-MM-DD" — 在 merge 前刪除 period_end < 此日 的舊紀錄
+export function mergeIntoState(validRecs, options = {}) {
+  const { replaceAll = false, clearOlderThan = null } = options;
+  const key = (r) => `${r.ad_code || r.ad_id}|${r.product_id}`;
+  let kept = 0, replaced = 0, dropped = 0;
+  update((st) => {
+    let existing = st.performance_data || [];
+    if (replaceAll) {
+      dropped = existing.length;
+      existing = [];
+    } else if (clearOlderThan) {
+      const filtered = existing.filter((r) => !r.period_end || r.period_end >= clearOlderThan);
+      dropped = existing.length - filtered.length;
+      existing = filtered;
+    }
+    const map = new Map(existing.map((r) => [key(r), r]));
+    for (const { rec } of validRecs) {
+      if (map.has(key(rec))) replaced++; else kept++;
+      map.set(key(rec), rec);
+    }
+    st.performance_data = [...map.values()];
+  }, "匯入成效資料");
+  return { added: kept, overwritten: replaced, dropped };
+}

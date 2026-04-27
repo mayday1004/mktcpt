@@ -1,0 +1,16 @@
+# Raw data sources & generators (only static site is deployed)
+*.xlsx
+samples/
+
+# Claude harness local config
+.claude/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs / temp
+*.log
+*.tmp
