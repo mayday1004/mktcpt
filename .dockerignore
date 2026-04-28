@@ -5,7 +5,6 @@
 node_modules
 dist
 samples
-apps-script
 buyads_*.json
 *.bak
 *.xlsx

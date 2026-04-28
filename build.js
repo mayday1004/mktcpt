@@ -41,6 +41,9 @@ fs.writeFileSync(path.join(dist, "app.js"), finalCode);
 
 fs.copyFileSync("app/styles.css", path.join(dist, "styles.css"));
 
+fs.mkdirSync(path.join(dist, "apps-script"), { recursive: true });
+fs.copyFileSync("apps-script/Code.gs", path.join(dist, "apps-script", "Code.gs"));
+
 let html = fs.readFileSync("index.html", "utf8");
 html = html.replace('href="app/styles.css"', 'href="styles.css"');
 html = html.replace(
