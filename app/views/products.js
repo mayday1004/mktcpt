@@ -1,12 +1,17 @@
 import { getState, update, uid } from "../state.js";
 import { PRODUCT_TYPES, METRICS, getMonthlyBudget, getDailyBudget, getBudgetSource, getBudgetChanges } from "../schema.js";
-import { daysInMonth } from "../lib/dates.js";
+import { daysInMonth, todayTaipei } from "../lib/dates.js";
 import { evalFormula, validateFormula } from "../lib/formula.js";
+
+// 模組級狀態：使用者選的檢視月份（可預先設定未來月的預算）
+// null = 沿用 settings.current_month；改後保留直到頁面重整
+let viewYm = null;
 
 export function render(root) {
   const s = getState();
-  // 防禦：若 current_month 是壞值（被 Sheets 拉成 ISO），顯示時還原成 YYYY-MM
-  let ym = s.settings.current_month;
+  if (!viewYm || !/^\d{4}-\d{2}$/.test(viewYm)) viewYm = s.settings.current_month;
+  // 防禦：若 viewYm 仍是壞值（被 Sheets 拉成 ISO），顯示時還原成 YYYY-MM
+  let ym = viewYm;
   if (ym && !/^\d{4}-\d{2}$/.test(ym)) {
     const d = new Date(ym);
     if (!Number.isNaN(d.getTime())) {
@@ -18,7 +23,7 @@ export function render(root) {
     <div class="view-head">
       <div>
         <h1>產品</h1>
-        <div class="desc">產品主檔、月預算（每月獨立）、成效目標公式 — 當前月份：<strong>${ym}</strong></div>
+        <div class="desc">產品主檔、月預算（每月獨立）、成效目標公式 — 檢視月份：<input type="month" id="view-ym" value="${ym}" class="view-ym-input" /></div>
       </div>
       <div class="view-actions">
         <button class="primary" id="btn-add-product">＋ 新增產品</button>
@@ -45,9 +50,17 @@ export function render(root) {
     </div>
   `;
 
-  root.querySelector("#btn-add-product").onclick = () => openEditor(null);
+  const ymInput = root.querySelector("#view-ym");
+  if (ymInput) ymInput.onchange = (e) => {
+    const v = e.target.value;
+    if (/^\d{4}-\d{2}$/.test(v)) {
+      viewYm = v;
+      render(root);
+    }
+  };
+  root.querySelector("#btn-add-product").onclick = () => openEditor(null, ym);
   root.querySelectorAll("[data-edit]").forEach((el) => {
-    el.onclick = () => openEditor(el.dataset.edit);
+    el.onclick = () => openEditor(el.dataset.edit, ym);
   });
   root.querySelectorAll("[data-bump]").forEach((el) => {
     el.onclick = () => openBumpBudget(el.dataset.bump, ym);
@@ -76,7 +89,7 @@ function openBumpBudget(pid, ym) {
   if (!product) return;
   const isIsland = product.type === "island";
   const mode = isIsland ? "daily" : "monthly";
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayTaipei();
 
   // 取「目前段值」— 找到 today 所屬的段，取其 amount 當基準（依 mode 解讀）
   const changes = getBudgetChanges(s, pid, ym);
@@ -234,9 +247,9 @@ function row(state, p, ym) {
   `;
 }
 
-function openEditor(id) {
+function openEditor(id, ym) {
   const s = getState();
-  const ym = s.settings.current_month;
+  if (!ym || !/^\d{4}-\d{2}$/.test(ym)) ym = s.settings.current_month;
   const p = id ? structuredClone(s.products.find((x) => x.id === id)) : blank();
   if (!p.performance_targets) p.performance_targets = [];
   const existingMonthly = id ? { ...(s.monthly_budgets?.[id] || {}) } : {};

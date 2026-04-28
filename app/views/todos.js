@@ -1,4 +1,5 @@
 import { getState, update, uid } from "../state.js";
+import { nowTaipeiStamp } from "../lib/dates.js";
 
 export function render(root) {
   const s = getState();
@@ -72,7 +73,7 @@ function listHtml(todos, isDone) {
             <tr>
               <td class="mono ink-2" style="font-size:12px">${t.created_at}</td>
               <td><span class="pill">${escape(t.action_type)}</span></td>
-              <td>${escape(t.description) || "<span class='ink-3'>—</span>"}</td>
+              <td style="white-space:pre-wrap;line-height:1.6">${highlightTodoDesc(t.description)}</td>
               <td class="right nowrap">
                 ${isDone
                   ? `<button data-undo="${t.id}">↺ 重新打開</button>`
@@ -123,7 +124,7 @@ function openTodoEditor(id) {
       } else {
         st.todos.push({
           id: uid("todo"),
-          created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+          created_at: nowTaipeiStamp(),
           action_type,
           description,
           status: "pending",
@@ -137,4 +138,12 @@ function openTodoEditor(id) {
 
 function escape(v) {
   return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// 渲染 todo description：把 " → " 後面（直到行尾）標粗體深綠 — 強調權重調整後的新狀態
+function highlightTodoDesc(desc) {
+  if (!desc) return "<span class='ink-3'>—</span>";
+  const escaped = escape(desc);
+  return escaped.replace(/( → )([^\n]+)/g, (m, arrow, after) =>
+    `${arrow}<strong style="color:#1f7a3a">${after}</strong>`);
 }

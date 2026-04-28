@@ -1,6 +1,6 @@
 import { getState, update } from "../state.js";
 import { METRICS } from "../schema.js";
-import { PERF_INPUT_SHEET, PERF_INPUT_HEADERS, PERF_INPUT_METRICS, normalizeAdCode } from "./sheets-schema.js";
+import { PERF_INPUT_SHEET, PERF_INPUT_HEADERS, PERF_INPUT_METRICS, normalizeAdCode, toYmd } from "./sheets-schema.js";
 
 async function call(payload) {
   const s = getState();
@@ -85,8 +85,10 @@ export function parsePerfInputRows(headers, rows) {
   rows.forEach((r, i) => {
     const rowNum = i + 2;
     const get = (h) => (idx[h] >= 0 ? r[idx[h]] : "");
-    const periodStart = String(get("資料起始日") || "").slice(0, 10);
-    const periodEnd = String(get("資料結束日") || "").slice(0, 10);
+    // 用 toYmd 處理 Apps Script cell value（可能是純日期、ISO 字串、或 Date），
+    // 一律以台北時區還原 — 直接 slice(0,10) 拿 UTC 部分會少 1 天。
+    const periodStart = toYmd(get("資料起始日"));
+    const periodEnd = toYmd(get("資料結束日"));
     const adCodeRaw = String(get("廣告代碼") || "").trim();
     let productKey = String(get("對應產品") || "").trim();
     const groupIn = String(get("廣告分組") || "").trim();

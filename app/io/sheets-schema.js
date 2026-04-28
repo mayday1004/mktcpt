@@ -29,43 +29,41 @@ export function normalizeAdCode(code) {
   return s.toLowerCase();
 }
 
-// Sheets cell 容錯轉 YYYY-MM：
-// 若 Apps Script 把 "2026-04" 自動轉成 Date 並回 ISO（"2026-03-31T16:00:00.000Z"，
-// 因為 script TZ 與 sheet TZ 不一致），這裡用本地時區還原成正確月份。
+// Sheets cell 容錯轉 YYYY-MM 與 YYYY-MM-DD：
+// Apps Script 把日期 cell 序列化為 ISO 字串時，用 Sheet 的 timezone（可能 +8 台北、可能 GMT、可能其他）；
+// 前端用 toISOString-style "2026-04-11T16:00:00.000Z" 拿到的是 UTC，**必須用台北時區還原**才能拿到使用者眼中的日期。
 //
-// ⚠️ 關鍵：要區分「純日期字串」與「含時間的 ISO」— 前者直接 slice，後者必須用 Date 解析
-// 才能套用本地時區還原。先前 regex 用了 partial match `/^\d{4}-\d{2}/`，
-// 對 "2026-03-31T16:00:00.000Z" 會誤判成「純日期」直接 slice 拿到 "2026-03" 而錯過時區還原。
+// 之前用瀏覽器 local 時區（getFullYear/getMonth/getDate）— 對台北使用者沒事，但若使用者在 UTC 時區
+// （例如部分伺服器、瀏覽器設定）會 ±1 day。改用 Intl.DateTimeFormat with timeZone: "Asia/Taipei" 永遠對。
+const _TPE_FMT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Taipei",
+  year: "numeric", month: "2-digit", day: "2-digit",
+});
+function _toTaipeiYmd(d) {
+  return _TPE_FMT.format(d);  // "YYYY-MM-DD"
+}
+
 export function toYearMonth(v) {
   if (v == null || v === "") return "";
-  if (v instanceof Date) {
-    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}`;
-  }
+  if (v instanceof Date) return _toTaipeiYmd(v).slice(0, 7);
   const s = String(v).trim();
-  // 純 YYYY-MM 或 YYYY-MM-DD（無時間部分）→ 直接 slice
+  // 純 YYYY-MM 或 YYYY-MM-DD（無時間部分）→ 直接 slice，不過 Date
   if (/^\d{4}-\d{2}(-\d{2})?$/.test(s)) return s.slice(0, 7);
-  // 其他（含時間部分的 ISO 字串等）→ Date 解析以套用本地時區
+  // 含時間部分 → 用台北 TZ 還原
   const d = new Date(s);
-  if (!Number.isNaN(d.getTime())) {
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  }
+  if (!Number.isNaN(d.getTime())) return _toTaipeiYmd(d).slice(0, 7);
   return "";
 }
 
-// 同理 YYYY-MM-DD 容錯（同樣需要區分純日期 vs 含時間 ISO）
 export function toYmd(v) {
   if (v == null || v === "") return "";
-  if (v instanceof Date) {
-    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
-  }
+  if (v instanceof Date) return _toTaipeiYmd(v);
   const s = String(v).trim();
-  // 純 YYYY-MM-DD（無時間部分）→ 直接保留
+  // 純 YYYY-MM-DD → 直接保留（無時區歧義）
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  // 含時間部分 → Date 解析以套用本地時區
+  // 含時間 → 台北 TZ 還原
   const d = new Date(s);
-  if (!Number.isNaN(d.getTime())) {
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  }
+  if (!Number.isNaN(d.getTime())) return _toTaipeiYmd(d);
   return "";
 }
 
@@ -152,19 +150,24 @@ export const TABLES = [
     name: "廣告",
     headers: [
       "id", "廣告代碼", "廣告名稱", "廣告分組", "對應產品",
+      "幣別", "原幣金額", "原幣→RMB匯率",
       "人民幣金額", "匯率", "台幣金額",
       "開始日期", "結束日期", "攤提天數", "每日攤提(台幣)",
-      "購買模式", "續費來源", "調整原因", "鎖定不調整",
+      "購買模式", "續費來源", "調整原因", "鎖定不調整", "備註",
     ],
     toRows: (s) => s.ads.map((a) => [
       a.id, a.ad_code, a.ad_name, a.group || "",
       summarizeWeights(a.weights),
+      a.currency || "CNY",
+      a.amount_orig != null ? a.amount_orig : a.amount_cny,
+      a.currency_rate || 1,
       a.amount_cny, a.exchange_rate, a.amount_twd,
       a.start_date, a.end_date, a.amortize_days, a.daily_amort_twd,
       a.purchase_mode || "",
       a.renewal_of || "",
       a.renewal_reason || "初始",
       a.lock_perf_adjust ? "Y" : "",
+      a.notes || "",
     ]),
   },
   {
@@ -337,12 +340,19 @@ export function assembleFromTables(raw) {
   const ads = adT.rows.map((r) => {
     const o = toObj(adT.headers, r);
     const reason = String(o["調整原因"] || "初始");
+    const cny = Number(o["人民幣金額"]) || 0;
+    const currency = String(o["幣別"] || "CNY").toUpperCase() === "USDT" ? "USDT" : "CNY";
+    const amountOrig = Number(o["原幣金額"]);
+    const currencyRate = Number(o["原幣→RMB匯率"]);
     return {
       id: String(o.id || ""),
       ad_code: String(o["廣告代碼"] || ""),
       ad_name: String(o["廣告名稱"] || ""),
       group: String(o["廣告分組"] || ""),
-      amount_cny: Number(o["人民幣金額"]) || 0,
+      currency,
+      amount_orig: Number.isFinite(amountOrig) && amountOrig > 0 ? amountOrig : cny,
+      currency_rate: Number.isFinite(currencyRate) && currencyRate > 0 ? currencyRate : 1,
+      amount_cny: cny,
       exchange_rate: Number(o["匯率"]) || 4.7,
       amount_twd: Number(o["台幣金額"]) || 0,
       start_date: toYmd(o["開始日期"]),
@@ -354,6 +364,7 @@ export function assembleFromTables(raw) {
       renewal_of: o["續費來源"] ? String(o["續費來源"]) : null,
       renewal_reason: RENEWAL_REASONS.includes(reason) ? reason : "初始",
       lock_perf_adjust: String(o["鎖定不調整"] || "").trim().toUpperCase() === "Y",
+      notes: String(o["備註"] || ""),
     };
   });
 

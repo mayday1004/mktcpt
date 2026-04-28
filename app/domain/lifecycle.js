@@ -18,6 +18,9 @@ function spawnFrom(source, patch) {
     ad_code: source.ad_code,
     ad_name: source.ad_name,
     group: source.group || "",
+    currency: source.currency || "CNY",
+    amount_orig: source.amount_orig != null ? source.amount_orig : source.amount_cny,
+    currency_rate: source.currency_rate || 1,
     amount_cny: source.amount_cny,
     exchange_rate: source.exchange_rate,
     amount_twd: source.amount_twd,
@@ -50,45 +53,6 @@ export function buildWeightAdjust(source, effectiveDate, newWeights) {
   return { closed, segments: [newSeg] };
 }
 
-// 送天數：在 [pauseStart, pauseEnd) 期間把 pausedProductIds 暫停（權重=0），
-// pauseEnd 之後開第三段恢復原權重直到原 end_date。
-// 若 pauseStart === source.start_date：直接從 source 暫停（不需先 trim）。
-// 若 pauseEnd >= source.end_date：略過恢復段。
-export function buildGiftDays(source, pauseStart, pauseEnd, pausedProductIds) {
-  if (pauseStart < source.start_date || pauseStart >= source.end_date) {
-    throw new Error(`暫停起日 ${pauseStart} 必須在原段區間內`);
-  }
-  if (pauseEnd <= pauseStart) {
-    throw new Error(`暫停迄日必須晚於起日`);
-  }
-  const effectiveEnd = pauseEnd > source.end_date ? source.end_date : pauseEnd;
-  const pausedSet = new Set(pausedProductIds);
-  const pausedWeights = {};
-  Object.entries(source.weights || {}).forEach(([pid, w]) => {
-    pausedWeights[pid] = pausedSet.has(pid) ? 0 : Number(w) || 0;
-  });
-
-  const pausedSeg = spawnFrom(source, {
-    start_date: pauseStart,
-    end_date: effectiveEnd,
-    weights: pausedWeights,
-    renewal_reason: "送天數",
-  });
-  const closed = trimEnd(source, pauseStart);
-  const segments = [pausedSeg];
-  if (effectiveEnd < source.end_date) {
-    const restoredSeg = spawnFrom(source, {
-      start_date: effectiveEnd,
-      end_date: source.end_date,
-      weights: { ...(source.weights || {}) },
-      renewal_reason: "送天數結束",
-      renewal_of: pausedSeg.id,
-    });
-    segments.push(restoredSeg);
-  }
-  return { closed, segments };
-}
-
 // 轉移：生效日 + 新 weights（使用者手填，例如把 AV9 的 50% 移到 av9_poquan）
 // 不檢查源/目產品具體欄位，只負責關段+開新段
 export function buildTransfer(source, effectiveDate, newWeights) {
@@ -105,13 +69,3 @@ export function buildTransfer(source, effectiveDate, newWeights) {
   return { closed, segments: [newSeg] };
 }
 
-// 提前結束：直接修改源段 end_date，不開新段
-export function buildEndEarly(source, endDate) {
-  if (endDate <= source.start_date) {
-    throw new Error(`結束日必須晚於開始日 ${source.start_date}`);
-  }
-  if (endDate >= source.end_date) {
-    throw new Error(`結束日已不晚於原 end_date ${source.end_date}，無需動作`);
-  }
-  return { closed: trimEnd(source, endDate), segments: [] };
-}

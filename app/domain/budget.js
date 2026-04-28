@@ -18,12 +18,20 @@ export function bandFor(product, ym, budget) {
   };
 }
 
-export function checkMonthlyTotal(spentTwd, budgetTwd) {
+// productType: "app" | "island"（缺省走小島閾值，安全側）
+//   APP：超花 > 20,000 → bad；超花 0~20K → ok（容許範圍）；少花 > 60,000 → warn
+//   小島：超花 > 10,000 → bad；超花 0~10K → ok（容許範圍）；少花 > 20,000 → warn
+export function checkMonthlyTotal(spentTwd, budgetTwd, productType) {
   const diff = spentTwd - budgetTwd;
-  if (diff > 10000) return { kind: "bad", msg: `超花 ${Math.round(diff).toLocaleString()} 元（上限 1 萬）` };
-  if (diff > 0)     return { kind: "warn", msg: `超花 ${Math.round(diff).toLocaleString()} 元（容許 1 萬內）` };
-  if (-diff > 20000) return { kind: "warn", msg: `少花 ${Math.round(-diff).toLocaleString()} 元（上限 2 萬）` };
-  return { kind: "ok", msg: `差額 ${Math.round(diff).toLocaleString()} 元` };
+  const isApp = productType === "app";
+  const overHard = isApp ? 20000 : 10000;
+  const underWarn = isApp ? 60000 : 20000;
+  const fmt = (n) => Math.round(n).toLocaleString();
+  if (diff > overHard) return { kind: "bad", msg: `超花 ${fmt(diff)} 元（容許 ${fmt(overHard)} 內）` };
+  if (-diff > underWarn) return { kind: "warn", msg: `少花 ${fmt(-diff)} 元（容許 ${fmt(underWarn)} 內）` };
+  if (diff > 0) return { kind: "ok", msg: `超花 ${fmt(diff)} 元（容許範圍內）` };
+  if (diff < 0) return { kind: "ok", msg: `少花 ${fmt(-diff)} 元（容許範圍內）` };
+  return { kind: "ok", msg: `剛好打平` };
 }
 
 // ── Forward-only 分段帶寬（建議日花費）────────────────────────────────
@@ -93,15 +101,15 @@ export function bandsForMonth(state, product, ym) {
     const mode = applicable.mode || "monthly";
     let target;
     let extras = {};
+    const segDays = Math.max(1, daysBetweenInclusive(segStart, monthLast));
     if (mode === "daily") {
       // 小島：amount 是該段的每日預算，恆定
       target = applicable.amount;
-      extras = { seg_amount: applicable.amount, seg_mode: "daily" };
+      extras = { seg_amount: applicable.amount, seg_days: segDays, seg_mode: "daily" };
     } else {
       // APP：amount 是月度目標，daily = (amount - 段前已花) / 段內剩餘天數
       const spentBeforeSeg = cumBefore(segStart);
       const remainAmount = applicable.amount - spentBeforeSeg;
-      const segDays = Math.max(1, daysBetweenInclusive(segStart, monthLast));
       target = remainAmount / segDays;
       extras = { seg_amount: applicable.amount, seg_remain: remainAmount, seg_days: segDays, seg_mode: "monthly" };
     }

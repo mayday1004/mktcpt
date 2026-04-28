@@ -1,6 +1,10 @@
 import { getState } from "../state.js";
 import { suggestForDate } from "../domain/reverse.js";
 import { suggestWeights } from "../domain/suggest.js";
+import { dailySpendGrid } from "../domain/spending.js";
+import { addDays, monthOf, monthEnd, daysOfMonth, todayTaipei } from "../lib/dates.js";
+import { getMonthlyBudget, NO_BAND_PIDS } from "../schema.js";
+import { bandsForMonth } from "../domain/budget.js";
 
 let mode = "date";  // "date" | "amount"
 let pickedDate = "";
@@ -13,7 +17,7 @@ let amtEnd = "";
 let amtDays = 30;
 let amtCny = 0;
 
-function todayStr() { return new Date().toISOString().slice(0, 10); }
+const todayStr = todayTaipei;
 
 export function render(root) {
   const s = getState();
@@ -23,9 +27,7 @@ export function render(root) {
   if (!pickedDate || pickedDate < today) pickedDate = today;
   if (!amtStart || amtStart < today) amtStart = today;
   if (!amtEnd || amtEnd <= amtStart) {
-    const d = new Date(amtStart);
-    d.setDate(d.getDate() + 30);
-    amtEnd = d.toISOString().slice(0, 10);
+    amtEnd = addDays(amtStart, 30);
   }
 
   // 產品選擇器預設：第一個產品；同時清掉不存在的 pid
@@ -60,7 +62,7 @@ function renderDateMode(s, ym) {
   const rate = s.settings.expense_rate;
   const today = todayStr();
   if (pickedDate < today) pickedDate = today;
-  const cards = suggestForDate(s, pickedDate, rate);
+  const cards = suggestForDate(s, pickedDate, rate, amortizeDays);
   const selected = cards.filter((c) => pickedPids.has(c.product.id));
 
   // 產品 chip 列：多選；每個 chip 旁顯示該產品當日可加的簡短摘要
@@ -126,6 +128,13 @@ function renderDateCombinedCard(cards, days, rate) {
         <p class="ink-2">所選產品都沒有可加空間。</p>
         ${renderSkippedList(skipped)}
       </div>
+      ${renderSimulatedMonthGrid({
+        start_date: pickedDate,
+        end_date: addDays(pickedDate, days),
+        amortize_days: days,
+        daily_amort_twd: 0,
+        weights: {},
+      })}
     `;
   }
 
@@ -141,32 +150,49 @@ function renderDateCombinedCard(cards, days, rate) {
         <button class="primary" id="date-create-multi">📋 用此參數建立廣告</button>
       </div>
 
-      <div class="rev-suggest" style="margin-bottom:14px;font-size:14px">
-        ${pickedDate} 起合計可補 <strong style="font-size:18px">${Math.round(totalDailyTwd).toLocaleString()}</strong> TWD/日<br>
-        <span class="ink-2" style="font-size:13px">
-          買一筆 ${days} 天的廣告 → 總價 <strong>${totalCny.toLocaleString()}</strong> RMB
-          （= ${Math.round(totalTwd).toLocaleString()} TWD ÷ ${rate}）
-        </span>
+      <div class="rev-hero">
+        <div class="rev-hero-num">${Math.round(totalDailyTwd).toLocaleString()} <span class="rev-hero-unit">TWD/日</span></div>
+        <div class="rev-hero-sub">
+          ${pickedDate} 起，買 ${days} 天廣告 → <strong>${totalCny.toLocaleString()}</strong> RMB（${Math.round(totalTwd).toLocaleString()} TWD ÷ ${rate}）
+        </div>
+        <div class="rev-hero-limits">
+          ${usable.map((c) => {
+            const w = weights[c.product.id] || 0;
+            const dailyShare = totalDailyTwd * (w / 100);
+            return `<div><strong>${esc(c.product.name)} ${w}%</strong> — ${Math.round(dailyShare).toLocaleString()} TWD/日 <span class="ink-3" style="font-size:11px">(最緊 ${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span></div>`;
+          }).join("")}
+        </div>
       </div>
 
-      <div class="rev-product-cards">
-        ${usable.map((c) => {
-          const w = weights[c.product.id] || 0;
-          const dailyShare = totalDailyTwd * (w / 100);
-          return `
-            <div class="rev-card">
-              <h3>
-                <span>${esc(c.product.name)}</span>
-                <span class="pill ${c.product.type}" style="font-weight:400;font-size:11px;margin-left:4px">${c.product.type === "app" ? "APP" : "小島"}</span>
-                <span class="pill" style="font-size:14px;margin-left:auto">${w}%</span>
-              </h3>
-              <div class="rev-row"><span class="label">月剩餘</span><span class="val">${Math.round(c.monthRemaining || 0).toLocaleString()}</span></div>
-              <div class="rev-row"><span class="label">當日尚可加</span><span class="val">${Math.round(c.todayHeadroom || 0).toLocaleString()}</span></div>
-              <div class="rev-row"><span class="label">分到 daily</span><span class="val"><strong>${Math.round(dailyShare).toLocaleString()}</strong></span></div>
-            </div>
-          `;
-        }).join("")}
-      </div>
+      <details class="rev-details">
+        <summary>各產品限制細節</summary>
+        <div class="rev-product-cards" style="margin-top:8px">
+          ${usable.map((c) => {
+            const w = weights[c.product.id] || 0;
+            const dailyShare = totalDailyTwd * (w / 100);
+            return `
+              <div class="rev-card">
+                <h3>
+                  <span>${esc(c.product.name)}</span>
+                  <span class="pill ${c.product.type}" style="font-weight:400;font-size:11px;margin-left:4px">${c.product.type === "app" ? "APP" : "小島"}</span>
+                  <span class="pill" style="font-size:14px;margin-left:auto">${w}%</span>
+                </h3>
+                <div class="rev-row"><span class="label">月剩餘 / ${c.daysToMonthEnd} 天</span><span class="val">${Math.round(c.monthRemainPerDay || 0).toLocaleString()}/日</span></div>
+                <div class="rev-row"><span class="label">攤提區間最緊</span><span class="val">${Math.round(c.minHeadroomInPeriod || 0).toLocaleString()}<span class="ink-3" style="font-size:11px"> (${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span></span></div>
+                <div class="rev-row"><span class="label">分到 daily</span><span class="val"><strong>${Math.round(dailyShare).toLocaleString()}</strong></span></div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      </details>
+
+      ${renderSimulatedMonthGrid({
+        start_date: pickedDate,
+        end_date: addDays(pickedDate, days),
+        amortize_days: days,
+        daily_amort_twd: totalDailyTwd,
+        weights,
+      })}
 
       ${renderSkippedList(skipped)}
     </div>
@@ -214,6 +240,11 @@ function renderDateCardLarge(c, days, rate) {
   const usable = c.kind === "ok" && c.suggestTwd > 0;
   const totalTwd = c.suggestTwd * days;
   const totalCny = rate > 0 ? Math.round(totalTwd / rate) : 0;
+  // 哪個是 binding constraint：月剩餘÷剩餘天數 vs 攤提區間最緊
+  const monthBindingFirst = (c.monthRemainPerDay ?? Infinity) <= (c.minHeadroomInPeriod ?? Infinity);
+  const monthBindingTag = monthBindingFirst ? `<span class="pill warn" style="font-size:10px;margin-left:4px">較緊</span>` : "";
+  const periodBindingTag = !monthBindingFirst ? `<span class="pill warn" style="font-size:10px;margin-left:4px">較緊</span>` : "";
+
   return `
     <div class="card">
       <div class="card-head">
@@ -221,33 +252,160 @@ function renderDateCardLarge(c, days, rate) {
         ${usable ? `<button class="primary" id="date-create">📋 用此參數建立廣告</button>` : ""}
       </div>
 
-      <div class="rev-product-cards">
-        <div class="rev-card">
-          <h3 style="margin-bottom:8px">月度狀況</h3>
-          <div class="rev-row"><span class="label">月預算</span><span class="val">${Math.round(c.budget).toLocaleString()}</span></div>
-          <div class="rev-row"><span class="label">月已花</span><span class="val">${Math.round(c.monthSpent).toLocaleString()}</span></div>
-          <div class="rev-row"><span class="label">月剩餘</span><span class="val"><strong>${Math.round(c.monthRemaining).toLocaleString()}</strong></span></div>
+      ${usable ? `
+        <div class="rev-hero">
+          <div class="rev-hero-num">${Math.round(c.suggestTwd).toLocaleString()} <span class="rev-hero-unit">TWD/日</span></div>
+          <div class="rev-hero-sub">
+            買 ${days} 天廣告，本產品 100% 採買 → <strong>${totalCny.toLocaleString()}</strong> RMB（${Math.round(totalTwd).toLocaleString()} TWD ÷ ${rate}）
+          </div>
+          <div class="rev-hero-limits">
+            <div>月剩餘 ÷ 剩餘 ${c.daysToMonthEnd} 天 = <strong>${Math.round(c.monthRemainPerDay || 0).toLocaleString()}</strong>/日${monthBindingTag}</div>
+            <div>攤提區間 ${c.amortizeDaysUsed} 天最緊 = <strong>${Math.round(c.minHeadroomInPeriod || 0).toLocaleString()}</strong>/日 <span class="ink-3">(${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span>${periodBindingTag}</div>
+          </div>
         </div>
+      ` : `
+        <div class="rev-hero rev-hero-bad">
+          <div class="rev-hero-num" style="color:var(--bad);font-size:18px">無可加空間</div>
+          <div class="rev-hero-sub" style="color:var(--bad)">${esc(c.note || "—")}</div>
+        </div>
+      `}
 
-        <div class="rev-card">
-          <h3 style="margin-bottom:8px">${pickedDate} 當日狀況</h3>
-          <div class="rev-row"><span class="label">建議日花費上緣</span><span class="val">${Math.round(c.band.upper).toLocaleString()}</span></div>
-          <div class="rev-row"><span class="label">已配置</span><span class="val">${Math.round(c.todaySpent).toLocaleString()}</span></div>
-          <div class="rev-row"><span class="label">尚可加</span><span class="val"><strong>${Math.round(c.todayHeadroom).toLocaleString()}</strong></span></div>
+      <details class="rev-details">
+        <summary>細節（月度／當日／建議花費值）</summary>
+        <div class="rev-product-cards" style="margin-top:8px">
+          <div class="rev-card">
+            <h3 style="margin-bottom:8px">月度</h3>
+            <div class="rev-row"><span class="label">月預算</span><span class="val">${Math.round(c.budget).toLocaleString()}</span></div>
+            <div class="rev-row"><span class="label">月已花</span><span class="val">${Math.round(c.monthSpent).toLocaleString()}</span></div>
+            <div class="rev-row"><span class="label">月剩餘</span><span class="val">${Math.round(c.monthRemaining).toLocaleString()}</span></div>
+          </div>
+          <div class="rev-card">
+            <h3 style="margin-bottom:8px">${pickedDate} 當日</h3>
+            <div class="rev-row"><span class="label">建議日花費上緣</span><span class="val">${Math.round(c.band.upper).toLocaleString()}</span></div>
+            <div class="rev-row"><span class="label">已配置</span><span class="val">${Math.round(c.todaySpent).toLocaleString()}</span></div>
+            <div class="rev-row"><span class="label">當日尚可加</span><span class="val">${Math.round(c.todayHeadroom).toLocaleString()}</span></div>
+          </div>
         </div>
+      </details>
+
+      ${renderSimulatedMonthGrid({
+        start_date: pickedDate,
+        end_date: addDays(pickedDate, days),
+        amortize_days: days,
+        daily_amort_twd: c.suggestTwd,
+        weights: { [c.product.id]: 100 },
+      })}
+    </div>
+  `;
+}
+
+// 模擬「假設這筆新廣告買下去 + 所有現有廣告到期都續費」之後的整月每日攤提表。
+//   - 對每個 ad_code 的最後一段，把 end_date 推到月底+1（沒淘汰才推）
+//   - 加上代表新採買的 fakeAd（caller 提供 weights，可單產品 100% 或多產品分權重）
+//   - 即使新採買無法成立（daily_amort_twd <= 0），仍顯示「續費後 baseline」表格，標題改寫
+// 表格格式跟概覽頁的「每日攤提（台幣）」一致。
+function renderSimulatedMonthGrid(fakeAdInput) {
+  const s = getState();
+  if (!fakeAdInput || !fakeAdInput.start_date) return "";
+
+  const hasNewBuy = (fakeAdInput.daily_amort_twd || 0) > 0;
+  const ym = monthOf(fakeAdInput.start_date);
+  const monthEndExclusive = addDays(monthEnd(ym), 1);
+
+  // 找每 ad_code 的最後段（max end_date），把它的 end_date 推到月底+1
+  // 但只對「end_date 仍在今日（含）之後」的最後段做 — 已過期但沒手動續費的廣告
+  // 系統不該替他自動續費（會把過去無花費日塞進來）
+  const today = todayTaipei();
+  const latestByCode = new Map();
+  for (const a of s.ads) {
+    if (a.eliminated) continue;  // 已淘汰：使用者明確不續費，不模擬
+    const cur = latestByCode.get(a.ad_code);
+    if (!cur || a.end_date > cur.end_date) latestByCode.set(a.ad_code, a);
+  }
+  const latestIds = new Set([...latestByCode.values()].map((a) => a.id));
+  const renewedAds = s.ads.map((a) => {
+    if (!latestIds.has(a.id)) return a;
+    if (a.end_date >= monthEndExclusive) return a;  // 已涵蓋整月
+    if (a.end_date < today) return a;               // 已過期：不假設續費
+    return { ...a, end_date: monthEndExclusive };
+  });
+
+  const ads = hasNewBuy
+    ? [...renewedAds, { id: "preview_new_ad", ad_code: "_PREVIEW_", ad_name: "(預覽：新採買)", group: "preview", ...fakeAdInput }]
+    : renewedAds;
+  const grid = dailySpendGrid(ads, ym);
+  const products = s.products;
+  const monthDays = [...daysOfMonth(ym)];
+  const dayBandsByPid = Object.fromEntries(products.map((p) => [p.id, bandsForMonth(s, p, ym)]));
+
+  const monthTotals = Object.fromEntries(products.map((p) => [p.id, 0]));
+  let grandTotal = 0;
+
+  const bodyRows = monthDays.map((d) => {
+    const row = grid[d] || {};
+    let dayTotal = 0;
+    const cells = products.map((p) => {
+      const amt = row[p.id] || 0;
+      dayTotal += amt;
+      monthTotals[p.id] += amt;
+      const b = dayBandsByPid[p.id]?.[d];
+      const isFuture = d >= today;
+      const out = isFuture && b && b.budget_set && !NO_BAND_PIDS.has(p.id) && amt > 0 && (amt < b.lower || amt > b.upper);
+      const cls = `num ${out ? "dg-out-of-band" : ""} ${d < today ? "dg-past" : ""}`;
+      return `<td class="${cls}">${amt ? Math.round(amt).toLocaleString() : "<span class='ink-3'>—</span>"}</td>`;
+    }).join("");
+    grandTotal += dayTotal;
+    return `<tr>
+      <td class="mono">${d.slice(5)}</td>
+      ${cells}
+      <td class="num"><strong>${Math.round(dayTotal).toLocaleString()}</strong></td>
+    </tr>`;
+  }).join("");
+
+  const footerCells = products.map((p) => {
+    const total = monthTotals[p.id];
+    const budget = getMonthlyBudget(s, p.id, ym) || 0;
+    const diff = total - budget;
+    const diffClass = !budget ? "ink-3" : diff > 10000 ? "bad" : diff > 0 ? "warn" : -diff > 20000 ? "warn" : "ok";
+    return `<td class="num dg-foot">
+      <strong>${Math.round(total).toLocaleString()}</strong>
+      ${budget ? `<div class="dg-foot-sub ${diffClass}">${diff >= 0 ? "+" : ""}${Math.round(diff).toLocaleString()}</div>` : ""}
+    </td>`;
+  }).join("");
+
+  const headerCells = products.map((p) => `<th class="num">${esc(p.name)}</th>`).join("");
+
+  const heading = hasNewBuy
+    ? `採買後每日攤提（${ym}，台幣）`
+    : `現有廣告續費後每日攤提（${ym}，台幣）`;
+  const subhint = hasNewBuy
+    ? "假設此筆新廣告買下 + 所有現有廣告到期都續費（end_date 推至月底）。紅色格 = 當日及未來日超出建議日花費。"
+    : "這筆新採買沒有可加空間，下表只顯示「現有廣告全部續費」後的整月分布（不含這筆）。紅色格 = 當日及未來日超出建議日花費。";
+
+  return `
+    <div class="card" style="margin-top:14px">
+      <div class="card-head">
+        <h2>${heading}</h2>
+        <div class="ink-3" style="font-size:12px">${subhint}</div>
       </div>
-
-      <div class="rev-suggest" style="margin-top:16px;font-size:14px">
-        ${usable ? `
-          這天可補 <strong style="font-size:18px">${Math.round(c.suggestTwd).toLocaleString()}</strong> TWD（取「月剩餘」與「當日尚可加」較小者）<br>
-          <span class="ink-2" style="font-size:13px">
-            買一筆 ${days} 天的廣告，本產品 100% 採買 →
-            總價約 <strong>${totalCny.toLocaleString()}</strong> RMB
-            （= ${Math.round(totalTwd).toLocaleString()} TWD ÷ ${rate}）
-          </span>
-        ` : `
-          <span style="color:var(--bad)">${esc(c.note || "—")}</span>
-        `}
+      <div class="table-wrap" style="max-height:560px;overflow:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>日期</th>
+              ${headerCells}
+              <th class="num">當日合計</th>
+            </tr>
+          </thead>
+          <tbody>${bodyRows}</tbody>
+          <tfoot>
+            <tr class="dg-foot-row">
+              <td><strong>月合計</strong><div class="ink-3" style="font-size:11px">vs 預算</div></td>
+              ${footerCells}
+              <td class="num dg-foot"><strong>${Math.round(grandTotal).toLocaleString()}</strong></td>
+            </tr>
+          </tfoot>
+        </table>
       </div>
     </div>
   `;
@@ -261,9 +419,7 @@ function renderAmountMode(s, ym) {
   // 採買只能往未來；amtStart 落在過去就強拉到今日
   if (amtStart && amtStart < today) amtStart = today;
   if (amtEnd && amtEnd <= amtStart) {
-    const d = new Date(amtStart);
-    d.setDate(d.getDate() + amtDays);
-    amtEnd = d.toISOString().slice(0, 10);
+    amtEnd = addDays(amtStart, amtDays);
   }
   const amountTwd = (Number(amtCny) || 0) * rate;
   const dailyTwd = amtDays > 0 ? amountTwd / amtDays : 0;
@@ -299,7 +455,7 @@ function renderAmountMode(s, ym) {
   return `
     <div class="rev-controls">
       <div class="field" style="min-width:140px">
-        <label>金額（人民幣）</label>
+        <label>金額（RMB）</label>
         <input id="amt-cny" type="number" step="any" value="${amtCny || ""}" placeholder="例 90000" />
       </div>
       <div class="field" style="min-width:140px">
@@ -329,58 +485,87 @@ function renderAmountMode(s, ym) {
         <p class="ink-2" style="color:var(--bad)">無法給出建議：</p>
         <ul>${reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
       </div>
+      ${renderSimulatedMonthGrid({
+        start_date: amtStart,
+        end_date: amtEnd,
+        amortize_days: amtDays,
+        daily_amort_twd: 0,
+        weights: {},
+      })}
     ` : `
       <div class="card">
         <div class="card-head">
           <h2>建議權重分配</h2>
           <button class="primary" id="amt-create">📋 用此參數建立廣告</button>
         </div>
-        ${reasons.length ? `<div class="hint">${reasons.map((r) => esc(r)).join("；")}</div>` : `<div class="hint" style="color:var(--ok)">建議已套用（依各產品剩餘預算比例，受建議日花費上緣限制；已補到位的產品自動排除）</div>`}
-        <div class="rev-product-cards mt-16">
+
+        <div class="rev-hero">
+          <div class="rev-hero-num">${Math.round(amountTwd).toLocaleString()} <span class="rev-hero-unit">TWD（${amtCny.toLocaleString()} RMB）</span></div>
+          <div class="rev-hero-sub">
+            ${amtStart} ~ ${amtEnd}（${amtDays} 天）→ 每日攤提 <strong>${Math.round(dailyTwd).toLocaleString()}</strong> TWD
+          </div>
+          <div class="rev-hero-limits">
+            ${Object.entries(suggested).sort(([, a], [, b]) => b - a).map(([pid, w]) => {
+              const dailyShare = dailyTwd * (w / 100);
+              return `<div><strong>${esc(nameOf[pid] || pid)} ${w}%</strong> — ${Math.round(dailyShare).toLocaleString()} TWD/日</div>`;
+            }).join("")}
+          </div>
+        </div>
+
+        ${reasons.length ? `<div class="hint" style="margin-top:8px">${reasons.map((r) => esc(r)).join("；")}</div>` : ""}
+
+        <details class="rev-details">
+          <summary>各產品預算 / 建議花費值 細節</summary>
+        <div class="rev-product-cards" style="margin-top:8px">
           ${Object.entries(suggested)
             .sort(([, a], [, b]) => b - a)
             .map(([pid, w]) => {
               const dailyShare = dailyTwd * (w / 100);
               const totalShare = amountTwd * (w / 100);
               const cand = candById[pid];
-              // 月內貢獻：本廣告在 ym 內的天數 × dailyShare
               const monthContrib = dailyShare * inMonthDays;
               const monthSpent = cand?.spent || 0;
               const budget = cand?.budget;
               const projTotal = monthSpent + monthContrib;
-              let budgetLine = "";
+              const fmt = (n) => Math.round(n).toLocaleString();
+
+              // 本月：projTotal vs budget
+              let thisMonthLine = "";
               if (budget != null && budget > 0) {
                 const over = projTotal - budget;
-                if (over > 0.5) {
-                  budgetLine = `<div class="rev-row"><span class="label">本月攤提預估</span><span class="val" style="color:var(--bad)"><strong>${Math.round(projTotal).toLocaleString()}</strong> / ${Math.round(budget).toLocaleString()} ✗ 超 ${Math.round(over).toLocaleString()}</span></div>`;
-                } else {
-                  budgetLine = `<div class="rev-row"><span class="label">本月攤提預估</span><span class="val" style="color:var(--ok)"><strong>${Math.round(projTotal).toLocaleString()}</strong> / ${Math.round(budget).toLocaleString()} ✓</span></div>`;
-                }
+                const cls = over > 0.5 ? "bad" : "ok";
+                const sign = over > 0.5 ? `✗ +${fmt(over)}` : "✓";
+                thisMonthLine = `<div class="rev-line"><span class="rev-k">本月</span><span class="rev-v ${cls}">${fmt(projTotal)} / ${fmt(budget)} ${sign}</span></div>`;
               }
-              // 下月攤提預估：跨月時顯示。基線為「假設所有現有廣告都續費」的下月合計。
-              // 預算未設則假設＝本月。爆超 → 加註建議淘汰 RMB 量。
+
+              // 下月：baseline + nextContrib vs nextBudget
               let nextMonthLine = "";
-              let nextEliminateLine = "";
+              let cutLine = "";
               if (inNextMonthDays > 0 && cand?.nextBudgetAssumed != null && cand.nextBudgetAssumed > 0) {
                 const nextContrib = dailyShare * inNextMonthDays;
-                const nextProj = (cand.nextSpent || 0) + nextContrib;  // nextSpent 已是「續費假設後」的基線
+                const baseline = cand.nextSpent || 0;
+                const nextProj = baseline + nextContrib;
                 const nextBudget = cand.nextBudgetAssumed;
                 const nextOver = nextProj - nextBudget;
-                const tags = [];
-                if (cand.nextBudgetIsAssumed) tags.push("預算假設＝本月");
-                tags.push("含現廣告續費");
-                const tagHtml = `<span class="ink-3" style="font-size:11px">（${tags.join("；")}）</span>`;
+                const baselineOver = Math.max(0, baseline - nextBudget);
+                const newOnlyOver = Math.max(0, nextOver) - baselineOver;
+                const cls = nextOver > 0.5 ? "bad" : "ok";
+                const sign = nextOver > 0.5 ? `✗ +${fmt(nextOver)}` : "✓";
+                const tipText = `${cand.nextBudgetIsAssumed ? "下月預算未設，以本月為假設；" : ""}已含現廣告續費`;
+                nextMonthLine = `<div class="rev-line"><span class="rev-k" title="${tipText}">下月</span><span class="rev-v ${cls}">${fmt(nextProj)} / ${fmt(nextBudget)} ${sign}</span></div>`;
                 if (nextOver > 0.5) {
-                  nextMonthLine = `<div class="rev-row"><span class="label">下月攤提預估 ${tagHtml}</span><span class="val" style="color:var(--bad)"><strong>${Math.round(nextProj).toLocaleString()}</strong> / ${Math.round(nextBudget).toLocaleString()} ✗ 超 ${Math.round(nextOver).toLocaleString()}</span></div>`;
-                  // 建議淘汰：把超出 TWD 換算回 RMB（以 rate 換算，保守估）
-                  const eliminateRmb = rate > 0 ? Math.ceil(nextOver / rate) : 0;
-                  if (eliminateRmb > 0) {
-                    nextEliminateLine = `<div class="rev-row"><span class="label">需淘汰 RMB</span><span class="val" style="color:var(--bad)">≈ <strong>${eliminateRmb.toLocaleString()}</strong> RMB（以 ${rate} 換算）</span></div>`;
+                  if (newOnlyOver > 0.5 && rate > 0) {
+                    const cutRmb = Math.ceil(newOnlyOver / rate);
+                    const note = baselineOver > 0.5
+                      ? `<div class="rev-note">光現有廣告續費就會超 ${Math.ceil(baselineOver / rate).toLocaleString()} RMB（與這筆採買無關）</div>`
+                      : "";
+                    cutLine = `<div class="rev-line"><span class="rev-k">需砍</span><span class="rev-v bad">≈ ${cutRmb.toLocaleString()} RMB</span></div>${note}`;
+                  } else if (baselineOver > 0.5) {
+                    cutLine = `<div class="rev-note">超出全來自「現有廣告續費」（與這筆採買無關）</div>`;
                   }
-                } else {
-                  nextMonthLine = `<div class="rev-row"><span class="label">下月攤提預估 ${tagHtml}</span><span class="val" style="color:var(--ok)"><strong>${Math.round(nextProj).toLocaleString()}</strong> / ${Math.round(nextBudget).toLocaleString()} ✓</span></div>`;
                 }
               }
+
               return `
                 <div class="rev-card">
                   <h3>
@@ -388,46 +573,61 @@ function renderAmountMode(s, ym) {
                     <span class="pill ${productOf[pid]?.type || ""}" style="font-weight:400;font-size:11px;margin-left:4px">${productOf[pid]?.type === "app" ? "APP" : "小島"}</span>
                     <span class="pill" style="font-size:14px;margin-left:auto">${w}%</span>
                   </h3>
-                  <div class="rev-row"><span class="label">每日攤提（TWD）</span><span class="val">${Math.round(dailyShare).toLocaleString()}</span></div>
-                  <div class="rev-row"><span class="label">總額分攤（TWD）</span><span class="val">${Math.round(totalShare).toLocaleString()}</span></div>
-                  <div class="rev-row"><span class="label">總額分攤（RMB）</span><span class="val">${Math.round(totalShare / rate).toLocaleString()}</span></div>
-                  ${budgetLine}
+                  <div class="rev-line"><span class="rev-k">日／月</span><span class="rev-v">${fmt(dailyShare)}／${fmt(totalShare)} <span class="ink-3">(${fmt(totalShare / rate)} RMB)</span></span></div>
+                  ${thisMonthLine}
                   ${nextMonthLine}
-                  ${nextEliminateLine}
+                  ${cutLine}
                 </div>
               `;
             }).join("")}
         </div>
-        <div class="hint mt-16">
+        <div class="hint" style="margin-top:8px">
           合計：<strong>${totalW}%</strong>
           ${inMonthDays ? `；本月攤提天 <strong>${inMonthDays}</strong>` : ""}
           ${inNextMonthDays ? `；下月（${ymNext}）攤提天 <strong>${inNextMonthDays}</strong>` : ""}
         </div>
+        </details>
         ${(() => {
           // 全局淘汰建議：彙總所有產品的下月超支
+          // 只算「新廣告造成的額外超出」（newOnlyOver），不把 baseline 已超的部分推給這筆新廣告
           if (!inNextMonthDays || rate <= 0) return "";
-          let totalOverTwd = 0;
+          let newOnlyOverTotal = 0;     // 純粹由新廣告引發的超支總額
+          let baselineOverTotal = 0;     // baseline 已超的總額（提示用）
           const overByProd = [];
           for (const [pid, w] of Object.entries(suggested)) {
             const cand = candById[pid];
             if (!cand?.nextBudgetAssumed || cand.nextBudgetAssumed <= 0) continue;
             const dailyShare = dailyTwd * (w / 100);
             const nextContrib = dailyShare * inNextMonthDays;
-            const nextProj = (cand.nextSpent || 0) + nextContrib;
-            const over = nextProj - cand.nextBudgetAssumed;
-            if (over > 0.5) {
-              totalOverTwd += over;
-              overByProd.push({ name: nameOf[pid] || pid, over });
+            const baseline = cand.nextSpent || 0;
+            const nextBudget = cand.nextBudgetAssumed;
+            const totalOver = Math.max(0, baseline + nextContrib - nextBudget);
+            const baselineOver = Math.max(0, baseline - nextBudget);
+            const newOnly = Math.max(0, totalOver - baselineOver);
+            if (newOnly > 0.5) {
+              newOnlyOverTotal += newOnly;
+              overByProd.push({ name: nameOf[pid] || pid, over: newOnly });
             }
+            if (baselineOver > 0.5) baselineOverTotal += baselineOver;
           }
-          if (totalOverTwd <= 0) return "";
-          const totalEliminateRmb = Math.ceil(totalOverTwd / rate);
-          const detail = overByProd.map((x) => `${esc(x.name)} ≈ ${Math.ceil(x.over / rate).toLocaleString()} RMB`).join("、");
+          if (newOnlyOverTotal <= 0 && baselineOverTotal <= 0) return "";
+          if (newOnlyOverTotal <= 0) {
+            return `
+              <div class="hint rev-summary rev-summary-info">
+                ℹ️ 光現有廣告續費就會超 ${Math.ceil(baselineOverTotal / rate).toLocaleString()} RMB（與這筆採買無關）
+              </div>
+            `;
+          }
+          const totalEliminateRmb = Math.ceil(newOnlyOverTotal / rate);
+          const detail = overByProd.map((x) => `${esc(x.name)} ${Math.ceil(x.over / rate).toLocaleString()}`).join("、");
+          const baselineNote = baselineOverTotal > 0.5
+            ? `<div class="rev-note">另外，光現有廣告續費就會超 ${Math.ceil(baselineOverTotal / rate).toLocaleString()} RMB（與這筆採買無關）</div>`
+            : "";
           return `
-            <div class="hint" style="margin-top:12px;padding:10px 12px;background:#fde3e3;border-radius:6px;font-size:13px;color:var(--bad)">
-              <strong>⚠️ 下月超支總計</strong>：${Math.round(totalOverTwd).toLocaleString()} TWD<br>
-              要買進這筆廣告，建議**先淘汰約 ${totalEliminateRmb.toLocaleString()} RMB** 的現有廣告（明細：${detail}），讓下月有空間接住攤提。<br>
-              <span class="ink-3" style="font-size:11px">假設前提：(1) 下月所有現有廣告會續費 (2) 下月預算暫以本月為基準</span>
+            <div class="hint rev-summary rev-summary-bad">
+              <strong>⚠️ 需先砍 ≈ ${totalEliminateRmb.toLocaleString()} RMB</strong>
+              <div class="rev-note" style="margin-left:0">明細：${detail} RMB</div>
+              ${baselineNote}
             </div>
           `;
         })()}
@@ -440,6 +640,14 @@ function renderAmountMode(s, ym) {
           </div>
         ` : ""}
       </div>
+
+      ${renderSimulatedMonthGrid({
+        start_date: amtStart,
+        end_date: amtEnd,
+        amortize_days: amtDays,
+        daily_amort_twd: dailyTwd,
+        weights: suggested,
+      })}
     `}
   `;
 }
@@ -513,7 +721,7 @@ function createFromAmountMode() {
 function createFromDateMode() {
   const s = getState();
   const rate = s.settings.expense_rate;
-  const cards = suggestForDate(s, pickedDate, rate);
+  const cards = suggestForDate(s, pickedDate, rate, amortizeDays);
   const onlyPid = pickedPids.size === 1 ? [...pickedPids][0] : null;
   const card = cards.find((c) => c.product.id === onlyPid);
   if (!card || card.kind !== "ok" || card.suggestTwd <= 0) {
@@ -524,9 +732,7 @@ function createFromDateMode() {
   const totalTwd = card.suggestTwd * amortizeDays;
   const cny = rate > 0 ? Math.round(totalTwd / rate) : 0;
   const startDate = pickedDate;
-  const endDateObj = new Date(startDate);
-  endDateObj.setDate(endDateObj.getDate() + amortizeDays);
-  const endDate = endDateObj.toISOString().slice(0, 10);
+  const endDate = addDays(startDate, amortizeDays);
 
   sessionStorage.setItem("buyads_prefill_ad", JSON.stringify({
     amount_cny: cny,
@@ -543,7 +749,7 @@ function createFromDateMode() {
 function createFromDateMultiMode() {
   const s = getState();
   const rate = s.settings.expense_rate;
-  const cards = suggestForDate(s, pickedDate, rate);
+  const cards = suggestForDate(s, pickedDate, rate, amortizeDays);
   const usable = cards.filter((c) => pickedPids.has(c.product.id) && c.kind === "ok" && c.suggestTwd > 0);
   if (usable.length === 0) {
     toast("選中的產品都沒有可加空間", "bad");
@@ -554,9 +760,7 @@ function createFromDateMultiMode() {
   const totalTwd = totalDailyTwd * amortizeDays;
   const cny = rate > 0 ? Math.round(totalTwd / rate) : 0;
   const startDate = pickedDate;
-  const endDateObj = new Date(startDate);
-  endDateObj.setDate(endDateObj.getDate() + amortizeDays);
-  const endDate = endDateObj.toISOString().slice(0, 10);
+  const endDate = addDays(startDate, amortizeDays);
   sessionStorage.setItem("buyads_prefill_ad", JSON.stringify({
     amount_cny: cny,
     exchange_rate: rate,

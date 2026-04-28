@@ -1,7 +1,38 @@
 import { getMonthlyBudget } from "../schema.js";
 import { bandsForMonth } from "./budget.js";
 import { dailySpendGrid, monthlyTotals } from "./spending.js";
-import { daysOfMonth, addDays } from "../lib/dates.js";
+import { daysOfMonth, addDays, todayTaipei } from "../lib/dates.js";
+import { scoreRecord } from "./perf-adjust.js";
+
+// 「成效全爛」門檻 — 與 perf-adjust suggestEliminate 同一條線
+const POOR_PERF_RATIO_THRESHOLD = 0.3;
+
+// 評估某廣告對所有有權重產品的成效是否「全爛」
+//   通過條件：每個有權重的產品都有成效紀錄、都有目標、score.ratio 都 < threshold
+//   回傳：null（資料不齊或不算全爛）/ [{ productId, productName, ratio }]（每個產品的最差比例）
+export function evaluatePoorPerf(state, ad) {
+  const pids = Object.entries(ad.weights || {})
+    .filter(([, w]) => Number(w) > 0)
+    .map(([pid]) => pid);
+  if (pids.length === 0) return null;
+
+  const result = [];
+  for (const pid of pids) {
+    const product = state.products.find((p) => p.id === pid);
+    const targets = product?.performance_targets || [];
+    if (targets.length === 0) return null;  // 沒設目標，無從判定
+    // 取該廣告對該產品的最新一筆成效紀錄
+    const recs = (state.performance_data || []).filter((r) =>
+      r.product_id === pid && (r.ad_code === ad.ad_code || r.ad_id === ad.id)
+    ).sort((a, b) => (b.period_end || "").localeCompare(a.period_end || ""));
+    if (recs.length === 0) return null;  // 缺資料
+    const score = scoreRecord(recs[0], targets);
+    if (!score || score.ratio == null) return null;
+    if (score.ratio >= POOR_PERF_RATIO_THRESHOLD) return null;  // 任一產品達標就不算全爛
+    result.push({ productId: pid, productName: product?.name || pid, ratio: score.ratio });
+  }
+  return result.length > 0 ? result : null;
+}
 
 // 計算當下要關心的事。回傳 [{kind, severity, msg, link, linkText}]
 //   kind:    "budget" / "band" / "expiry" / "todo"
@@ -16,7 +47,7 @@ import { daysOfMonth, addDays } from "../lib/dates.js";
 export function computeAlerts(state, ymd /* today YYYY-MM-DD */) {
   const ym = state.settings.current_month;
   const out = [];
-  const today = ymd || new Date().toISOString().slice(0, 10);
+  const today = ymd || todayTaipei();
 
   // ── 1. 月預算 ─────────────────────────────────────
   // 用 daily_amort_override 優先，沒有才用算的
@@ -125,7 +156,7 @@ export function computeAlerts(state, ymd /* today YYYY-MM-DD */) {
 //   3. 若該最後段的 renewal_reason 是內部生命週期事件
 //      （權重調整 / 轉移 / 送天數 / 送天數結束），視為非真正到期，不顯示
 export function expiringAds(state, days = 10, todayYmd) {
-  const today = todayYmd || new Date().toISOString().slice(0, 10);
+  const today = todayYmd || todayTaipei();
   const horizon = addDays(today, days);
   const SKIP_REASONS = new Set(["權重調整", "轉移", "送天數", "送天數結束"]);
 
@@ -144,6 +175,7 @@ export function expiringAds(state, days = 10, todayYmd) {
     out.push({
       ad: a,
       daysLeft: Math.max(0, Math.round((Date.parse(a.end_date) - Date.parse(today)) / 86400000)),
+      poorPerf: evaluatePoorPerf(state, a),
     });
   }
   return out.sort((a, b) => a.daysLeft - b.daysLeft);

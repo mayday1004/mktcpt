@@ -69,7 +69,7 @@ export function suggestWeights(state, products, existingAds, ym, newAd) {
     const headroom = Math.max(0, band.upper - peakCurrent);
     let excludeReason = null;
     if (remaining <= 0) excludeReason = "月預算已用罄";
-    else if (headroom <= 0) excludeReason = "已達帶寬上緣（補到位）";
+    else if (headroom <= 0) excludeReason = "已達建議花費值上緣（補到位）";
     return {
       p, budget, spent, remaining, band, peakCurrent, headroom, excludeReason,
       nextSpent, nextBudgetActual, nextBudgetAssumed, nextBudgetIsAssumed,
@@ -83,7 +83,7 @@ export function suggestWeights(state, products, existingAds, ym, newAd) {
 
   const usable = candidates.filter((c) => !c.excludeReason);
   if (usable.length === 0) {
-    reasons.push("所有產品都沒有剩餘預算或每日帶寬空間");
+    reasons.push("所有產品都沒有剩餘預算或每日建議花費值空間");
     return { weights: {}, reasons, candidates, inMonthDays: activeDays, inNextMonthDays, ymNext };
   }
 
@@ -94,7 +94,7 @@ export function suggestWeights(state, products, existingAds, ym, newAd) {
   for (const c of usable) {
     const hr = c.headroom;
     if (raw[c.p.id] > hr) {
-      reasons.push(`${c.p.name} 被削到帶寬上緣 ${Math.round(c.band.upper).toLocaleString()}`);
+      reasons.push(`${c.p.name} 被削到建議花費值上緣 ${Math.round(c.band.upper).toLocaleString()}`);
       const overflow = raw[c.p.id] - hr;
       raw[c.p.id] = hr;
       const others = usable.filter((x) => x.p.id !== c.p.id && raw[x.p.id] < x.headroom);

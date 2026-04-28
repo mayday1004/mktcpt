@@ -2,7 +2,8 @@ import { getState, update, replaceState, resetAll } from "../state.js";
 import { pushToSheets, pullFromSheets, pingSheets } from "../io/sheets.js";
 import { showSyncBanner, markSyncDone } from "../lib/sync-banner.js";
 import { downloadText } from "../lib/csv.js";
-import { getExpenseRate, getIncomeRate, getRateSource } from "../schema.js";
+import { getExpenseRate, getIncomeRate, getRateSource, getUsdtToCnyRate } from "../schema.js";
+import { nowTaipeiStamp } from "../lib/dates.js";
 
 let activeSub = "sync";  // sync / rates / data / advanced
 
@@ -137,12 +138,15 @@ function renderMonthlyRatesCard(s) {
   const monthlyRates = s.settings.monthly_rates || {};
   const curExp = getExpenseRate(s, ym);
   const curInc = getIncomeRate(s, ym);
+  const curUsdt = getUsdtToCnyRate(s, ym);
   const curExpSrc = getRateSource(s, ym, "expense");
   const curIncSrc = getRateSource(s, ym, "income");
+  const curUsdtSrc = getRateSource(s, ym, "usdt_to_cny");
+  const defUsdt = s.settings.usdt_to_cny_rate ?? 7.2;
 
   const cur = monthlyRates[ym] || {};
   const otherMonths = Object.keys(monthlyRates)
-    .filter((m) => m !== ym && monthlyRates[m] && (Number.isFinite(monthlyRates[m].expense) || Number.isFinite(monthlyRates[m].income)))
+    .filter((m) => m !== ym && monthlyRates[m] && (Number.isFinite(monthlyRates[m].expense) || Number.isFinite(monthlyRates[m].income) || Number.isFinite(monthlyRates[m].usdt_to_cny)))
     .sort((a, b) => b.localeCompare(a));
 
   return `
@@ -159,14 +163,19 @@ function renderMonthlyRatesCard(s) {
             <span class="pill" style="margin-left:6px">當月</span>
           </div>
           <div class="rate-cell">
-            <label>支出</label>
+            <label>支出 RMB→TWD</label>
             <input type="number" step="0.01" data-rate-month="${ym}" data-rate-kind="expense" value="${cur.expense ?? ""}" placeholder="${s.settings.expense_rate}" />
             <span class="rate-eff ${curExpSrc}">→ <strong>${curExp.toFixed(2)}</strong> ${curExpSrc === "monthly" ? "(覆寫)" : "(預設)"}</span>
           </div>
           <div class="rate-cell">
-            <label>收入</label>
+            <label>收入 RMB→TWD</label>
             <input type="number" step="0.01" data-rate-month="${ym}" data-rate-kind="income" value="${cur.income ?? ""}" placeholder="${s.settings.income_rate}" />
             <span class="rate-eff ${curIncSrc}">→ <strong>${curInc.toFixed(2)}</strong> ${curIncSrc === "monthly" ? "(覆寫)" : "(預設)"}</span>
+          </div>
+          <div class="rate-cell">
+            <label>USDT→RMB</label>
+            <input type="number" step="0.01" data-rate-month="${ym}" data-rate-kind="usdt_to_cny" value="${cur.usdt_to_cny ?? ""}" placeholder="${defUsdt}" />
+            <span class="rate-eff ${curUsdtSrc}">→ <strong>${curUsdt.toFixed(2)}</strong> ${curUsdtSrc === "monthly" ? "(覆寫)" : "(預設)"}</span>
           </div>
         </div>
 
@@ -174,18 +183,24 @@ function renderMonthlyRatesCard(s) {
           const r = monthlyRates[m] || {};
           const expEff = getExpenseRate(s, m);
           const incEff = getIncomeRate(s, m);
+          const usdtEff = getUsdtToCnyRate(s, m);
           return `
             <div class="rate-row">
               <div class="rate-month"><strong>${m}</strong></div>
               <div class="rate-cell">
-                <label>支出</label>
+                <label>支出 RMB→TWD</label>
                 <input type="number" step="0.01" data-rate-month="${m}" data-rate-kind="expense" value="${r.expense ?? ""}" placeholder="${s.settings.expense_rate}" />
                 <span class="rate-eff">→ <strong>${expEff.toFixed(2)}</strong></span>
               </div>
               <div class="rate-cell">
-                <label>收入</label>
+                <label>收入 RMB→TWD</label>
                 <input type="number" step="0.01" data-rate-month="${m}" data-rate-kind="income" value="${r.income ?? ""}" placeholder="${s.settings.income_rate}" />
                 <span class="rate-eff">→ <strong>${incEff.toFixed(2)}</strong></span>
+              </div>
+              <div class="rate-cell">
+                <label>USDT→RMB</label>
+                <input type="number" step="0.01" data-rate-month="${m}" data-rate-kind="usdt_to_cny" value="${r.usdt_to_cny ?? ""}" placeholder="${defUsdt}" />
+                <span class="rate-eff">→ <strong>${usdtEff.toFixed(2)}</strong></span>
               </div>
               <button class="ghost rate-remove" data-rate-remove="${m}" title="移除此月覆寫">✕</button>
             </div>
@@ -369,7 +384,7 @@ function bindHandlers(root) {
     showSyncBanner({ phase: "pull", current: 0, total: 1, name: "啟動..." });
     try {
       const current = getState();
-      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const stamp = nowTaipeiStamp().replace(/[: ]/g, "-");
       downloadText(`buyads_backup_${stamp}.json`, JSON.stringify(current, null, 2), "application/json");
 
       const r = await pullFromSheets(onProg);
@@ -412,7 +427,7 @@ function bindHandlers(root) {
           okText: "覆寫", danger: true,
         });
         if (!ok) return;
-        update(() => { Object.assign(getState(), data); }, "匯入 JSON");
+        replaceState(data, "匯入 JSON");
         toast("已匯入", "ok");
       } catch (e) { toast(`失敗：${e.message}`, "bad"); }
     };

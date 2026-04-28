@@ -2,7 +2,7 @@ import { evalFormula } from "../lib/formula.js";
 import { getMonthlyBudget, NO_BAND_PIDS } from "../schema.js";
 import { bandFor, bandsForMonth } from "./budget.js";
 import { adContributionPerMonth, dailySpendGrid } from "./spending.js";
-import { daysOfMonth, isInRange } from "../lib/dates.js";
+import { daysOfMonth, isInRange, todayTaipei } from "../lib/dates.js";
 
 // 評估一筆成效紀錄對該產品的「達標分數」：命中目標數 / 目標總數。
 // 回傳 { metCount, totalCount, ratio, details: [{name, actual, goal, met, delta}] }
@@ -163,7 +163,7 @@ export function suggestProductAdjustments(state, product, ym) {
           removedFromAds.push(`${adj.ad.ad_code}(-${dropPct}%)`);
         }
         if (cappedCount > 0) {
-          notes.push(`${product.name} 於 ${day} 新日峰值 ${Math.round(peakInfo.peak).toLocaleString()} > 帶寬上緣 ${Math.round(band.upper).toLocaleString()}，按成效最差優先削減 ${cappedCount} 筆：${removedFromAds.slice(0, 3).join("、")}${removedFromAds.length > 3 ? "…" : ""}`);
+          notes.push(`${product.name} 於 ${day} 新日峰值 ${Math.round(peakInfo.peak).toLocaleString()} > 建議花費值上緣 ${Math.round(band.upper).toLocaleString()}，按成效最差優先削減 ${cappedCount} 筆：${removedFromAds.slice(0, 3).join("、")}${removedFromAds.length > 3 ? "…" : ""}`);
         }
         if (needRemoveTwd > 0.5) {
           notes.push(`${product.name} 仍有 ${Math.round(needRemoveTwd).toLocaleString()} TWD/日 超緣（鎖定廣告貢獻或所有未鎖已削至 0）`);
@@ -201,7 +201,7 @@ function peakDailyForProduct(adjustments, productId, ym, onlyDay) {
 //   2. 否則：start_date 在未來的段中、最早開始的
 //   3. 都沒有 → 該 ad_code 已全部過去 → 不處理
 function selectActiveSegments(state, ym) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayTaipei();
 
   const byCode = new Map();
   for (const a of state.ads) {
@@ -313,7 +313,7 @@ export function buildAdPivot(state, ym) {
   }
 
   // 過去日的攤提已凍結（看 daily_amort_override），改權重也回不去 → cap 評估只看未來日
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayTaipei();
   const futureDays = ym ? days.filter((d) => d >= today) : [];
 
   // 月度預算 cap：past 用 daily_amort_override 反映實際發生（不是計算出來的），future 從 dailySpend baseline
@@ -398,12 +398,20 @@ export function buildAdPivot(state, ym) {
 
     const sum = entry.perProduct.reduce((s, pp) => s + (Number(pp.new) || 0), 0);
 
-    // 特例：所有產品都被 worst-first 削到 0 → 該廣告在每個產品都是最爛
-    // 標記為「建議淘汰」，跳過 100% 校正（讓使用者明確看到這是建議停掉的）
-    if (sum === 0 && entry.perProduct.length > 0) {
-      entry.suggestEliminate = true;
-      allNotes.push(`${entry.ad.ad_name}（${entry.ad.ad_code}）：所有產品成效都最差，建議淘汰整支廣告（不做 100% 校正）`);
-      continue;
+    // 「建議淘汰」獨立判斷（不依賴 sum===0）：只要每個有權重的產品的「絕對成效 ratio」
+    // 都 < threshold，就建議淘汰。worst-first 削減後的 sum 是相對排名結果，跟絕對成效無關 ——
+    // 一支廣告可能對 A 產品「相對沒那麼差」（被加權重）但對所有產品仍「絕對未達標」。
+    const ELIMINATE_RATIO_THRESHOLD = 0.3;
+    if (entry.perProduct.length > 0) {
+      const withScore = entry.perProduct.filter((pp) => pp.score && pp.score.ratio != null);
+      const allHaveData = withScore.length === entry.perProduct.length && withScore.length > 0;
+      const allBad = allHaveData && withScore.every((pp) => pp.score.ratio < ELIMINATE_RATIO_THRESHOLD);
+      if (allBad) {
+        entry.suggestEliminate = true;
+        const ratios = withScore.map((pp) => `${pp.product.name} ${(pp.score.ratio * 100).toFixed(0)}%`).join("、");
+        allNotes.push(`${entry.ad.ad_name}（${entry.ad.ad_code}）：所有 ${withScore.length} 個產品成效皆 < ${ELIMINATE_RATIO_THRESHOLD * 100}% (${ratios})，建議淘汰整支廣告`);
+        continue;  // 跳過 100% 校正 — 整支該死，不要把權重補到最佳產品
+      }
     }
 
     if (sum === 100) continue;
@@ -446,7 +454,7 @@ export function buildAdPivot(state, ym) {
       }
       if (deficit > 0) {
         // 所有未爆 band 上限的產品都已加滿，仍有缺口 → 維持 sum<100，記 note
-        allNotes.push(`${entry.ad.ad_name}（${entry.ad.ad_code}）：補 100% 受帶寬限制，剩 ${deficit}% 未補（合計 ${100 - deficit}%）`);
+        allNotes.push(`${entry.ad.ad_name}（${entry.ad.ad_code}）：補 100% 受建議花費值限制，剩 ${deficit}% 未補（合計 ${100 - deficit}%）`);
       }
     }
 
@@ -498,7 +506,7 @@ export function previewImpact(state, ym, newWeightsByAd) {
   const oldGrid = dailySpendGrid(state.ads, ym);
   const newGrid = dailySpendGrid(cloneAds, ym);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayTaipei();
   const allDays = [...daysOfMonth(ym)];
   // peak 評估區間：今日（含）之後；若整月已過 → 取月底當參考
   const futureDays = allDays.filter((d) => d >= today);

@@ -62,8 +62,9 @@ export function defaultState() {
       // 預設匯率（當月份沒有指定 monthly_rates 時 fallback 用）
       expense_rate: 4.7,
       income_rate: 4.5,
-      // 每月匯率覆寫：monthly_rates[YYYY-MM] = { expense?, income? }
-      // 缺值就 fallback 到 settings.expense_rate / income_rate（單值預設）
+      usdt_to_cny_rate: 7.2,
+      // 每月匯率覆寫：monthly_rates[YYYY-MM] = { expense?, income?, usdt_to_cny? }
+      // 缺值就 fallback 到 settings.expense_rate / income_rate / usdt_to_cny_rate（單值預設）
       monthly_rates: {},
       sheets_webapp_url: "",
       sheets_token: "",
@@ -216,8 +217,17 @@ export function getIncomeRate(state, ym) {
   return Number.isFinite(def) && def > 0 ? def : 4.5;
 }
 
+// 取該月 USDT→RMB 匯率：先看 settings.monthly_rates[ym].usdt_to_cny，沒有就用 settings.usdt_to_cny_rate
+// 預設 7.2（這是個常見近似值，使用者可在「設定」頁調整）
+export function getUsdtToCnyRate(state, ym) {
+  const m = state?.settings?.monthly_rates?.[ym]?.usdt_to_cny;
+  if (Number.isFinite(m) && m > 0) return m;
+  const def = state?.settings?.usdt_to_cny_rate;
+  return Number.isFinite(def) && def > 0 ? def : 7.2;
+}
+
 // 'monthly' / 'default'
-export function getRateSource(state, ym, kind /* 'expense'|'income' */) {
+export function getRateSource(state, ym, kind /* 'expense'|'income'|'usdt_to_cny' */) {
   const m = state?.settings?.monthly_rates?.[ym]?.[kind];
   return (Number.isFinite(m) && m > 0) ? "monthly" : "default";
 }

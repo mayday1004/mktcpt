@@ -1,10 +1,11 @@
 import { getState, update, uid } from "../state.js";
 import { suggestWeights } from "../domain/suggest.js";
 import { evalFormula } from "../lib/formula.js";
-import { getExpenseRate } from "../schema.js";
+import { getExpenseRate, getUsdtToCnyRate } from "../schema.js";
 import { expiringAds } from "../domain/alerts.js";
+import { todayTaipei, nowTaipeiStamp } from "../lib/dates.js";
 import {
-  buildWeightAdjust, buildGiftDays, buildTransfer, buildEndEarly,
+  buildWeightAdjust, buildTransfer,
 } from "../domain/lifecycle.js";
 
 // 模組級展開狀態（記住使用者點開的 ad_code，重渲染後不重置）
@@ -112,7 +113,7 @@ export function render(root) {
               <th>代碼</th>
               <th>名稱</th>
               <th>分組</th>
-              <th class="num">人民幣</th>
+              <th class="num">RMB</th>
               <th>最新段起訖</th>
               <th class="num">每日攤提</th>
               <th>最新段權重</th>
@@ -139,7 +140,7 @@ function renderExpiringCard(expiring, products) {
 
   // 依「廣告名稱」分組（同名 = 同一支廣告）
   const byName = new Map();
-  for (const { ad, daysLeft } of expiring) {
+  for (const { ad, daysLeft, poorPerf } of expiring) {
     const key = ad.ad_name || ad.ad_code;
     if (!byName.has(key)) {
       byName.set(key, {
@@ -151,6 +152,7 @@ function renderExpiringCard(expiring, products) {
         earliestDays: daysLeft,
         dailyTotal: 0,
         segments: 0,
+        poorPerf: null,         // 同名只取一筆 poorPerf（最後出現的）
       });
     }
     const g = byName.get(key);
@@ -163,26 +165,34 @@ function renderExpiringCard(expiring, products) {
     }
     g.dailyTotal += Number(ad.daily_amort_twd) || 0;
     g.segments += 1;
+    if (poorPerf) g.poorPerf = poorPerf;  // 任一段判定全爛就保留
   }
 
-  const grouped = [...byName.values()].sort((a, b) => a.earliestDays - b.earliestDays);
+  const grouped = [...byName.values()].sort((a, b) => {
+    // 先排「成效全爛」優先（建議不續費的最該優先處理）
+    if (!!a.poorPerf !== !!b.poorPerf) return a.poorPerf ? -1 : 1;
+    return a.earliestDays - b.earliestDays;
+  });
 
   return `
     <div class="card expiring-card">
       <div class="card-head">
         <h2>即將到期 <span class="ink-3" style="font-size:12px;font-weight:400">（10 天內，${grouped.length} 支廣告）</span></h2>
-        <div class="ink-3" style="font-size:12px">每筆需做決定：續費（開新段繼續投）或淘汰（不再通知）</div>
+        <div class="ink-3" style="font-size:12px">每筆需做決定：續費（開新段繼續投）或淘汰（不再通知）；🚨 = 所有產品成效皆 < 30%，建議淘汰</div>
       </div>
       <div class="expiring-list">
         ${grouped.map((g) => {
-          const sev = g.earliestDays <= 3 ? "bad" : g.earliestDays <= 7 ? "warn" : "info";
+          // 成效全爛 → 強制 bad（不論天數）
+          const sev = g.poorPerf ? "bad" : g.earliestDays <= 3 ? "bad" : g.earliestDays <= 7 ? "warn" : "info";
           const productPills = [...g.productIds].map((pid) =>
             `<span class="pill">${esc(nameOf[pid] || pid)}</span>`).join(" ");
           const codeStr = [...g.codes].join(" / ");
+          const poorBadge = g.poorPerf ? `<span class="pill" style="background:#fde3e3;color:var(--bad);font-weight:600" title="${esc(g.poorPerf.map((p) => `${p.productName} ${(p.ratio * 100).toFixed(0)}%`).join("、"))}">🚨 成效全爛</span>` : "";
           return `
             <div class="expiring-item alert-${sev}">
               <span class="expiring-days">${g.earliestDays} 天</span>
               <strong>${esc(g.adName)}</strong>
+              ${poorBadge}
               <span class="expiring-products">${productPills}</span>
               <span class="ink-3" style="margin-left:auto;margin-right:8px">${esc(codeStr)} · ${g.earliestEnd}${g.segments > 1 ? ` · ${g.segments} 段` : ""} · 每日 ${Math.round(g.dailyTotal).toLocaleString()}</span>
               <button class="primary" data-exp-renew="${esc(g.latestAd.id)}">續費</button>
@@ -270,10 +280,11 @@ function renderTimelineNode(seg, idx, segs, products) {
         </div>
         <div class="tl-meta">
           <span>${seg.amortize_days} 天 @ ${seg.exchange_rate}</span>
-          <span>${Math.round(seg.amount_cny || 0).toLocaleString()} RMB</span>
+          <span>${seg.currency === "USDT" ? `${Math.round(seg.amount_orig || 0).toLocaleString()} USDT × ${seg.currency_rate} = ${Math.round(seg.amount_cny || 0).toLocaleString()} RMB` : `${Math.round(seg.amount_cny || 0).toLocaleString()} RMB`}</span>
           <span>每日攤提 ${Math.round(seg.daily_amort_twd || 0).toLocaleString()}</span>
           <span>${weightSummary(seg, products)}</span>
         </div>
+        ${seg.notes ? `<div class="tl-notes ink-2" style="font-size:12px;margin-top:4px;padding:4px 8px;background:#f7f9fc;border-radius:4px">📝 ${esc(seg.notes)}</div>` : ""}
         <div class="tl-actions">
           ${actionButtons(seg, /*compact=*/false)}
         </div>
@@ -285,7 +296,7 @@ function renderTimelineNode(seg, idx, segs, products) {
 function segDelta(prev, cur, products) {
   const parts = [];
   if (prev.exchange_rate !== cur.exchange_rate) parts.push(`匯率 ${prev.exchange_rate}→${cur.exchange_rate}`);
-  if (prev.amount_cny !== cur.amount_cny) parts.push(`RMB ${Math.round(prev.amount_cny)}→${Math.round(cur.amount_cny)}`);
+  if (prev.amount_cny !== cur.amount_cny) parts.push(`RMB ${Math.round(prev.amount_cny).toLocaleString()}→${Math.round(cur.amount_cny).toLocaleString()}`);
   if (prev.amortize_days !== cur.amortize_days) parts.push(`攤提 ${prev.amortize_days}→${cur.amortize_days} 天`);
   const wA = JSON.stringify(prev.weights || {});
   const wB = JSON.stringify(cur.weights || {});
@@ -399,9 +410,7 @@ function bindHandlers(root, s) {
       if (!seg) return;
       const act = el.dataset.act;
       if (act === "weight") openWeightAdjust(seg);
-      else if (act === "gift") openGiftDays(seg);
       else if (act === "transfer") openTransfer(seg);
-      else if (act === "end") openEndEarly(seg);
       else if (act === "more") openMoreMenu(seg);
       else if (act === "eliminate") openEliminate(seg);
     };
@@ -440,7 +449,7 @@ async function openEliminate(seg) {
     });
     st.todos.push({
       id: uid("todo"),
-      created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+      created_at: nowTaipeiStamp(),
       action_type: "淘汰廣告",
       description: `${seg.ad_code} ${seg.ad_name}：到期不再續費，已從即將到期清單移除`,
       status: "pending",
@@ -505,10 +514,28 @@ function openEditor(id, renewFrom = null, prefill = null) {
       <div class="field"><label>廣告分組</label><input id="f-group" value="${esc(a.group || "")}" /></div>
     </div>
     <div class="amount-row">
-      <div class="field"><label>人民幣金額</label><input id="f-cny" type="number" step="any" value="${a.amount_cny || 0}" /></div>
+      <div class="field" style="flex:0 0 110px">
+        <label>幣別</label>
+        <select id="f-currency">
+          <option value="CNY" ${(a.currency || "CNY") === "CNY" ? "selected" : ""}>RMB</option>
+          <option value="USDT" ${a.currency === "USDT" ? "selected" : ""}>USDT</option>
+        </select>
+      </div>
+      <div class="field usdt-only">
+        <label>USDT 金額</label>
+        <input id="f-amount-orig" type="number" step="any" value="${a.currency === "USDT" ? (a.amount_orig || 0) : ""}" />
+      </div>
+      <span class="amount-op usdt-only">×</span>
+      <div class="field usdt-only">
+        <label>USDT→RMB</label>
+        <input id="f-cny-rate" type="number" step="any" value="${a.currency_rate || getUsdtToCnyRate(s, (a.start_date || s.settings.current_month).slice(0,7))}" />
+        <div class="hint">起始月匯率 ${getUsdtToCnyRate(s, (a.start_date || s.settings.current_month).slice(0,7))}</div>
+      </div>
+      <span class="amount-op usdt-only">=</span>
+      <div class="field"><label>RMB 金額</label><input id="f-cny" type="number" step="any" value="${a.amount_cny || 0}" /></div>
       <span class="amount-op">×</span>
       <div class="field">
-        <label>匯率</label>
+        <label>RMB→TWD</label>
         <input id="f-rate" type="number" step="any" value="${a.exchange_rate || 4.7}" />
         <div class="hint" id="f-rate-hint">起始月匯率 ${getExpenseRate(s, (a.start_date || s.settings.current_month).slice(0,7))}</div>
       </div>
@@ -534,6 +561,11 @@ function openEditor(id, renewFrom = null, prefill = null) {
     <div id="weights"></div>
     <div class="weight-sum" id="weight-sum">合計：<span id="wsum-val">0</span>%</div>
 
+    <div class="field mt-16">
+      <label>備註（選填，例：本次續費送 5 天）</label>
+      <textarea id="f-notes" rows="2" style="width:100%;resize:vertical">${esc(a.notes || "")}</textarea>
+    </div>
+
     ${id ? renderPerfSection(a, s) : ""}
 
     <div class="modal-actions">
@@ -544,7 +576,21 @@ function openEditor(id, renewFrom = null, prefill = null) {
   const dlg = modal.open(html);
   const q = (sel) => dlg.querySelector(sel);
 
+  const applyCurrencyMode = () => {
+    const cur = q("#f-currency").value;
+    const usdt = cur === "USDT";
+    dlg.querySelectorAll(".usdt-only").forEach((el) => { el.style.display = usdt ? "" : "none"; });
+    q("#f-cny").disabled = usdt;  // USDT 模式：人民幣金額由 USDT × USDT→RMB 自動算，不可手填
+  };
+
   const recalcDaily = () => {
+    // USDT 模式：amount_cny = amount_orig × currency_rate
+    const cur = q("#f-currency").value;
+    if (cur === "USDT") {
+      const orig = Number(q("#f-amount-orig").value) || 0;
+      const cnyRate = Number(q("#f-cny-rate").value) || 0;
+      q("#f-cny").value = (orig * cnyRate).toFixed(2);
+    }
     const cny = Number(q("#f-cny").value) || 0;
     const rate = Number(q("#f-rate").value) || 0;
     const twd = cny * rate;
@@ -602,7 +648,12 @@ function openEditor(id, renewFrom = null, prefill = null) {
     sumEl.innerHTML = `合計：<strong>${sum}%</strong> <span class="ink-3">${hint}</span>`;
   };
 
-  ["f-cny","f-rate","f-days","f-start","f-end"].forEach((id2) => q("#"+id2).oninput = recalcDaily);
+  ["f-cny","f-rate","f-days","f-start","f-end","f-amount-orig","f-cny-rate"].forEach((id2) => {
+    const el = q("#"+id2);
+    if (el) el.oninput = recalcDaily;
+  });
+  q("#f-currency").onchange = () => { applyCurrencyMode(); recalcDaily(); };
+  applyCurrencyMode();
   recalcDaily();
   renderWeights();
 
@@ -652,10 +703,18 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const twd = cny * rate;
     const wKeys = Object.keys(weights);
     const purchaseMode = (wKeys.length === 1 && weights[wKeys[0]] === 100) ? "independent" : "shared";
+    const notes = q("#f-notes").value.trim();
+    // 幣別 / 原幣金額 / USDT→CNY 匯率
+    const currency = q("#f-currency").value === "USDT" ? "USDT" : "CNY";
+    const amount_orig = currency === "USDT" ? (Number(q("#f-amount-orig").value) || 0) : cny;
+    const currency_rate = currency === "USDT" ? (Number(q("#f-cny-rate").value) || 0) : 1;
     const patch = {
       ad_code: code,
       ad_name: name,
       group: q("#f-group").value.trim(),
+      currency,
+      amount_orig,
+      currency_rate,
       amount_cny: cny,
       exchange_rate: rate,
       amount_twd: twd,
@@ -667,6 +726,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
       purchase_mode: purchaseMode,
       renewal_of: a.renewal_of || null,
       renewal_reason: a.renewal_reason || (a.renewal_of ? "續費" : "初始"),
+      notes,
     };
 
     const origWeights = id ? (s.ads.find((x) => x.id === id)?.weights || {}) : {};
@@ -682,9 +742,9 @@ function openEditor(id, renewFrom = null, prefill = null) {
       if (weightsChanged) {
         st.todos.push({
           id: uid("todo"),
-          created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+          created_at: nowTaipeiStamp(),
           action_type: id ? "權重變更" : (a.renewal_of ? "廣告續費" : "新增廣告"),
-          description: buildTodoDesc(patch, weights, st.products),
+          description: buildTodoDesc(patch, weights, st.products, id ? origWeights : null),
           status: "pending",
         });
       }
@@ -758,17 +818,47 @@ function weightsDiff(a, b) {
   return false;
 }
 
-function buildTodoDesc(ad, weights, products) {
-  const parts = Object.entries(weights)
-    .map(([pid, w]) => `${products.find((p) => p.id === pid)?.name || pid} ${Math.round(Number(w) || 0)}%`)
-    .join("、");
-  return `${ad.ad_code} ${ad.ad_name}｜${parts}｜請至連結分流後台調整`;
+// 給待辦的描述：列出 ad code + name + 權重變化（有 oldWeights 就顯示 old→new diff）
+function buildTodoDesc(ad, weights, products, oldWeights = null) {
+  const nameOf = (pid) => products.find((p) => p.id === pid)?.name || pid;
+
+  if (!oldWeights || Object.keys(oldWeights).length === 0) {
+    // 新增廣告 / 沒舊權重 → 直接列新權重
+    const parts = Object.entries(weights)
+      .filter(([, w]) => Math.round(Number(w) || 0) > 0)
+      .sort(([, a], [, b]) => Number(b) - Number(a))
+      .map(([pid, w]) => `${nameOf(pid)} ${Math.round(Number(w) || 0)}%`)
+      .join("、");
+    return `${ad.ad_code} ${ad.ad_name}｜${parts}｜請至連結隨機縮網址後台調整權重`;
+  }
+
+  // 有舊權重 → 列出每個產品的 old→new；只顯示有變動的
+  const allPids = new Set([...Object.keys(oldWeights), ...Object.keys(weights)]);
+  const changes = [];
+  for (const pid of allPids) {
+    const oldW = Math.round(Number(oldWeights[pid]) || 0);
+    const newW = Math.round(Number(weights[pid]) || 0);
+    if (oldW === newW) continue;
+    if (oldW === 0 && newW > 0) changes.push(`${nameOf(pid)} 新加 ${newW}%`);
+    else if (newW === 0 && oldW > 0) changes.push(`${nameOf(pid)} 移除（原 ${oldW}%）`);
+    else changes.push(`${nameOf(pid)} ${oldW}%→${newW}%`);
+  }
+  if (changes.length === 0) {
+    // 權重沒變但仍呼叫（例如續費沿用權重）→ 列出維持的權重
+    const parts = Object.entries(weights)
+      .filter(([, w]) => Math.round(Number(w) || 0) > 0)
+      .sort(([, a], [, b]) => Number(b) - Number(a))
+      .map(([pid, w]) => `${nameOf(pid)} ${Math.round(Number(w) || 0)}%（沿用）`)
+      .join("、");
+    return `${ad.ad_code} ${ad.ad_name}｜${parts}｜請至連結隨機縮網址後台調整權重`;
+  }
+  return `${ad.ad_code} ${ad.ad_name}｜權重變化：${changes.join("、")}｜請至連結隨機縮網址後台調整權重`;
 }
 
 // ── 生命週期動作：權重調整 ─────────────────────────────────────────
 function openWeightAdjust(seg) {
   const s = getState();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayTaipei();
   const defEff = today > seg.start_date && today < seg.end_date ? today : seg.start_date;
   const newWeights = { ...(seg.weights || {}) };
 
@@ -780,6 +870,11 @@ function openWeightAdjust(seg) {
     <h3 class="mt-16">新權重</h3>
     <div id="weights"></div>
     <div class="weight-sum" id="weight-sum">合計：<span id="wsum-val">0</span>%</div>
+
+    <div class="field mt-16">
+      <label>備註（選填，例：成效改善後加 AV9）</label>
+      <textarea id="f-notes" rows="2" style="width:100%;resize:vertical"></textarea>
+    </div>
 
     <div class="modal-actions">
       <button id="cancel">取消</button>
@@ -820,18 +915,20 @@ function openWeightAdjust(seg) {
     const eff = q("#eff").value;
     if (!eff) { toast("請選生效日", "bad"); return; }
     if (Object.keys(newWeights).length === 0) { toast("至少一個產品權重 > 0", "bad"); return; }
+    const notes = q("#f-notes").value.trim();
     let result;
     try { result = buildWeightAdjust(seg, eff, newWeights); }
     catch (e) { toast(e.message, "bad"); return; }
+    if (notes) result.segments.forEach((s) => { s.notes = notes; });
     update((st) => {
       const i = st.ads.findIndex((a) => a.id === seg.id);
       if (i >= 0) st.ads[i] = result.closed;
       st.ads.push(...result.segments);
       st.todos.push({
         id: uid("todo"),
-        created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+        created_at: nowTaipeiStamp(),
         action_type: "權重調整",
-        description: buildTodoDesc(seg, newWeights, st.products),
+        description: buildTodoDesc(seg, newWeights, st.products, seg.weights),
         status: "pending",
       });
     });
@@ -840,74 +937,10 @@ function openWeightAdjust(seg) {
   };
 }
 
-// ── 生命週期動作：送天數 ───────────────────────────────────────────
-function openGiftDays(seg) {
-  const s = getState();
-  const today = new Date().toISOString().slice(0, 10);
-  const defStart = today > seg.start_date && today < seg.end_date ? today : seg.start_date;
-  const paused = new Set();
-
-  const productItems = Object.keys(seg.weights || {})
-    .filter((pid) => Number(seg.weights[pid]) > 0)
-    .map((pid) => {
-      const name = s.products.find((p) => p.id === pid)?.name || pid;
-      return `<label class="gift-item"><input type="checkbox" data-pid="${esc(pid)}" /> ${esc(name)} <span class="ink-3">${seg.weights[pid]}%</span></label>`;
-    }).join("");
-
-  const html = `
-    <h2>送天數：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
-    <p class="ink-2" style="font-size:13px">在指定區間，把選中的產品權重暫時歸 0；結束後自動恢復原權重。</p>
-    <div class="field-row">
-      <div class="field"><label>暫停起日（含）</label><input id="ps" type="date" value="${defStart}" min="${seg.start_date}" max="${seg.end_date}" /></div>
-      <div class="field"><label>暫停迄日（不含）</label><input id="pe" type="date" value="${seg.end_date}" min="${seg.start_date}" max="${seg.end_date}" /></div>
-    </div>
-
-    <h3 class="mt-16">暫停產品</h3>
-    <div class="gift-list">${productItems || `<div class="ink-3">此段無有效權重產品</div>`}</div>
-
-    <div class="modal-actions">
-      <button id="cancel">取消</button>
-      <button class="primary" id="save">套用</button>
-    </div>
-  `;
-  const dlg = modal.open(html);
-  const q = (sel) => dlg.querySelector(sel);
-
-  dlg.querySelectorAll("input[data-pid]").forEach((inp) => {
-    inp.onchange = () => {
-      if (inp.checked) paused.add(inp.dataset.pid);
-      else paused.delete(inp.dataset.pid);
-    };
-  });
-  q("#cancel").onclick = () => modal.close();
-  q("#save").onclick = () => {
-    const ps = q("#ps").value, pe = q("#pe").value;
-    if (!ps || !pe) { toast("請填暫停起迄日", "bad"); return; }
-    if (paused.size === 0) { toast("至少需勾選一個暫停產品", "bad"); return; }
-    let result;
-    try { result = buildGiftDays(seg, ps, pe, [...paused]); }
-    catch (e) { toast(e.message, "bad"); return; }
-    update((st) => {
-      const i = st.ads.findIndex((a) => a.id === seg.id);
-      if (i >= 0) st.ads[i] = result.closed;
-      st.ads.push(...result.segments);
-      st.todos.push({
-        id: uid("todo"),
-        created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
-        action_type: "送天數",
-        description: `${seg.ad_code} ${seg.ad_name}｜${ps}~${pe}｜暫停 ${[...paused].map((pid) => st.products.find((p) => p.id === pid)?.name || pid).join("、")}`,
-        status: "pending",
-      });
-    });
-    modal.close();
-    toast("已產生送天數段（含結束恢復段）", "ok");
-  };
-}
-
 // ── 生命週期動作：轉移 ─────────────────────────────────────────────
 function openTransfer(seg) {
   const s = getState();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayTaipei();
   const defEff = today > seg.start_date && today < seg.end_date ? today : seg.start_date;
   const newWeights = { ...(seg.weights || {}) };
 
@@ -937,6 +970,11 @@ function openTransfer(seg) {
     <h3 class="mt-16">新段權重</h3>
     <div id="weights"></div>
     <div class="weight-sum" id="weight-sum">合計：<span id="wsum-val">0</span>%</div>
+
+    <div class="field mt-16">
+      <label>備註（選填，例：AV9 → 破圈轉移）</label>
+      <textarea id="f-notes" rows="2" style="width:100%;resize:vertical"></textarea>
+    </div>
 
     <div class="modal-actions">
       <button id="cancel">取消</button>
@@ -990,61 +1028,25 @@ function openTransfer(seg) {
     const eff = q("#eff").value;
     if (!eff) { toast("請選生效日", "bad"); return; }
     if (Object.keys(newWeights).length === 0) { toast("至少一個產品權重 > 0", "bad"); return; }
+    const notes = q("#f-notes").value.trim();
     let result;
     try { result = buildTransfer(seg, eff, newWeights); }
     catch (e) { toast(e.message, "bad"); return; }
+    if (notes) result.segments.forEach((s) => { s.notes = notes; });
     update((st) => {
       const i = st.ads.findIndex((a) => a.id === seg.id);
       if (i >= 0) st.ads[i] = result.closed;
       st.ads.push(...result.segments);
       st.todos.push({
         id: uid("todo"),
-        created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+        created_at: nowTaipeiStamp(),
         action_type: "轉移",
-        description: buildTodoDesc(seg, newWeights, st.products),
+        description: buildTodoDesc(seg, newWeights, st.products, seg.weights),
         status: "pending",
       });
     });
     modal.close();
     toast("已產生轉移段，已建立待辦", "ok");
-  };
-}
-
-// ── 生命週期動作：提前結束 ─────────────────────────────────────────
-function openEndEarly(seg) {
-  const today = new Date().toISOString().slice(0, 10);
-  const defEnd = today > seg.start_date && today < seg.end_date ? today : seg.start_date;
-
-  const html = `
-    <h2>提前結束：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
-    <p class="ink-2" style="font-size:13px">把此段的結束日提早。不開新段，僅修改 end_date。原 end_date：${seg.end_date}</p>
-    <div class="field"><label>新結束日（不含）</label><input id="ed" type="date" value="${defEnd}" min="${seg.start_date}" max="${seg.end_date}" /></div>
-    <div class="modal-actions">
-      <button id="cancel">取消</button>
-      <button class="primary danger" id="save">確認結束</button>
-    </div>
-  `;
-  const dlg = modal.open(html);
-  dlg.querySelector("#cancel").onclick = () => modal.close();
-  dlg.querySelector("#save").onclick = () => {
-    const ed = dlg.querySelector("#ed").value;
-    if (!ed) { toast("請選結束日", "bad"); return; }
-    let result;
-    try { result = buildEndEarly(seg, ed); }
-    catch (e) { toast(e.message, "bad"); return; }
-    update((st) => {
-      const i = st.ads.findIndex((a) => a.id === seg.id);
-      if (i >= 0) st.ads[i] = result.closed;
-      st.todos.push({
-        id: uid("todo"),
-        created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
-        action_type: "結束",
-        description: `${seg.ad_code} ${seg.ad_name}｜提前結束於 ${ed}（原 ${seg.end_date}）`,
-        status: "pending",
-      });
-    });
-    modal.close();
-    toast("已修改結束日", "ok");
   };
 }
 
@@ -1057,9 +1059,7 @@ function openMoreMenu(seg) {
     <p class="ink-2" style="font-size:13px">選擇要對此段執行的動作。</p>
     <div class="more-actions">
       <button data-pick="weight">權重調整</button>
-      <button data-pick="gift">送天數</button>
       <button data-pick="transfer">轉移</button>
-      <button data-pick="end">提前結束</button>
       <button data-pick="lock">${locked ? "🔓 解鎖（恢復可被成效自動調整）" : "🔒 鎖定（不被成效自動調整）"}</button>
       <button data-pick="eliminate" ${eliminated ? "" : 'class="danger"'}>${eliminated ? "↺ 取消淘汰（恢復追蹤）" : "❌ 淘汰（不再通知）"}</button>
       <button data-pick="del" class="danger">刪除此段</button>
@@ -1073,9 +1073,7 @@ function openMoreMenu(seg) {
       const pick = b.dataset.pick;
       modal.close();
       if (pick === "weight") openWeightAdjust(seg);
-      else if (pick === "gift") openGiftDays(seg);
       else if (pick === "transfer") openTransfer(seg);
-      else if (pick === "end") openEndEarly(seg);
       else if (pick === "lock") {
         update((st) => {
           const a = st.ads.find((x) => x.id === seg.id);

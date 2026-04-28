@@ -147,6 +147,12 @@ window.modal = {
   },
 };
 
+// 點 modal backdrop（點擊到 dialog 本身、而非 .modal-inner 內部）→ 關閉。
+// dialog 元素本身佔據整個 viewport 並用 ::backdrop 著色；點擊事件 target 是 dialog 時代表點到了 backdrop。
+document.getElementById("modal")?.addEventListener("click", (e) => {
+  if (e.target.id === "modal") window.modal.close();
+});
+
 // 取代 native confirm()。回傳 Promise<boolean>。
 // opts: { title, body, okText, cancelText, danger, details: [string]|HTML }
 window.confirmAsync = function (opts) {

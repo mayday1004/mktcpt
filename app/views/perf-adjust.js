@@ -1,7 +1,8 @@
 import { getState, update, uid } from "../state.js";
 import { NO_BAND_PIDS } from "../schema.js";
 import { buildAdPivot, previewImpact } from "../domain/perf-adjust.js";
-import { buildWeightAdjust, buildEndEarly } from "../domain/lifecycle.js";
+import { buildWeightAdjust } from "../domain/lifecycle.js";
+import { todayTaipei, nowTaipeiStamp } from "../lib/dates.js";
 
 // 模組級狀態：使用者覆寫的「該廣告該產品 final 權重」
 // key: `${adId}|${pid}` → number
@@ -209,7 +210,7 @@ function renderImpactSummary(impacts) {
 
 // 計算「會被批量送出」的廣告筆數：使用者勾選同意 + 沒鎖 + 沒過期 + 不是淘汰建議 + 權重真有變動
 function countAgreedChanges(pivot, newWeightsByAd) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayTaipei();
   let n = 0;
   for (const e of pivot) {
     if (!agreedAdIds.has(e.ad.id)) continue;
@@ -246,7 +247,7 @@ function renderAdRow(entry, state, newWeightsByAd) {
     }).join("");
     return `
       <tr class="row-eliminate">
-        <td class="ink-3" style="text-align:center" title="淘汰建議不走批量送出，請點下方「立即提前結束」">—</td>
+        <td class="ink-3" style="text-align:center" title="淘汰建議不走批量送出，請點下方「淘汰」">—</td>
         <td>${lockBtn}</td>
         <td class="mono">${esc(ad.ad_code)}</td>
         <td><strong>${esc(ad.ad_name)}</strong><div class="ink-3" style="font-size:11px">${ad.start_date} ~ ${ad.end_date}</div></td>
@@ -255,7 +256,7 @@ function renderAdRow(entry, state, newWeightsByAd) {
           <div class="eliminate-banner">
             <strong>❌ 建議淘汰</strong>
             <span class="ink-2" style="font-size:12px">所有產品成效都最差。</span>
-            <button class="primary danger eliminate-action" data-end-now="${esc(ad.id)}" ${locked ? "disabled title='已鎖定'" : ""}>立即提前結束</button>
+            <button class="primary danger eliminate-action" data-eliminate="${esc(ad.id)}" ${locked ? "disabled title='已鎖定'" : ""}>淘汰（到期不續費）</button>
           </div>
           <div style="margin-top:6px">${reasons}</div>
         </td>
@@ -308,7 +309,7 @@ function renderAdRow(entry, state, newWeightsByAd) {
   }).join("");
 
   // 「套用」勾選框：鎖定 / 過期 / 無變動 → 禁用
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayTaipei();
   const isPast = !ad.end_date || ad.end_date <= today;
   const noChange = sameWeights(oldWeights || {}, (newWeightsByAd && newWeightsByAd[ad.id]) || {});
   const agreeDisabled = locked || isPast || noChange;
@@ -379,7 +380,7 @@ function bindHandlers(root, pivot, newWeightsByAd) {
   // 全選有變動 / 全不選
   const agreeAll = root.querySelector("#btn-agree-all-changed");
   if (agreeAll) agreeAll.onclick = () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayTaipei();
     for (const e of pivot) {
       if (e.ad.lock_perf_adjust) continue;
       if (!e.ad.end_date || e.ad.end_date <= today) continue;
@@ -398,66 +399,48 @@ function bindHandlers(root, pivot, newWeightsByAd) {
   const apply = root.querySelector("#btn-apply");
   if (apply) apply.onclick = () => applyAll(pivot, newWeightsByAd, root);
 
-  // 「立即提前結束」— 直接在淘汰 banner 內結束該段，不必跨頁
-  root.querySelectorAll("[data-end-now]").forEach((btn) => {
-    btn.onclick = () => endAdNow(btn.dataset.endNow, root);
+  // 「淘汰」— 標記廣告為到期不續費（不改 end_date，攤提到原期間結束自動停）
+  root.querySelectorAll("[data-eliminate]").forEach((btn) => {
+    btn.onclick = () => eliminateAd(btn.dataset.eliminate, root);
   });
 }
 
-async function endAdNow(adId, root) {
+async function eliminateAd(adId, root) {
   const s = getState();
   const ad = s.ads.find((a) => a.id === adId);
   if (!ad) { toast("找不到該廣告", "bad"); return; }
-  const today = new Date().toISOString().slice(0, 10);
-  const endDate = today > ad.start_date ? today : ad.start_date;
-  // buildEndEarly 要求 endDate < 原 end_date
-  if (endDate >= ad.end_date) {
-    toast("此段已過期，無需結束", "warn");
-    return;
-  }
   const ok = await confirmAsync({
-    title: "提前結束廣告段",
-    body: `將把這支廣告的結束日改為 ${endDate}（今日），不再繼續攤提。已扣台幣不追溯。`,
+    title: "淘汰廣告（到期不續費）",
+    body: "標記為「到期不再投放」— 廣告會跑完原本的攤提期間，但不會出現在『即將到期』警示，也不會被視為需要續費。可隨時取消淘汰恢復追蹤。",
     details: [
       `${ad.ad_code} ${ad.ad_name}`,
-      `原起訖 ${ad.start_date} ~ ${ad.end_date}`,
+      `原期間 ${ad.start_date} ~ ${ad.end_date}`,
       `每日攤提 ${Math.round(ad.daily_amort_twd || 0).toLocaleString()} TWD`,
     ],
-    okText: "結束", danger: true,
+    okText: "淘汰", danger: true,
   });
   if (!ok) return;
 
-  let okFlag = false;
   update((st) => {
-    const seg = st.ads.find((x) => x.id === adId);
-    if (!seg) return;
-    try {
-      const r = buildEndEarly(seg, endDate);
-      const i = st.ads.findIndex((x) => x.id === adId);
-      if (i >= 0) st.ads[i] = r.closed;
-      st.todos.push({
-        id: uid("todo"),
-        created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
-        action_type: "提前結束（成效淘汰）",
-        description: `${seg.ad_code} ${seg.ad_name}：因成效全線最差，於 ${endDate} 提前結束`,
-        status: "pending",
-      });
-      okFlag = true;
-    } catch (e) {
-      console.error(e);
-    }
-  }, "提前結束廣告");
-
-  if (okFlag) {
-    toast("已提前結束，並建立待辦", "ok");
-    render(root);
-  } else {
-    toast("結束失敗", "bad");
-  }
+    // 對該 ad_code 所有段都標 eliminated（避免一支廣告多段時清單仍出現）
+    const targetCode = ad.ad_code;
+    st.ads.forEach((a) => {
+      if (a.ad_code === targetCode) a.eliminated = true;
+    });
+    st.todos.push({
+      id: uid("todo"),
+      created_at: nowTaipeiStamp(),
+      action_type: "淘汰廣告（成效）",
+      description: `${ad.ad_code} ${ad.ad_name}：因成效全線最差，到期不再續費`,
+      status: "pending",
+    });
+  }, "淘汰廣告");
+  toast("已標記淘汰，並建立待辦", "ok");
+  render(root);
 }
 
 async function applyAll(pivot, newWeightsByAd, root) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayTaipei();
   const changes = [];
   const eliminateCount = pivot.filter((e) => e.suggestEliminate && !e.ad.lock_perf_adjust).length;
   for (const e of pivot) {
@@ -497,30 +480,42 @@ async function applyAll(pivot, newWeightsByAd, root) {
   if (!ok) return;
 
   let okCount = 0, errCount = 0;
+  const successDetails = [];
   update((st) => {
+    const nameOf = Object.fromEntries(st.products.map((p) => [p.id, p.name]));
+    const fmtW = (w) => Object.entries(w || {})
+      .filter(([, v]) => Math.round(Number(v) || 0) > 0)
+      .sort(([, a], [, b]) => Number(b) - Number(a))
+      .map(([pid, v]) => `${nameOf[pid] || pid} ${Math.round(Number(v) || 0)}%`)
+      .join("、");
     for (const ch of changes) {
       const seg = st.ads.find((a) => a.id === ch.ad.id);
       if (!seg) { errCount++; continue; }
       const effective = today > seg.start_date && today < seg.end_date ? today : seg.start_date;
+      const oldStr = fmtW(seg.weights);
+      const newStr = fmtW(ch.newW);
       try {
         if (effective <= seg.start_date) {
           seg.weights = { ...ch.newW };
           okCount++;
+          successDetails.push(`${seg.ad_code} ${seg.ad_name}｜${oldStr} → ${newStr}`);
         } else {
           const r = buildWeightAdjust(seg, effective, { ...ch.newW });
           const i = st.ads.findIndex((a) => a.id === seg.id);
           if (i >= 0) st.ads[i] = r.closed;
           st.ads.push(...r.segments);
           okCount++;
+          successDetails.push(`${seg.ad_code} ${seg.ad_name}｜${oldStr} → ${newStr}`);
         }
       } catch { errCount++; }
     }
     if (okCount > 0) {
+      const head = `成效調整套用至 ${okCount} 筆廣告${errCount ? `（另 ${errCount} 筆失敗）` : ""}：`;
       st.todos.push({
         id: uid("todo"),
-        created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+        created_at: nowTaipeiStamp(),
         action_type: "成效驅動權重調整",
-        description: `成效調整套用至 ${okCount} 筆廣告${errCount ? `（${errCount} 筆失敗）` : ""}`,
+        description: `${head}\n${successDetails.join("\n")}\n（請至連結隨機縮網址後台調整權重）`,
         status: "pending",
       });
     }

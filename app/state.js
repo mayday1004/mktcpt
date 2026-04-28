@@ -1,4 +1,5 @@
 import { VERSION, defaultState } from "./schema.js";
+import { nowTaipeiTime } from "./lib/dates.js";
 
 const KEY = "buyads_state_v1";
 const UNDO_KEY = "buyads_undo_v1";
@@ -99,7 +100,7 @@ function pushUndo(label) {
   lastUndoPushAt = now;
   undoStack.push({
     label: label || "操作",
-    at: new Date().toISOString().slice(11, 19),
+    at: nowTaipeiTime(),
     snapshot: JSON.stringify(state),
   });
   if (undoStack.length > MAX_UNDO) undoStack.shift();
