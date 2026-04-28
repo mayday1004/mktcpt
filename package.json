@@ -1,0 +1,13 @@
+{
+  "name": "buyads-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "preview": "node build.js && npx serve dist -p 8080"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "javascript-obfuscator": "^4.1.1"
+  }
+}

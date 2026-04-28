@@ -1,0 +1,14 @@
+.git
+.gitignore
+.claude
+.vscode
+node_modules
+dist
+samples
+apps-script
+buyads_*.json
+*.bak
+*.xlsx
+*.md
+CLAUDE.md
+README.md

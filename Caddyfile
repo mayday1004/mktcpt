@@ -1,0 +1,16 @@
+{
+	auto_https off
+	admin off
+}
+
+:{$PORT:8080} {
+	root * /srv
+	encode gzip zstd
+	file_server
+
+	@html path *.html
+	header @html Cache-Control "no-cache"
+
+	@assets path *.js *.css
+	header @assets Cache-Control "public, max-age=3600"
+}
