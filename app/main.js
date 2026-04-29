@@ -1,5 +1,8 @@
 import { getState, subscribe, canUndo, peekUndo, undo } from "./state.js";
 import { getExpenseRate, getIncomeRate, getRateSource } from "./schema.js";
+import { isDeployManaged } from "./lib/deploy-config.js";
+import { pullFromSheets } from "./io/sheets.js";
+import { showSyncBanner, markSyncDone } from "./lib/sync-banner.js";
 import * as Dashboard from "./views/dashboard.js";
 import * as Products from "./views/products.js";
 import * as Ads from "./views/ads.js";
@@ -88,7 +91,25 @@ window.addEventListener("DOMContentLoaded", () => {
   route();
   bindUndoBtn();
   bindKeyboard();
+  maybeAutoPull();
 });
+
+// 部署模式（env 提供 URL/token）下，第一次載入若本機完全沒資料就自動拉一次,
+// 達成「分享連結 → 訪客自動帶資料」。已有資料的人不會被覆寫。
+async function maybeAutoPull() {
+  if (!isDeployManaged()) return;
+  const s = getState();
+  const isFresh = (!s.ads || s.ads.length === 0)
+    && (!s.monthly_budgets || Object.keys(s.monthly_budgets).length === 0);
+  if (!isFresh) return;
+  try {
+    showSyncBanner({ phase: "pull", current: 0, total: 1, name: "首次載入..." });
+    await pullFromSheets((p) => showSyncBanner(p));
+    markSyncDone("✓ 已從 Sheets 載入共享資料", "ok");
+  } catch (e) {
+    markSyncDone(`✗ 自動載入失敗：${e.message}`, "bad");
+  }
+}
 subscribe(() => {
   renderSidebar();
   route();

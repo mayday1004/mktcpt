@@ -9,6 +9,9 @@ fs.mkdirSync(dist, { recursive: true });
 
 const t0 = Date.now();
 
+const deploySheetsUrl = process.env.SHEETS_WEBAPP_URL || "";
+const deploySheetsToken = process.env.SHEETS_TOKEN || "";
+
 const result = await esbuild.build({
   entryPoints: ["app/main.js"],
   bundle: true,
@@ -17,6 +20,10 @@ const result = await esbuild.build({
   target: ["es2020"],
   legalComments: "none",
   write: false,
+  define: {
+    __BUYADS_SHEETS_URL__: JSON.stringify(deploySheetsUrl),
+    __BUYADS_SHEETS_TOKEN__: JSON.stringify(deploySheetsToken),
+  },
 });
 const bundled = result.outputFiles[0].text;
 const bundledSize = Buffer.byteLength(bundled);
@@ -53,6 +60,7 @@ html = html.replace(
 fs.writeFileSync(path.join(dist, "index.html"), html);
 
 const finalSize = Buffer.byteLength(finalCode);
+const deployTag = deploySheetsUrl ? "deploy-config: ON" : "deploy-config: OFF";
 console.log(
-  `built in ${Date.now() - t0}ms — bundle ${(bundledSize / 1024).toFixed(1)}kb → obfuscated ${(finalSize / 1024).toFixed(1)}kb`,
+  `built in ${Date.now() - t0}ms — bundle ${(bundledSize / 1024).toFixed(1)}kb → obfuscated ${(finalSize / 1024).toFixed(1)}kb · ${deployTag}`,
 );

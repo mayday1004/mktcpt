@@ -1,15 +1,17 @@
 import { getState, update } from "../state.js";
 import { METRICS } from "../schema.js";
 import { PERF_INPUT_SHEET, PERF_INPUT_HEADERS, PERF_INPUT_METRICS, normalizeAdCode, toYmd } from "./sheets-schema.js";
+import { getEffectiveSheetsUrl, getEffectiveSheetsToken } from "../lib/deploy-config.js";
 
 async function call(payload) {
   const s = getState();
-  const url = s.settings.sheets_webapp_url;
+  const url = getEffectiveSheetsUrl(s.settings);
+  const token = getEffectiveSheetsToken(s.settings);
   if (!url) throw new Error("尚未設定 Apps Script Web App URL");
-  if (!s.settings.sheets_token) throw new Error("尚未設定 Token");
+  if (!token) throw new Error("尚未設定 Token");
 
   const fd = new FormData();
-  fd.append("payload", JSON.stringify({ ...payload, token: s.settings.sheets_token }));
+  fd.append("payload", JSON.stringify({ ...payload, token }));
   const res = await fetch(url, { method: "POST", body: fd, redirect: "follow" });
   const text = await res.text();
   let json;

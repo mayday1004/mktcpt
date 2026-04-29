@@ -4,6 +4,7 @@ import { showSyncBanner, markSyncDone } from "../lib/sync-banner.js";
 import { downloadText } from "../lib/csv.js";
 import { getExpenseRate, getIncomeRate, getRateSource, getUsdtToCnyRate } from "../schema.js";
 import { nowTaipeiStamp } from "../lib/dates.js";
+import { DEPLOY_SHEETS_URL, DEPLOY_SHEETS_TOKEN, isDeployManaged } from "../lib/deploy-config.js";
 
 let activeSub = "sync";  // sync / rates / data / advanced
 
@@ -30,11 +31,17 @@ export function render(root) {
       <h2>☁️ Google Sheets 同步（混合模式）</h2>
       <p class="sheets-desc">
         本機 localStorage 為主，按鈕手動推送 / 拉回到 Google 試算表。<br>
-        全量拉回前會自動下載一份本機 JSON 備份，避免誤覆蓋。報表（月度 / 每日花費 / 分組 / 攤提）為單向推送（規劃中）。
+        全量拉回前會自動下載一份本機 JSON 備份,避免誤覆蓋。報表(月度 / 每日花費 / 分組 / 攤提)為單向推送(規劃中)。
       </p>
 
-      <details class="collapse" ${s.settings.sheets_webapp_url ? "" : "open"}>
-        <summary>⚙️ 一次性設定步驟${s.settings.sheets_webapp_url ? "（點開）" : "（首次使用先看這裡）"}</summary>
+      ${isDeployManaged() ? `
+      <div class="callout" style="background:#eef7ff;border-left:3px solid #2a82c8;padding:10px 12px;border-radius:6px;margin:8px 0 14px;font-size:13px">
+        🔒 <strong>URL / Token 由部署環境變數提供</strong>（Railway 變數 <code>SHEETS_WEBAPP_URL</code> / <code>SHEETS_TOKEN</code>）。<br>
+        所有訪客共用同一份 Sheets,推送 / 拉取均可。下方欄位僅供顯示,不可修改。
+      </div>` : ""}
+
+      <details class="collapse" ${(s.settings.sheets_webapp_url || isDeployManaged()) ? "" : "open"}>
+        <summary>⚙️ 一次性設定步驟${(s.settings.sheets_webapp_url || isDeployManaged()) ? "(點開)" : "(首次使用先看這裡)"}</summary>
         <div class="collapse-body">
           <ol class="setup-steps">
             <li>新建或開啟一份 <strong>Google 試算表</strong></li>
@@ -56,15 +63,15 @@ export function render(root) {
 
       <div class="sheets-form">
         <div class="field" style="flex:3">
-          <label>Apps Script Web App URL</label>
-          <input id="f-url" value="${escape(s.settings.sheets_webapp_url)}" placeholder="https://script.google.com/macros/s/.../exec" />
+          <label>Apps Script Web App URL${isDeployManaged() ? " <span class=\"pill\">部署提供</span>" : ""}</label>
+          <input id="f-url" ${isDeployManaged() ? "readonly" : ""} value="${escape(isDeployManaged() ? DEPLOY_SHEETS_URL : s.settings.sheets_webapp_url)}" placeholder="https://script.google.com/macros/s/.../exec" />
         </div>
         <div class="field" style="flex:2">
-          <label>共享密鑰 Token</label>
-          <input id="f-token" type="password" value="${escape(s.settings.sheets_token)}" placeholder="與 Apps Script 中 SECRET 相同" />
+          <label>共享密鑰 Token${isDeployManaged() ? " <span class=\"pill\">部署提供</span>" : ""}</label>
+          <input id="f-token" type="password" ${isDeployManaged() ? "readonly" : ""} value="${escape(isDeployManaged() ? DEPLOY_SHEETS_TOKEN : s.settings.sheets_token)}" placeholder="與 Apps Script 中 SECRET 相同" />
         </div>
         <div class="sheets-form-actions">
-          <button id="btn-save-sync">儲存設定</button>
+          ${isDeployManaged() ? "" : `<button id="btn-save-sync">儲存設定</button>`}
           <button id="btn-ping">測試連線</button>
         </div>
       </div>
@@ -465,6 +472,8 @@ function bindHandlers(root) {
 }
 
 function saveSyncFields(root) {
+  // deploy 模式下 URL/token 由 env 提供，input 為唯讀；不要寫回 state 蓋掉拉回的資料
+  if (isDeployManaged()) return;
   update((st) => {
     st.settings.sheets_webapp_url = root.querySelector("#f-url").value.trim();
     st.settings.sheets_token = root.querySelector("#f-token").value.trim();
