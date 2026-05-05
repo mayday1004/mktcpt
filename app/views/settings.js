@@ -36,8 +36,8 @@ export function render(root) {
 
       ${isDeployManaged() ? `
       <div class="callout" style="background:#eef7ff;border-left:3px solid #2a82c8;padding:10px 12px;border-radius:6px;margin:8px 0 14px;font-size:13px">
-        🔒 <strong>URL / Token 由部署環境變數提供</strong>（Railway 變數 <code>SHEETS_WEBAPP_URL</code> / <code>SHEETS_TOKEN</code>）。<br>
-        所有訪客共用同一份 Sheets,推送 / 拉取均可。下方欄位僅供顯示,不可修改。
+        🔒 <strong>URL / Token 由部署環境變數提供</strong>。<br>
+        所有使用者共用同一份 Sheets,推送 / 拉取均可。
       </div>` : ""}
 
       <details class="collapse" ${(s.settings.sheets_webapp_url || isDeployManaged()) ? "" : "open"}>
@@ -117,14 +117,6 @@ export function render(root) {
     </div>
 
     <div class="${activeSub === "advanced" ? "" : "hidden"}">
-    <div class="card">
-      <h2>範例資料（開發用）</h2>
-      <p class="ink-3" style="font-size:13px">預先準備好的 2026-04 / 2026-05 樣本資料，用來看完整 UI 長怎樣。</p>
-      <div class="row" style="flex-wrap:wrap;gap:8px">
-        <button id="btn-sample-apr">🧪 載入 4 月範例</button>
-        <button id="btn-sample-may">🧪 載入 5 月範例</button>
-      </div>
-    </div>
     <div class="card">
       <h2>重設</h2>
       <p class="ink-3" style="font-size:13px">將清除所有本機資料並還原為預設產品。動作不可逆。</p>
@@ -451,24 +443,6 @@ function bindHandlers(root) {
     resetAll();
     toast("已重設", "ok");
   });
-
-  const loadSample = async (month) => {
-    const ok = await confirmAsync({
-      title: `載入 ${month} 範例`,
-      body: `將以 samples/buyads_${month}.json 覆寫本地所有資料。`,
-      okText: "載入",
-    });
-    if (!ok) return;
-    try {
-      const res = await fetch(`samples/buyads_${month}.json`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      replaceState(data, `載入 ${month} 範例`);
-      toast(`已載入 ${month} 範例`, "ok");
-    } catch (e) { toast(`載入失敗：${e.message}`, "bad"); }
-  };
-  bind("#btn-sample-apr", () => loadSample("2026-04"));
-  bind("#btn-sample-may", () => loadSample("2026-05"));
 }
 
 function saveSyncFields(root) {
