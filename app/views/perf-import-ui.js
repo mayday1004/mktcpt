@@ -99,7 +99,7 @@ export function openPerfConfirmModal(valid, errors, conflicts, setStatus) {
               ${c.candidates.map((a) => `
                 <label style="font-size:13px">
                   <input type="radio" name="conflict-${c.rowNum}" value="${a.id}" />
-                  ${escape(a.ad_code)} / ${escape(a.ad_name)} — ${a.start_date}~${a.end_date} (daily ${Math.round(a.daily_amort_twd).toLocaleString()} TWD, ${escape(a.renewal_reason || "")})
+                  ${escape(a.ad_code)} / ${escape(a.ad_name)} — ${a.start_date}~${a.end_date} (每日攤提 ${Math.round(a.daily_amort_twd).toLocaleString()} TWD, ${escape(a.renewal_reason || "")})
                 </label>
               `).join("")}
             </div>
@@ -109,7 +109,7 @@ export function openPerfConfirmModal(valid, errors, conflicts, setStatus) {
     : "";
 
   const html = `
-    <h2>📥 附加本週成效</h2>
+    <h2>📥 匯入本週成效</h2>
     <p class="ink-2" style="font-size:13px">
       可匯入 <strong>${valid.length}</strong> 筆${conflicts.length ? `、<strong style="color:var(--warn)">${conflicts.length}</strong> 筆衝突` : ""}${errors.length ? `、<strong style="color:var(--bad)">${errors.length}</strong> 筆錯誤` : ""}
     </p>

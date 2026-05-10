@@ -2,9 +2,12 @@ import { getState } from "../state.js";
 import { bandFor, bandsForMonth, checkMonthlyTotal } from "../domain/budget.js";
 import { monthlyTotals, dailySpendGrid, adContributionPerMonth, dailySpendForAd } from "../domain/spending.js";
 import { daysOfMonth, daysInMonth, isInRange, todayTaipei } from "../lib/dates.js";
-import { getMonthlyBudget, getDailyBudget, getBudgetSource, NO_BAND_PIDS } from "../schema.js";
+import { getMonthlyBudget, getDailyBudget, getBudgetSource, isNoBand, isNoBandPid } from "../schema.js";
 import { scoreRecord } from "../domain/perf-adjust.js";
-import { computeAlerts, expiringAds } from "../domain/alerts.js";
+import { expiringAds } from "../domain/alerts.js";
+import { detectFutureGaps, detectShortfalls, detectAppMonthlyUnderspend } from "../domain/gift-days.js";
+import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
+import { openGiftDayFixModal } from "./gift-day-fix-modal.js";
 
 // 概覽 KPI 群組（依使用者要求合併）
 const KPI_GROUPS = [
@@ -20,6 +23,7 @@ let detailPid = null;
 let detailDate = null;
 // 「產品 × 廣告分組」卡片視圖：'monthly'（月度摘要）/ 'daily'（每日摘要）
 let groupView = "daily";
+let dailyProjectionMode = "renewal";
 // 每日摘要選的產品（'all' = 全部產品合計；其他 = 特定產品 id）
 let groupDailyPid = "all";
 
@@ -35,7 +39,7 @@ export function render(root) {
   if (!viewYm) viewYm = s.settings.current_month;
   const ym = viewYm;
 
-  const totals = monthTotalsPreferOverride(s, ym);
+  const totals = monthlyTotals(s.ads, ym);
 
   // 詳細檢視預設值
   if (!detailPid || !s.products.find((p) => p.id === detailPid)) detailPid = s.products[0]?.id;
@@ -61,6 +65,10 @@ export function render(root) {
 
     ${renderKpiGroups(s, ym, totals)}
 
+    ${renderGroupBreakdown(s, ym)}
+
+    ${renderDailyGrid(s, ym)}
+
     <div class="card">
       <div class="card-head"><h2>產品預算</h2></div>
       <div class="table-wrap">
@@ -84,10 +92,6 @@ export function render(root) {
     </div>
 
     ${renderDetailPanel(s, ym, detailPid, detailDate)}
-
-    ${renderGroupBreakdown(s, ym)}
-
-    ${renderDailyGrid(s, ym)}
   `;
 
   bindDetailHandlers(root);
@@ -139,6 +143,12 @@ function bindDetailHandlers(root) {
   });
 
 
+  // 廣告調整建議 modal 觸發按鈕(三個位置:日花費低於下限、APP 月攤提少花、未採買空檔資訊卡)
+  ["#gd-fix-open", "#gd-fix-open-2", "#gd-info-fix-open"].forEach((sel) => {
+    const btn = root.querySelector(sel);
+    if (btn) btn.onclick = () => openGiftDayFixModal(() => render(root));
+  });
+
   // 產品 × 廣告分組視圖切換
   root.querySelectorAll("[data-group-view]").forEach((el) => {
     el.onclick = () => { groupView = el.dataset.groupView; render(root); };
@@ -146,6 +156,9 @@ function bindDetailHandlers(root) {
   // 每日摘要的產品分頁切換
   root.querySelectorAll("[data-group-pid]").forEach((el) => {
     el.onclick = () => { groupDailyPid = el.dataset.groupPid; render(root); };
+  });
+  root.querySelectorAll("[data-daily-mode]").forEach((el) => {
+    el.onclick = () => { dailyProjectionMode = el.dataset.dailyMode; render(root); };
   });
 }
 
@@ -217,40 +230,16 @@ function kpiPerfStats(state, pids) {
 }
 
 // ============ 決策優先區（Top）============
-// 把「需要採取行動」的訊號集中：即將到期（含成效全爛）+ 預算/建議花費值/待辦警告。
-// APP 產品的容差比小島寬：少花 ≤ 60K、超花 ≤ 20K 視為容許範圍，不出現在這區
-//   （產品預算表的「狀態」欄仍會顯示）。
+// 把「需要採取行動」的訊號集中:即將到期(含成效全爛)+ 即將上架 + 任一產品日花費低於下限 + APP 月攤提少花 > 6 萬。
 // 沒事時整個區塊不渲染。
-function strictBudgetAlerts(state) {
-  const ym = state.settings.current_month;
-  const totalsToUse = monthTotalsPreferOverride(state, ym);
-  const out = [];
-  for (const p of state.products) {
-    const budget = getMonthlyBudget(state, p.id, ym);
-    if (budget == null) continue;
-    const total = totalsToUse[p.id] || 0;
-    const diff = total - budget;
-    const isApp = p.type === "app";
-    const overHard = isApp ? 20000 : 10000;
-    const underWarn = isApp ? 60000 : 20000;
-    if (diff > overHard) {
-      out.push({ kind: "budget", severity: "bad", msg: `${p.name} 超花 ${Math.round(diff).toLocaleString()} TWD（容許上限 ${overHard.toLocaleString()}）`, link: "#dashboard" });
-    } else if (-diff > underWarn) {
-      out.push({ kind: "budget", severity: "warn", msg: `${p.name} 少花 ${Math.round(-diff).toLocaleString()} TWD（容許下限 ${underWarn.toLocaleString()}）`, link: "#dashboard" });
-    }
-  }
-  return out;
-}
-
 function renderActionRequired(state) {
+  const today = todayStr();
   const expiring = expiringAds(state, 10);
-  const allAlerts = computeAlerts(state);
-  // budget 用 strict 版（APP 容差更寬）；band/todo 用通用版
-  const alerts = [
-    ...strictBudgetAlerts(state),
-    ...allAlerts.filter((a) => a.kind === "band" || a.kind === "todo"),
-  ];
-  if (expiring.length === 0 && alerts.length === 0) return "";
+  const upcoming = upcomingAds(state, 10);
+  const shortfalls = detectShortfalls(state, today);
+  const underspends = detectAppMonthlyUnderspend(state, today);
+  const gaps = detectFutureGaps(state, today);
+  if (expiring.length === 0 && upcoming.length === 0 && shortfalls.length === 0 && underspends.length === 0 && gaps.length === 0) return "";
 
   // 即將到期：成效全爛優先排前；同名廣告去重（同 ads 頁邏輯）
   const byName = new Map();
@@ -295,22 +284,90 @@ function renderActionRequired(state) {
     </div>
   `;
 
-  const alertGroups = { budget: [], band: [], todo: [] };
-  for (const a of alerts) alertGroups[a.kind].push(a);
-  const alertsHtml = alerts.length === 0 ? "" : `
+  const upcomingHtml = upcoming.length === 0 ? "" : `
     <div class="ar-block">
       <div class="ar-block-head">
-        <strong>⚠️ 預算 / 建議花費值 / 待辦 (${alerts.length})</strong>
+        <strong>🚀 即將上架 (${upcoming.length} 支)</strong>
+        <a class="ar-link" href="#ads">→ 廣告頁查看</a>
       </div>
       <ul class="ar-list">
-        ${alerts.slice(0, 8).map((a) => `
-          <li class="ar-item ar-${a.severity}">
-            <span class="ar-icon">${a.kind === "budget" ? "💰" : a.kind === "band" ? "📊" : "📋"}</span>
-            <span>${escape(a.msg)}</span>
-            ${a.link ? `<a class="ar-link" href="${escape(a.link)}">→</a>` : ""}
-          </li>
-        `).join("")}
-        ${alerts.length > 8 ? `<li class="ink-3" style="font-size:12px">…還有 ${alerts.length - 8} 條</li>` : ""}
+        ${upcoming.slice(0, 8).map((u) => {
+          const sev = u.daysToStart <= 3 ? "warn" : "info";
+          const md = u.ad.start_date.slice(5).replace("-", "/");
+          return `<li class="ar-item ar-${sev}">
+            <span class="ar-days">${u.daysToStart} 天後</span>
+            <span>廣告 <strong>${escape(u.ad.ad_name || u.ad.ad_code)}</strong> <span class="ink-3 mono" style="font-size:11px">${escape(u.ad.ad_code)}</span> 即將在 <strong>${md}</strong> 上架，注意聯繫站長、確認花費</span>
+          </li>`;
+        }).join("")}
+        ${upcoming.length > 8 ? `<li class="ink-3" style="font-size:12px">…還有 ${upcoming.length - 8} 支</li>` : ""}
+      </ul>
+    </div>
+  `;
+
+  // 日花費低於下限警示(任何成因 — 未採買空檔、月初分配偏低、其他廣告到期未續等)
+  const shortfallHtml = shortfalls.length === 0 ? "" : `
+    <div class="ar-block">
+      <div class="ar-block-head">
+        <strong>⚠️ 產品日花費低於下限 (${shortfalls.length} 個產品)</strong>
+        <button class="ar-link" id="gd-fix-open" style="background:none;border:0;color:var(--accent);cursor:pointer;text-decoration:underline">→ 一鍵調整</button>
+      </div>
+      <ul class="ar-list">
+        ${shortfalls.slice(0, 5).map((sf) => {
+          const totalK = Math.round(sf.totalShortfall / 1000);
+          const days = sf.days.length;
+          const typeBadge = sf.productType === "island"
+            ? `<span class="pill bad" style="font-size:10px;margin-left:4px">小島</span>`
+            : `<span class="pill warn" style="font-size:10px;margin-left:4px">APP</span>`;
+          const sev = sf.productType === "island" ? "bad" : "warn";
+          return `<li class="ar-item ar-${sev}">
+            <span><strong>${escape(sf.productName)}</strong>${typeBadge} 未來 ${days} 天合計缺 <strong>${totalK}k</strong> TWD</span>
+          </li>`;
+        }).join("")}
+        ${shortfalls.length > 5 ? `<li class="ink-3" style="font-size:12px">…還有 ${shortfalls.length - 5} 個</li>` : ""}
+      </ul>
+    </div>
+  `;
+
+  // APP 月攤提少花 > 6 萬警示
+  const underspendHtml = underspends.length === 0 ? "" : `
+    <div class="ar-block">
+      <div class="ar-block-head">
+        <strong>💰 APP 月攤提少花 > 6 萬 (${underspends.length} 個產品)</strong>
+        <button class="ar-link" id="gd-fix-open-2" style="background:none;border:0;color:var(--accent);cursor:pointer;text-decoration:underline">→ 一鍵調整</button>
+      </div>
+      <ul class="ar-list">
+        ${underspends.slice(0, 5).map((u) => {
+          const k = Math.round(u.underspend / 1000);
+          return `<li class="ar-item ar-warn">
+            <span><strong>${escape(u.productName)}</strong> 預估月攤提 ${Math.round(u.monthlyTotal).toLocaleString()} / 預算 ${Math.round(u.budget).toLocaleString()},少花 <strong>${k}k</strong> TWD</span>
+          </li>`;
+        }).join("")}
+        ${underspends.length > 5 ? `<li class="ink-3" style="font-size:12px">…還有 ${underspends.length - 5} 個</li>` : ""}
+      </ul>
+    </div>
+  `;
+
+  // 📅 未採買空檔(原獨立卡片,合併進此區)
+  const md = (s) => s.slice(5).replace("-", "/");
+  const gapsHtml = gaps.length === 0 ? "" : `
+    <div class="ar-block">
+      <div class="ar-block-head">
+        <strong>📍 廣告送天數 (${gaps.length} 段)</strong>
+        ${shortfalls.length > 0
+          ? `<button class="ar-link" id="gd-info-fix-open" style="background:none;border:0;color:var(--accent);cursor:pointer;text-decoration:underline">→ 一鍵調整</button>`
+          : `<span class="ink-3" style="font-size:12px">無需調整</span>`}
+      </div>
+      <ul class="ar-list">
+        ${gaps.slice(0, 5).map((g) => {
+          const lastDay = prevDayStr(g.gapEnd);
+          const pidNames = [...g.affectedPids].map((pid) =>
+            state.products.find((p) => p.id === pid)?.name || pid
+          ).join("、");
+          return `<li class="ar-item ar-info">
+            <span><strong>${escape(g.adName || g.adCode)}</strong> <span class="ink-3 mono" style="font-size:11px">${escape(g.adCode)}</span> ${md(g.gapStart)}~${md(lastDay)} (${g.gapDays} 天) 影響: ${escape(pidNames)}</span>
+          </li>`;
+        }).join("")}
+        ${gaps.length > 5 ? `<li class="ink-3" style="font-size:12px">…還有 ${gaps.length - 5} 段</li>` : ""}
       </ul>
     </div>
   `;
@@ -322,9 +379,93 @@ function renderActionRequired(state) {
         <div class="ink-3" style="font-size:12px">沒事時這區會自動隱藏</div>
       </div>
       ${expiringHtml}
-      ${alertsHtml}
+      ${upcomingHtml}
+      ${shortfallHtml}
+      ${underspendHtml}
+      ${gapsHtml}
     </div>
   `;
+}
+
+// 「📅 未來未採買空檔」資訊卡(CLAUDE.md §5.8.1)
+// 顯示所有未來空檔純資訊,不論有沒有造成日花費低於下限。
+// 「未採買空檔」涵蓋:廠商送天數造成的、到期沒續費後再採買造成的、其他原因兩段間 gap 的。
+// opts.withFixButton:是否顯示「→ 一鍵調整」按鈕(預設 true)
+//   - dashboard / perf-adjust:true(可直接調整)
+//   - 廣告列表:false(只通知,使用者自行到權重調整頁處理)
+export function renderGiftDayInfo(state, opts = {}) {
+  const { withFixButton = true } = opts;
+  const today = todayTaipei();
+  const gaps = detectFutureGaps(state, today);
+  if (gaps.length === 0) return "";
+  const md = (s) => s.slice(5).replace("-", "/");
+  const items = gaps.slice(0, 12).map((g) => {
+    const lastDay = prevDayStr(g.gapEnd);
+    const pidNames = [...g.affectedPids].map((pid) =>
+      state.products.find((p) => p.id === pid)?.name || pid
+    ).join("、");
+    return `<li class="gift-day-item">
+      <span class="gift-day-icon">📅</span>
+      <strong>${escape(g.adName || g.adCode)}</strong>
+      <span class="ink-3 mono" style="font-size:11px">${escape(g.adCode)}</span>
+      <span class="ink-2">${md(g.gapStart)}~${md(lastDay)}(${g.gapDays} 天)未採買</span>
+      <span class="ink-3" style="font-size:11px">影響:${escape(pidNames)}</span>
+    </li>`;
+  }).join("");
+  const hasShortfall = detectShortfalls(state, today).length > 0;
+  let actionHtml;
+  if (!withFixButton) {
+    actionHtml = hasShortfall
+      ? `<a class="ink-3" style="font-size:12px;text-decoration:underline" href="#perf-adjust">→ 有產品日花費低於下限,可到「權重調整」頁一鍵調整</a>`
+      : `<span class="ink-3" style="font-size:12px">沒造成日花費低於下限,無需調整</span>`;
+  } else {
+    actionHtml = hasShortfall
+      ? `<button class="primary" id="gd-info-fix-open">→ 有產品日花費低於下限,一鍵調整</button>`
+      : `<span class="ink-3" style="font-size:12px">沒造成日花費低於下限,無需調整</span>`;
+  }
+  return `
+    <div class="card gift-day-card">
+      <div class="card-head">
+        <h2>📍 廣告送天數 <span class="ink-3" style="font-size:12px;font-weight:400">(${gaps.length} 段)</span></h2>
+        ${actionHtml}
+      </div>
+      <ul class="gift-day-list">${items}${gaps.length > 12 ? `<li class="ink-3" style="font-size:12px">…還有 ${gaps.length - 12} 段</li>` : ""}</ul>
+    </div>
+  `;
+}
+
+// helper: gapEnd 是 exclusive,顯示時要往前一天
+function prevDayStr(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12));
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+}
+
+// 列出 N 天內 start_date 將到（仍未開始）的廣告（給概覽「即將上架」用）
+// 規則：start_date > today 且 start_date <= today+N；以 ad_code 去重，取最早 start_date 那段。
+function upcomingAds(state, days = 10) {
+  const today = todayStr();
+  const horizon = (() => {
+    const d = new Date(today);
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+  })();
+  const earliestByCode = new Map();
+  for (const a of state.ads) {
+    if (a.eliminated) continue;
+    if (!a.start_date || a.start_date <= today || a.start_date > horizon) continue;
+    const cur = earliestByCode.get(a.ad_code);
+    if (!cur || a.start_date < cur.start_date) earliestByCode.set(a.ad_code, a);
+  }
+  const out = [];
+  for (const a of earliestByCode.values()) {
+    out.push({
+      ad: a,
+      daysToStart: Math.max(0, Math.round((Date.parse(a.start_date) - Date.parse(today)) / 86400000)),
+    });
+  }
+  return out.sort((a, b) => a.daysToStart - b.daysToStart);
 }
 
 function renderKpiGroups(state, ym, totals) {
@@ -394,18 +535,17 @@ function renderDetailPanel(s, ym, pid, date) {
   const product = s.products.find((p) => p.id === pid);
   if (!product) return "";
 
-  // 該日該產品的攤提（優先取 override）
-  const ov = s.daily_amort_override?.[date];
+  // 該日該產品的攤提
   const grid = dailySpendGrid(s.ads, ym);
-  const dayProductSpent = ov?.[pid] != null ? ov[pid] : (grid[date]?.[pid] || 0);
+  const dayProductSpent = grid[date]?.[pid] || 0;
 
   const budget = getMonthlyBudget(s, pid, ym);
   // 用 forward-only 帶寬：取該日當天的段內帶寬，而不是整月平均
   const dayBands = bandsForMonth(s, product, ym);
   const band = dayBands[date] || bandFor(product, ym, budget);
-  const monthSpent = monthTotalsPreferOverride(s, ym)[pid] || 0;
+  const monthSpent = monthlyTotals(s.ads, ym)[pid] || 0;
   const monthRemain = budget != null ? budget - monthSpent : null;
-  const checkBand = !NO_BAND_PIDS.has(pid);
+  const checkBand = !isNoBand(product);
   const today = todayStr();
   const isPast = date < today;
   const peakOut = checkBand && !isPast && dayProductSpent > 0 && (dayProductSpent < band.lower || dayProductSpent > band.upper);
@@ -557,10 +697,9 @@ function renderOnboarding(s, ym) {
       </div>
       <div class="onboard-step">
         <div class="onboard-num">2</div>
-        <h3>載入範例 / 新增首筆廣告</h3>
-        <p>想看完整資料長什麼樣，可在「設定」頁載入 2026-04 範例。或直接到「廣告」頁按「＋ 新增廣告」開始。</p>
+        <h3>新增首筆廣告</h3>
+        <p>到「廣告」頁按「＋ 新增廣告」建立第一筆,輸入廣告代碼/名稱、人民幣金額、攤提天數、起迄日,並設定各產品的權重比例。</p>
         <div class="onboard-actions">
-          <a class="btn" href="#settings">載入範例 →</a>
           <a class="btn primary" href="#ads">新增廣告 →</a>
         </div>
       </div>
@@ -719,6 +858,7 @@ function renderGroupDailyByProduct(s, ym, groups, daily, dailyAll, groupTotals, 
     }
   }
 
+  const today = todayStr();
   const bodyRows = days.map((d) => {
     let dayTotal = 0;
     const cells = groups.map((g) => {
@@ -726,8 +866,9 @@ function renderGroupDailyByProduct(s, ym, groups, daily, dailyAll, groupTotals, 
       dayTotal += v;
       return `<td class="num">${v ? Math.round(v).toLocaleString() : "<span class='ink-3'>—</span>"}</td>`;
     }).join("");
-    return `<tr>
-      <td class="mono">${d.slice(5)}</td>
+    const todayCls = d === today ? " dg-today" : "";
+    return `<tr class="${todayCls.trim()}">
+      <td class="mono">${d.slice(5)}${d === today ? " <span class='pill' style='font-size:10px;padding:0 4px;margin-left:2px;background:#111;color:#fff'>今天</span>" : ""}</td>
       ${cells}
       <td class="num"><strong>${dayTotal ? Math.round(dayTotal).toLocaleString() : "—"}</strong></td>
     </tr>`;
@@ -767,17 +908,16 @@ function escape(v) {
 }
 const esc = escape;
 
-function monthTotalsPreferOverride(s, ym) {
-  const override = s.daily_amort_override || {};
-  const days = Object.keys(override).filter((d) => d.startsWith(ym));
-  if (days.length === 0) return monthlyTotals(s.ads, ym);
-  const totals = {};
-  for (const d of days) {
-    for (const [pid, amt] of Object.entries(override[d])) {
-      totals[pid] = (totals[pid] || 0) + amt;
-    }
+function uniqueByCode(ads) {
+  const seen = new Set();
+  const out = [];
+  for (const ad of ads || []) {
+    const key = ad.ad_code || ad.id;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(ad);
   }
-  return totals;
+  return out;
 }
 
 function productRow(state, product, ym, spent) {
@@ -804,8 +944,8 @@ function productRow(state, product, ym, spent) {
   const segNote = band.change_at && band.change_at !== `${ym}-01`
     ? ` <span class="ink-3 mono" style="font-size:11px" title="此產品在 ${band.change_at} 起換段（預算或日預算改變）">· 段起 ${band.change_at.slice(5)} 剩 ${band.seg_days} 天</span>`
     : "";
-  const bandCell = NO_BAND_PIDS.has(product.id)
-    ? `<span class="ink-3" title="破圈系列不檢查建議日花費">不限</span>`
+  const bandCell = isNoBand(product)
+    ? `<span class="ink-3" title="此產品設為「不檢查每日帶寬」">不限</span>`
     : `<span class="ink-2">${Math.round(band.lower).toLocaleString()} ~ ${Math.round(band.upper).toLocaleString()}</span> <span class="ink-3">(${band.pct_label})</span>${segNote}`;
   // 預算來源：daily 設定時，補一行小字說明推演
   const source = getBudgetSource(state, product.id, ym);
@@ -814,23 +954,28 @@ function productRow(state, product, ym, spent) {
     ? `<strong>${budget.toLocaleString()}</strong>
        <div class="ink-3 mono" style="font-size:11px">= ${daily.toLocaleString()}/日 × ${daysInMonth(ym)}</div>`
     : budget.toLocaleString();
+  // 狀態徽章:用 icon + 顏色一眼分辨「容許內 / 少花太多 / 超花太多」
+  const kindIcon = check.kind === "ok" ? "✓" : check.kind === "warn" ? "⚠" : "✗";
+  const diff = spent - budget;
+  const diffStr = (diff >= 0 ? "+" : "") + Math.round(diff).toLocaleString();
   return `
-    <tr>
+    <tr class="prod-row prod-row-${check.kind}">
       <td><strong>${product.name}</strong></td>
       <td><span class="pill ${product.type}">${product.type === "app" ? "APP" : "小島"}</span></td>
       <td class="num">${budgetCell}</td>
       <td class="num">${Math.round(spent).toLocaleString()}</td>
-      <td class="num">${(spent - budget >= 0 ? "+" : "") + Math.round(spent - budget).toLocaleString()}</td>
-      <td><span class="pill ${check.kind}">${check.msg}</span></td>
+      <td class="num ${check.kind}">${diffStr}</td>
+      <td><span class="pill ${check.kind}" style="font-size:12px">${kindIcon} ${check.msg}</span></td>
       <td class="num">${bandCell}</td>
     </tr>
   `;
 }
 
 function renderDailyGrid(s, ym) {
-  const computedGrid = dailySpendGrid(s.ads, ym);
-  const override = s.daily_amort_override || {};
-  const hasOverride = Object.keys(override).some((d) => d.startsWith(ym));
+  const projection = dailyProjectionMode === "renewal"
+    ? projectAdsWithRenewals(s, ym, { fromDate: todayStr(), excludePoorPerf: true })
+    : { ads: s.ads, virtualRenewals: [], excludedPoorPerf: [] };
+  const computedGrid = dailySpendGrid(projection.ads, ym);
   const products = s.products;
   // 每個產品的「每一日」帶寬（forward-only 分段）
   const dayBandsByPid = Object.fromEntries(products.map((p) => [p.id, bandsForMonth(s, p, ym)]));
@@ -856,27 +1001,29 @@ function renderDailyGrid(s, ym) {
 
   const today = todayStr();
   const bodyRows = days.map((d) => {
-    const overrideRow = override[d];
-    const row = overrideRow || computedGrid[d] || {};
+    const row = computedGrid[d] || {};
     let dayTotal = 0;
     const cells = products.map((p) => {
       const amt = row[p.id] || 0;
       dayTotal += amt;
       monthTotals[p.id] += amt;
       const b = dayBandsByPid[p.id]?.[d];
-      // 只在「當日及未來」標紅 — 過去日已花掉，無法調整，標紅只會徒增噪音
+      // 只在「當日及未來」標色 — 過去日已花掉，無法調整，標色只會徒增噪音
       const isFuture = d >= today;
-      const out = isFuture && b && b.budget_set && !NO_BAND_PIDS.has(p.id) && amt > 0 && (amt < b.lower || amt > b.upper);
+      const checkBand = isFuture && b && b.budget_set && !isNoBand(p) && amt > 0;
+      const isUnder = checkBand && amt < b.lower;
+      const isOver = checkBand && amt > b.upper;
       const isSegStart = segChangeDays[p.id].has(d);
-      const cls = `num ${out ? "dg-out-of-band" : ""} ${isSegStart ? "dg-seg-start" : ""} ${d < today ? "dg-past" : ""}`;
+      const cls = `num ${isUnder ? "dg-under-band" : ""} ${isOver ? "dg-over-band" : ""} ${isSegStart ? "dg-seg-start" : ""} ${d < today ? "dg-past" : ""}`;
       const title = b && b.budget_set
         ? `建議日花費 ${Math.round(b.avg).toLocaleString()} (${Math.round(b.lower).toLocaleString()}~${Math.round(b.upper).toLocaleString()})${b.change_at && b.change_at !== `${ym}-01` ? ` · 段起 ${b.change_at}` : ""}${d < today ? " · 已過（不警示）" : ""}`
         : "";
       return `<td class="${cls}" title="${title}">${amt ? Math.round(amt).toLocaleString() : "<span class='ink-3'>—</span>"}</td>`;
     }).join("");
     grandTotal += dayTotal;
-    return `<tr>
-      <td class="mono">${d.slice(5)}</td>
+    const todayCls = d === today ? " dg-today" : "";
+    return `<tr class="${todayCls.trim()}">
+      <td class="mono">${d.slice(5)}${d === today ? " <span class='pill' style='font-size:10px;padding:0 4px;margin-left:2px;background:#111;color:#fff'>今天</span>" : ""}</td>
       ${cells}
       <td class="num"><strong>${Math.round(dayTotal).toLocaleString()}</strong></td>
     </tr>`;
@@ -886,7 +1033,7 @@ function renderDailyGrid(s, ym) {
     const total = monthTotals[p.id];
     const budget = getMonthlyBudget(s, p.id, ym) || 0;
     const diff = total - budget;
-    const diffClass = !budget ? "ink-3" : diff > 10000 ? "bad" : diff > 0 ? "warn" : -diff > 20000 ? "warn" : "ok";
+    const diffClass = !budget ? "ink-3" : checkMonthlyTotal(total, budget, p.type).kind;
     return `<td class="num dg-foot">
       <strong>${Math.round(total).toLocaleString()}</strong>
       ${budget ? `<div class="dg-foot-sub ${diffClass}">${diff >= 0 ? "+" : ""}${Math.round(diff).toLocaleString()}</div>` : ""}
@@ -894,13 +1041,26 @@ function renderDailyGrid(s, ym) {
   }).join("");
 
   const headerCells = products.map((p) => `<th class="num">${esc(p.name)}</th>`).join("");
+  const projectedCodes = uniqueByCode(projection.virtualRenewals);
+  const excludedCodes = uniqueByCode(projection.excludedPoorPerf);
+  const modeTabs = `
+    <div class="filter-row" style="margin-bottom:0;background:transparent;padding:0">
+      <button class="filter-chip ${dailyProjectionMode === "renewal" ? "active" : ""}" data-daily-mode="renewal">續費預估</button>
+      <button class="filter-chip ${dailyProjectionMode === "actual" ? "active" : ""}" data-daily-mode="actual">實際資料</button>
+    </div>
+  `;
+  const modeNote = dailyProjectionMode === "renewal"
+    ? `假設今日後到期、且未淘汰/非成效全爛的終端廣告會持續續費；已加入 ${projectedCodes.length} 支預估續費${excludedCodes.length ? `，排除成效全爛 ${excludedCodes.length} 支：${esc(excludedCodes.map((a) => a.ad_name || a.ad_code).slice(0, 4).join("、"))}${excludedCodes.length > 4 ? "…" : ""}` : ""}。`
+    : "只計算已存在的廣告段；未手動續費的廣告到期後停止攤提。";
 
   return `
     <div class="card">
       <div class="card-head">
-        <h2>每日攤提（台幣）${hasOverride ? '<span class="pill" style="margin-left:8px">來源：預估費用分頁</span>' : ''}</h2>
-        <div class="ink-3">紅色格 = 當日及未來日超出建議日花費（過去日不警示）</div>
+        <h2>每日攤提（台幣）</h2>
+        ${modeTabs}
       </div>
+      <div class="ink-3" style="margin-bottom:8px;font-size:12px">${modeNote}</div>
+      <div class="ink-3" style="margin-bottom:8px;font-size:12px">橘 = 少花太多（低於建議日花費下限）；紅 = 多花太多（超出上限）；過去日不警示。</div>
       <div class="table-wrap" style="max-height:560px;overflow:auto">
         <table>
           <thead>

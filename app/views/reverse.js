@@ -1,10 +1,13 @@
 import { getState } from "../state.js";
 import { suggestForDate } from "../domain/reverse.js";
 import { suggestWeights } from "../domain/suggest.js";
-import { dailySpendGrid } from "../domain/spending.js";
+import { dailySpendGrid, dailySpendForAd } from "../domain/spending.js";
 import { addDays, monthOf, monthEnd, daysOfMonth, todayTaipei } from "../lib/dates.js";
-import { getMonthlyBudget, NO_BAND_PIDS } from "../schema.js";
+import { getMonthlyBudget, isNoBand } from "../schema.js";
 import { bandsForMonth } from "../domain/budget.js";
+import { detectShortfalls } from "../domain/gift-days.js";
+import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
+import { openGiftDayFixModal } from "./gift-day-fix-modal.js";
 
 let mode = "date";  // "date" | "amount"
 let pickedDate = "";
@@ -16,6 +19,7 @@ let amtStart = "";
 let amtEnd = "";
 let amtDays = 30;
 let amtCny = 0;
+let spendScenario = "renewal";
 
 const todayStr = todayTaipei;
 
@@ -23,6 +27,17 @@ export function render(root) {
   const s = getState();
   const ym = s.settings.current_month;
   const today = todayStr();
+
+  // 從 sessionStorage 接收外部頁面的預填日期(例如「廣告調整建議」modal 點擊「前往採買建議」)
+  const prefillDate = sessionStorage.getItem("buyads_reverse_prefill_date");
+  if (prefillDate) {
+    sessionStorage.removeItem("buyads_reverse_prefill_date");
+    if (prefillDate >= today) {
+      mode = "date";
+      pickedDate = prefillDate;
+    }
+  }
+
   // 預設目標日 = 今天（若今日已過當月，仍以今日為準，使用者可自行往後挑）
   if (!pickedDate || pickedDate < today) pickedDate = today;
   if (!amtStart || amtStart < today) amtStart = today;
@@ -42,7 +57,7 @@ export function render(root) {
     <div class="view-head">
       <div>
         <h1>採買建議</h1>
-        <div class="desc">兩種模式：① 選日期 + 產品 → 算出該產品這天要補多少才補到位；② 給定一筆 RMB 金額與起迄 → 系統建議怎麼分產品權重</div>
+        <div class="desc">兩種模式:① 選日期 + 產品 → 算出該產品這天要補多少才補到位;② 給定一筆 RMB 金額與起迄 → 系統建議怎麼分產品權重</div>
       </div>
     </div>
 
@@ -57,12 +72,60 @@ export function render(root) {
   bindHandlers(root);
 }
 
+function scenarioFor(state, ym) {
+  if (spendScenario !== "renewal") {
+    return { state, virtualRenewals: [], excludedPoorPerf: [] };
+  }
+  const projection = projectAdsWithRenewals(state, ym, { fromDate: todayStr(), excludePoorPerf: true });
+  return {
+    state: { ...state, ads: projection.ads },
+    virtualRenewals: projection.virtualRenewals,
+    excludedPoorPerf: projection.excludedPoorPerf,
+  };
+}
+
+function renderScenarioChips() {
+  return `
+    <div style="display:flex;align-items:center;gap:6px">
+      <span class="ink-3" style="font-size:12px">攤提模式：</span>
+      <button class="filter-chip ${spendScenario === "renewal" ? "active" : ""}" data-spend-scenario="renewal">續費預估</button>
+      <button class="filter-chip ${spendScenario === "actual" ? "active" : ""}" data-spend-scenario="actual">實際資料</button>
+    </div>
+  `;
+}
+
+function renderScenarioHint(scenario, excludedUnique = []) {
+  const parts = [];
+  if (spendScenario === "renewal") {
+    parts.push(`已把今日後到期、且未淘汰/非成效全爛的廣告當作會續費計算;預估續費段 ${uniqueByCode(scenario.virtualRenewals).length} 支`);
+  } else {
+    parts.push("只用已存在廣告段計算;未手動續費的廣告到期後停止攤提");
+  }
+  if (excludedUnique.length > 0) {
+    parts.push(`排除成效全爛 ${excludedUnique.length} 支:${esc(excludedUnique.map((a) => a.ad_name || a.ad_code).slice(0, 3).join("、"))}${excludedUnique.length > 3 ? `…等 ${excludedUnique.length} 支` : ""}`);
+  }
+  return `<div class="hint" style="margin-bottom:12px">${parts.join("；")}</div>`;
+}
+
+function uniqueByCode(ads) {
+  const seen = new Set();
+  const out = [];
+  for (const ad of ads || []) {
+    const key = ad.ad_code || ad.id;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(ad);
+  }
+  return out;
+}
+
 // ── Mode 1: 依日期看可加空間 ───────────────────────────────────────
 function renderDateMode(s, ym) {
   const rate = s.settings.expense_rate;
   const today = todayStr();
   if (pickedDate < today) pickedDate = today;
-  const cards = suggestForDate(s, pickedDate, rate, amortizeDays);
+  const scenario = scenarioFor(s, monthOf(pickedDate));
+  const cards = suggestForDate(scenario.state, pickedDate, rate, amortizeDays);
   const selected = cards.filter((c) => pickedPids.has(c.product.id));
 
   // 產品 chip 列：多選；每個 chip 旁顯示該產品當日可加的簡短摘要
@@ -77,6 +140,17 @@ function renderDateMode(s, ym) {
     }
     return `<button class="filter-chip ${isActive ? "active" : ""}" data-rev-pid="${esc(p.id)}">${esc(p.name)}${badge}</button>`;
   }).join("");
+
+  // 與「依金額」對齊:baseline 已排除成效全爛廣告(不會續費)。同支廣告不分產品視為一組。
+  const excludedSeen = new Set();
+  const excludedUnique = [];
+  for (const a of [...(cards.excludedPoorPerf || []), ...(scenario.excludedPoorPerf || [])]) {
+    const key = a.ad_code || a.id;
+    if (excludedSeen.has(key)) continue;
+    excludedSeen.add(key);
+    excludedUnique.push(a);
+  }
+  const excludedHint = renderScenarioHint(scenario, excludedUnique);
 
   let cardHtml;
   if (selected.length === 0) {
@@ -104,6 +178,9 @@ function renderDateMode(s, ym) {
         <div class="hint">用於估算 RMB 採買額（單日 × 攤提天）</div>
       </div>
     </div>
+
+    ${renderGapWarningForDate(s, pickedDate)}
+    ${excludedHint}
 
     <div class="filter-row" style="margin-bottom:12px">
       <span class="ink-3" style="font-size:12px">產品（可多選）：</span>
@@ -143,6 +220,14 @@ function renderDateCombinedCard(cards, days, rate) {
   const totalCny = rate > 0 ? Math.round(totalTwd / rate) : 0;
   const weights = computeIntegerWeights(usable.map((c) => ({ id: c.product.id, value: c.suggestTwd })));
 
+  // 偵測:被分配權重後仍補不到下限的產品(可能是 period binding 卡到 baseline 突增日)
+  const cantFillCards = usable.filter((c) => {
+    if (!!c.product.no_band || !c.band || c.band.lower <= 0) return false;
+    const w = weights[c.product.id] || 0;
+    const dailyShare = totalDailyTwd * (w / 100);
+    return (c.todaySpent || 0) + dailyShare < c.band.lower;
+  });
+
   return `
     <div class="card">
       <div class="card-head">
@@ -163,6 +248,27 @@ function renderDateCombinedCard(cards, days, rate) {
           }).join("")}
         </div>
       </div>
+
+      ${cantFillCards.length > 0 ? `
+        <div class="rev-callout-perf-adjust">
+          <div style="font-weight:600;color:var(--warn)">⚠️ 有 ${cantFillCards.length} 個產品補不到建議下限</div>
+          <div class="ink-2" style="font-size:13px;margin-top:6px;line-height:1.6">
+            ${cantFillCards.map((c) => {
+              const w = weights[c.product.id] || 0;
+              const dailyShare = totalDailyTwd * (w / 100);
+              const stillShort = Math.round(c.band.lower - (c.todaySpent + dailyShare));
+              return `<div>• <strong>${esc(c.product.name)}</strong>:分到 ${Math.round(dailyShare).toLocaleString()} TWD/日,加完仍缺 ${stillShort.toLocaleString()} TWD/日(攤提區間最緊在 ${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "?"})</div>`;
+            }).join("")}
+            <br>
+            <strong>實務上能做的:</strong>
+            <ul style="margin:4px 0 0;padding-left:20px">
+              <li>找願意做短期(一個月以內)的廣告主直接採買 — 這種廣告要碰運氣</li>
+              <li>接受這幾天少花 — 如果是空檔期(舊廣告剛結束、新廣告還沒上),這就是市場限制造成的少花</li>
+              <li>在最緊那天起做權重調整,把佔住 baseline 的廣告分一些給其他短缺產品</li>
+            </ul>
+          </div>
+        </div>
+      ` : ""}
 
       <details class="rev-details">
         <summary>各產品限制細節</summary>
@@ -227,7 +333,32 @@ function computeIntegerWeights(items) {
   return out;
 }
 
-// 大張卡片：選定產品 + 日期後顯示該產品的補貨建議
+// 大張卡片:選定產品 + 日期後顯示該產品的補貨建議
+// 警示卡(CLAUDE.md §5.8.1 v2):
+// 若 pickedDate 當天有任何產品的日花費 < 建議下限 → 顯示警示 + 一鍵調整按鈕
+function renderGapWarningForDate(state, pickedDate) {
+  const today = todayTaipei();
+  const shortfalls = detectShortfalls(state, today);
+  const relevant = shortfalls.filter((sf) => sf.days.some((d) => d.date === pickedDate));
+  if (relevant.length === 0) return "";
+  const items = relevant.map((sf) => {
+    const dayInfo = sf.days.find((d) => d.date === pickedDate);
+    const typeBadge = sf.productType === "island"
+      ? `<span class="pill bad" style="font-size:10px;margin-left:4px">小島</span>`
+      : `<span class="pill warn" style="font-size:10px;margin-left:4px">APP</span>`;
+    return `<li><strong>${esc(sf.productName)}</strong>${typeBadge} 當日缺 <strong>${Math.round(dayInfo.shortfall).toLocaleString()}</strong> TWD/日 <span class="ink-3" style="font-size:11px">(下限 ${Math.round(dayInfo.lower).toLocaleString()})</span></li>`;
+  }).join("");
+  return `
+    <div class="card" style="border-left:3px solid var(--warn);background:#fffbf0;margin-bottom:12px">
+      <div class="card-head">
+        <h3 style="margin:0;font-size:14px">⚠️ 此日有產品日花費低於下限</h3>
+        <button class="primary" id="rev-gd-fix-open">→ 一鍵調整</button>
+      </div>
+      <ul style="margin:8px 0 0;padding-left:20px;font-size:13px;line-height:1.7">${items}</ul>
+    </div>
+  `;
+}
+
 function renderDateCardLarge(c, days, rate) {
   if (c.budget == null) {
     return `
@@ -244,6 +375,18 @@ function renderDateCardLarge(c, days, rate) {
   const monthBindingFirst = (c.monthRemainPerDay ?? Infinity) <= (c.minHeadroomInPeriod ?? Infinity);
   const monthBindingTag = monthBindingFirst ? `<span class="pill warn" style="font-size:10px;margin-left:4px">較緊</span>` : "";
   const periodBindingTag = !monthBindingFirst ? `<span class="pill warn" style="font-size:10px;margin-left:4px">較緊</span>` : "";
+
+  // 偵測「採買建議仍補不到下限」(加完建議值後當日仍 < lower)
+  // 破圈/no_band 產品不檢查日帶寬,跳過此提示
+  const isNoBandProd = !!c.product.no_band;
+  const newDailyAfter = (c.todaySpent || 0) + (c.suggestTwd || 0);
+  const cantFillToLower = usable && !isNoBandProd && c.band && c.band.lower > 0 && newDailyAfter < c.band.lower;
+  const shortfallToLower = cantFillToLower ? Math.round(c.band.lower - newDailyAfter) : 0;
+  const calloutPeriodBinding = cantFillToLower && !monthBindingFirst;
+  // 有短攤提方案可一鍵套用(避開 baseline 突增日)
+  const hasShortFix = cantFillToLower && c.shortAmortize && c.shortSuggestTwd > c.suggestTwd;
+  const shortNewDaily = hasShortFix ? (c.todaySpent + c.shortSuggestTwd) : 0;
+  const shortFillsLower = hasShortFix && shortNewDaily >= c.band.lower;
 
   return `
     <div class="card">
@@ -270,18 +413,45 @@ function renderDateCardLarge(c, days, rate) {
         </div>
       `}
 
+      ${cantFillToLower ? `
+        <div class="rev-callout-perf-adjust">
+          <div style="font-weight:600;color:var(--warn)">⚠️ ${pickedDate.slice(5)} 補不到建議下限 — 還缺 ${shortfallToLower.toLocaleString()} TWD/日</div>
+          <div class="ink-2" style="font-size:13px;margin-top:6px;line-height:1.6">
+            ${calloutPeriodBinding ? `
+              原因:你的 ${c.amortizeDaysUsed} 天攤提會跨進 <strong>${c.minHeadroomDay.slice(5)}</strong>,而那天的 ${esc(c.product.name)} baseline 已逼近建議花費上限(其他既有廣告佔住了)。新廣告每多加 1 元都會害 ${c.minHeadroomDay.slice(5)} 那天爆上限,所以建議值被壓到只剩 ${Math.round(c.suggestTwd).toLocaleString()} TWD/日。
+              <br><br>
+              <strong>實務上能做的:</strong>
+              <ul style="margin:4px 0 0;padding-left:20px">
+                <li>找到願意做短期(${c.shortAmortize ? c.shortAmortize : "<" + c.amortizeDaysUsed} 天以下)的廣告主直接採買 — 但這種短攤提廣告多半要碰運氣,不是常態</li>
+                <li>接受 ${pickedDate.slice(5)} ~ ${c.minHeadroomDay.slice(5)} 前一天會略低於下限。如果這段是空檔(舊廣告剛結束、新廣告 ${c.minHeadroomDay.slice(5)} 才上),這就是市場限制造成的少花</li>
+                <li>在 ${c.minHeadroomDay.slice(5)} 起做權重調整,把佔住 baseline 的那支廣告分一些給其他短缺產品(視具體 case)</li>
+              </ul>
+            ` : `
+              原因:${esc(c.product.name)} 月預算所剩有限,平均到剩餘 ${c.daysToMonthEnd} 天只夠每日加 ${Math.round(c.suggestTwd).toLocaleString()} TWD。
+              <br><br>
+              <strong>實務上能做的:</strong>
+              <ul style="margin:4px 0 0;padding-left:20px">
+                <li>提高 ${esc(c.product.name)} 的月預算</li>
+                <li>淘汰本月其他既有 ${esc(c.product.name)} 廣告以釋放預算</li>
+                <li>接受月預算範圍內的少花</li>
+              </ul>
+            `}
+          </div>
+        </div>
+      ` : ""}
+
       <details class="rev-details">
         <summary>細節（月度／當日／建議花費值）</summary>
         <div class="rev-product-cards" style="margin-top:8px">
           <div class="rev-card">
             <h3 style="margin-bottom:8px">月度</h3>
-            <div class="rev-row"><span class="label">月預算</span><span class="val">${Math.round(c.budget).toLocaleString()}</span></div>
+            <div class="rev-row"><span class="label">月預算</span><span class="val">${Math.round(c.budget).toLocaleString()}${c.budgetIsFallback ? `<div class="ink-3" style="font-size:11px">沿用最近月份（本月未設）</div>` : ""}</span></div>
             <div class="rev-row"><span class="label">月已花</span><span class="val">${Math.round(c.monthSpent).toLocaleString()}</span></div>
             <div class="rev-row"><span class="label">月剩餘</span><span class="val">${Math.round(c.monthRemaining).toLocaleString()}</span></div>
           </div>
           <div class="rev-card">
             <h3 style="margin-bottom:8px">${pickedDate} 當日</h3>
-            <div class="rev-row"><span class="label">建議日花費上緣</span><span class="val">${Math.round(c.band.upper).toLocaleString()}</span></div>
+            <div class="rev-row"><span class="label">建議日花費上限</span><span class="val">${Math.round(c.band.upper).toLocaleString()}</span></div>
             <div class="rev-row"><span class="label">已配置</span><span class="val">${Math.round(c.todaySpent).toLocaleString()}</span></div>
             <div class="rev-row"><span class="label">當日尚可加</span><span class="val">${Math.round(c.todayHeadroom).toLocaleString()}</span></div>
           </div>
@@ -304,35 +474,26 @@ function renderDateCardLarge(c, days, rate) {
 //   - 加上代表新採買的 fakeAd（caller 提供 weights，可單產品 100% 或多產品分權重）
 //   - 即使新採買無法成立（daily_amort_twd <= 0），仍顯示「續費後 baseline」表格，標題改寫
 // 表格格式跟概覽頁的「每日攤提（台幣）」一致。
-function renderSimulatedMonthGrid(fakeAdInput) {
+function renderSimulatedMonthGrid(fakeAdInput, scenario = null) {
   const s = getState();
   if (!fakeAdInput || !fakeAdInput.start_date) return "";
 
   const hasNewBuy = (fakeAdInput.daily_amort_twd || 0) > 0;
   const ym = monthOf(fakeAdInput.start_date);
-  const monthEndExclusive = addDays(monthEnd(ym), 1);
-
-  // 找每 ad_code 的最後段（max end_date），把它的 end_date 推到月底+1
-  // 但只對「end_date 仍在今日（含）之後」的最後段做 — 已過期但沒手動續費的廣告
-  // 系統不該替他自動續費（會把過去無花費日塞進來）
   const today = todayTaipei();
-  const latestByCode = new Map();
-  for (const a of s.ads) {
-    if (a.eliminated) continue;  // 已淘汰：使用者明確不續費，不模擬
-    const cur = latestByCode.get(a.ad_code);
-    if (!cur || a.end_date > cur.end_date) latestByCode.set(a.ad_code, a);
-  }
-  const latestIds = new Set([...latestByCode.values()].map((a) => a.id));
-  const renewedAds = s.ads.map((a) => {
-    if (!latestIds.has(a.id)) return a;
-    if (a.end_date >= monthEndExclusive) return a;  // 已涵蓋整月
-    if (a.end_date < today) return a;               // 已過期：不假設續費
-    return { ...a, end_date: monthEndExclusive };
-  });
+  if (!scenario) scenario = scenarioFor(s, ym);
 
-  const ads = hasNewBuy
-    ? [...renewedAds, { id: "preview_new_ad", ad_code: "_PREVIEW_", ad_name: "(預覽：新採買)", group: "preview", ...fakeAdInput }]
-    : renewedAds;
+  // 不做 auto-renewal:跟「概覽 → 每日攤提」用同一份 state.ads,顯示「現有廣告 + 此筆新採買」
+  // 的真實未來分布。如果某個廣告在月中就到期不續費,該日期之後就沒貢獻 — 這跟概覽一致。
+  // (舊版會自動把每個 code 最新段的 end_date 推到月底,造成兩邊數字對不起來。)
+  // 注意:「排除成效全爛廣告」只用在【建議金額】演算法(suggestForDate / suggestWeights),
+  // 因為那是預測未來空間。但這個 grid 是【顯示實際分布】,要跟概覽 / 權重調整影響預覽一致,
+  // 所以不能過濾 — 用全部 state.ads。
+  const fakeAd = hasNewBuy
+    ? { id: "preview_new_ad", ad_code: "_PREVIEW_", ad_name: "(預覽:新採買)", group: "preview", ...fakeAdInput }
+    : null;
+  const baseAds = scenario?.state?.ads || s.ads || [];
+  const ads = hasNewBuy ? [...baseAds, fakeAd] : baseAds;
   const grid = dailySpendGrid(ads, ym);
   const products = s.products;
   const monthDays = [...daysOfMonth(ym)];
@@ -343,6 +504,9 @@ function renderSimulatedMonthGrid(fakeAdInput) {
 
   const bodyRows = monthDays.map((d) => {
     const row = grid[d] || {};
+    // 該日「新採買」貢獻明細(用來在格子顯示 +delta)
+    const newContrib = fakeAd ? dailySpendForAd(fakeAd, d) : {};
+    const isInBuyPeriod = fakeAd && d >= fakeAd.start_date && d < fakeAd.end_date;
     let dayTotal = 0;
     const cells = products.map((p) => {
       const amt = row[p.id] || 0;
@@ -350,13 +514,21 @@ function renderSimulatedMonthGrid(fakeAdInput) {
       monthTotals[p.id] += amt;
       const b = dayBandsByPid[p.id]?.[d];
       const isFuture = d >= today;
-      const out = isFuture && b && b.budget_set && !NO_BAND_PIDS.has(p.id) && amt > 0 && (amt < b.lower || amt > b.upper);
-      const cls = `num ${out ? "dg-out-of-band" : ""} ${d < today ? "dg-past" : ""}`;
-      return `<td class="${cls}">${amt ? Math.round(amt).toLocaleString() : "<span class='ink-3'>—</span>"}</td>`;
+      const checkBand = isFuture && b && b.budget_set && !isNoBand(p) && amt > 0;
+      const isUnder = checkBand && amt < b.lower;
+      const isOver = checkBand && amt > b.upper;
+      const newAmt = newContrib[p.id] || 0;
+      const cls = `num ${isUnder ? "dg-under-band" : ""} ${isOver ? "dg-over-band" : ""} ${d < today ? "dg-past" : ""} ${newAmt > 0 ? "dg-new-contrib" : ""}`;
+      const deltaBadge = newAmt > 0
+        ? `<div style="font-size:10px;color:var(--ok);font-weight:600">+${Math.round(newAmt).toLocaleString()}</div>`
+        : "";
+      return `<td class="${cls}">${amt ? Math.round(amt).toLocaleString() : "<span class='ink-3'>—</span>"}${deltaBadge}</td>`;
     }).join("");
     grandTotal += dayTotal;
-    return `<tr>
-      <td class="mono">${d.slice(5)}</td>
+    const todayCls = d === today ? " dg-today" : "";
+    const buyPeriodCls = isInBuyPeriod ? " dg-in-buy-period" : "";
+    return `<tr class="${(todayCls + buyPeriodCls).trim()}">
+      <td class="mono">${d.slice(5)}${d === today ? " <span class='pill' style='font-size:10px;padding:0 4px;margin-left:2px;background:#111;color:#fff'>今天</span>" : ""}${isInBuyPeriod ? " <span class='ink-3' style='font-size:10px'>·新</span>" : ""}</td>
       ${cells}
       <td class="num"><strong>${Math.round(dayTotal).toLocaleString()}</strong></td>
     </tr>`;
@@ -376,18 +548,20 @@ function renderSimulatedMonthGrid(fakeAdInput) {
   const headerCells = products.map((p) => `<th class="num">${esc(p.name)}</th>`).join("");
 
   const heading = hasNewBuy
-    ? `採買後每日攤提（${ym}，台幣）`
-    : `現有廣告續費後每日攤提（${ym}，台幣）`;
+    ? `採買後每日攤提(${ym},台幣)`
+    : `現有廣告每日攤提(${ym},台幣)`;
+  const scenarioLabel = spendScenario === "renewal" ? "續費預估" : "實際資料";
   const subhint = hasNewBuy
-    ? "假設此筆新廣告買下 + 所有現有廣告到期都續費（end_date 推至月底）。紅色格 = 當日及未來日超出建議日花費。"
-    : "這筆新採買沒有可加空間，下表只顯示「現有廣告全部續費」後的整月分布（不含這筆）。紅色格 = 當日及未來日超出建議日花費。";
+    ? `假設此筆新廣告買下,加上${scenarioLabel}的既有攤提分布。淡綠底 = 此筆新採買的攤提區間,綠色 +N = 該日新增貢獻。紅色格 = 超出建議日花費上限。`
+    : `這筆新採買沒有可加空間,下表只顯示${scenarioLabel}的既有攤提分布。`;
 
   return `
     <div class="card" style="margin-top:14px">
       <div class="card-head">
         <h2>${heading}</h2>
-        <div class="ink-3" style="font-size:12px">${subhint}</div>
+        ${renderScenarioChips()}
       </div>
+      <div class="ink-3" style="font-size:12px;margin-bottom:6px">${subhint}</div>
       <div class="table-wrap" style="max-height:560px;overflow:auto">
         <table>
           <thead>
@@ -416,6 +590,7 @@ function renderSimulatedMonthGrid(fakeAdInput) {
 function renderAmountMode(s, ym) {
   const rate = s.settings.expense_rate;
   const today = todayStr();
+  const scenario = scenarioFor(s, monthOf(amtStart || today));
   // 採買只能往未來；amtStart 落在過去就強拉到今日
   if (amtStart && amtStart < today) amtStart = today;
   if (amtEnd && amtEnd <= amtStart) {
@@ -437,7 +612,7 @@ function renderAmountMode(s, ym) {
       amortize_days: amtDays,
       daily_amort_twd: dailyTwd,
     };
-    const r = suggestWeights(s, s.products, s.ads, ym, fakeAd);
+    const r = suggestWeights(scenario.state, s.products, scenario.state.ads, ym, fakeAd);
     suggested = r.weights;
     reasons = r.reasons;
     candidates = r.candidates || [];
@@ -491,7 +666,7 @@ function renderAmountMode(s, ym) {
         amortize_days: amtDays,
         daily_amort_twd: 0,
         weights: {},
-      })}
+      }, scenario)}
     ` : `
       <div class="card">
         <div class="card-head">
@@ -647,7 +822,7 @@ function renderAmountMode(s, ym) {
         amortize_days: amtDays,
         daily_amort_twd: dailyTwd,
         weights: suggested,
-      })}
+      }, scenario)}
     `}
   `;
 }
@@ -659,6 +834,12 @@ function bindHandlers(root) {
       render(root);
     };
   });
+  root.querySelectorAll("[data-spend-scenario]").forEach((el) => {
+    el.onclick = () => {
+      spendScenario = el.dataset.spendScenario;
+      render(root);
+    };
+  });
 
   if (mode === "date") {
     root.querySelector("#rev-date").onchange = (e) => { pickedDate = e.target.value; render(root); };
@@ -666,6 +847,9 @@ function bindHandlers(root) {
       const v = Number(e.target.value);
       if (Number.isFinite(v) && v > 0 && v <= 365) { amortizeDays = v; render(root); }
     };
+    // 日花費低於下限警示「→ 一鍵調整」
+    const gdBtn = root.querySelector("#rev-gd-fix-open");
+    if (gdBtn) gdBtn.onclick = () => openGiftDayFixModal(() => render(root));
     root.querySelectorAll("[data-rev-pid]").forEach((el) => {
       el.onclick = () => {
         const pid = el.dataset.revPid;
@@ -684,8 +868,15 @@ function bindHandlers(root) {
     const apply = () => render(root);
     const q = (sel) => root.querySelector(sel);
     q("#amt-cny").onchange = (e) => { amtCny = Number(e.target.value) || 0; apply(); };
-    q("#amt-start").onchange = (e) => { amtStart = e.target.value; apply(); };
-    q("#amt-end").onchange = (e) => { amtEnd = e.target.value; apply(); };
+    // 起訖任一變動 → 自動把攤提天數帶成 (end - start)(end 不含當天 = 不 +1),使用者改攤提天數會覆寫
+    const syncDaysFromDates = () => {
+      if (amtStart && amtEnd && amtEnd > amtStart) {
+        const d = Math.round((Date.parse(amtEnd) - Date.parse(amtStart)) / 86400000);
+        if (Number.isFinite(d) && d > 0 && d <= 365) amtDays = d;
+      }
+    };
+    q("#amt-start").onchange = (e) => { amtStart = e.target.value; syncDaysFromDates(); apply(); };
+    q("#amt-end").onchange = (e) => { amtEnd = e.target.value; syncDaysFromDates(); apply(); };
     q("#amt-days").onchange = (e) => {
       const v = Number(e.target.value);
       if (Number.isFinite(v) && v > 0 && v <= 365) { amtDays = v; apply(); }
@@ -704,7 +895,8 @@ function createFromAmountMode() {
     start_date: amtStart, end_date: amtEnd,
     amortize_days: amtDays, daily_amort_twd: dailyTwd,
   };
-  const r = suggestWeights(s, s.products, s.ads, ym, fakeAd);
+  const scenario = scenarioFor(s, monthOf(amtStart || todayTaipei()));
+  const r = suggestWeights(scenario.state, s.products, scenario.state.ads, ym, fakeAd);
   // 暫存 prefill 給 ads 編輯彈窗
   sessionStorage.setItem("buyads_prefill_ad", JSON.stringify({
     amount_cny: amtCny,
@@ -721,7 +913,8 @@ function createFromAmountMode() {
 function createFromDateMode() {
   const s = getState();
   const rate = s.settings.expense_rate;
-  const cards = suggestForDate(s, pickedDate, rate, amortizeDays);
+  const scenario = scenarioFor(s, monthOf(pickedDate));
+  const cards = suggestForDate(scenario.state, pickedDate, rate, amortizeDays);
   const onlyPid = pickedPids.size === 1 ? [...pickedPids][0] : null;
   const card = cards.find((c) => c.product.id === onlyPid);
   if (!card || card.kind !== "ok" || card.suggestTwd <= 0) {
@@ -749,7 +942,8 @@ function createFromDateMode() {
 function createFromDateMultiMode() {
   const s = getState();
   const rate = s.settings.expense_rate;
-  const cards = suggestForDate(s, pickedDate, rate, amortizeDays);
+  const scenario = scenarioFor(s, monthOf(pickedDate));
+  const cards = suggestForDate(scenario.state, pickedDate, rate, amortizeDays);
   const usable = cards.filter((c) => pickedPids.has(c.product.id) && c.kind === "ok" && c.suggestTwd > 0);
   if (usable.length === 0) {
     toast("選中的產品都沒有可加空間", "bad");

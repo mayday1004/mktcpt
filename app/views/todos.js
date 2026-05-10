@@ -1,5 +1,6 @@
 import { getState, update, uid } from "../state.js";
 import { nowTaipeiStamp } from "../lib/dates.js";
+import { applyUndo } from "../domain/undo.js";
 
 export function render(root) {
   const s = getState();
@@ -48,15 +49,36 @@ export function render(root) {
   root.querySelectorAll("[data-edit]").forEach((el) => {
     el.onclick = () => openTodoEditor(el.dataset.edit);
   });
-  root.querySelectorAll("[data-del]").forEach((el) => {
+  // 撤回:有 undo_payload 的還原資料,沒有的只刪待辦
+  root.querySelectorAll("[data-revoke]").forEach((el) => {
     el.onclick = async () => {
+      const id = el.dataset.revoke;
+      const todo = getState().todos.find((t) => t.id === id);
+      if (!todo) return;
+      const hasUndo = !!todo.undo_payload && (
+        (todo.undo_payload.ad_snapshots?.length || 0) > 0 ||
+        (todo.undo_payload.added_ad_ids?.length || 0) > 0
+      );
       const ok = await confirmAsync({
-        title: "刪除待辦",
-        body: "確認刪除此筆待辦？",
-        okText: "刪除", danger: true,
+        title: hasUndo ? "撤回此決定" : "刪除此待辦",
+        body: hasUndo
+          ? "撤回會還原此次決定的資料變動(刪掉新建的段、把原段恢復)。\n資料異動「之後」對同一支廣告的調整也會一併回滾,確定?"
+          : "此待辦沒有可還原的資料變動,僅刪除提醒。確定?",
+        okText: hasUndo ? "撤回" : "刪除", danger: true,
       });
       if (!ok) return;
-      update((st) => { st.todos = st.todos.filter((t) => t.id !== el.dataset.del); }, "刪除待辦");
+      let undoResult = { ok: false };
+      update((st) => {
+        if (hasUndo) {
+          undoResult = applyUndo(st, todo.undo_payload);
+        }
+        st.todos = st.todos.filter((t) => t.id !== id);
+      }, hasUndo ? "撤回待辦" : "刪除待辦");
+      if (hasUndo && undoResult.ok) {
+        toast(`已撤回(還原 ${undoResult.restoredCount} 段、刪除 ${undoResult.deletedCount} 段)`, "ok");
+      } else {
+        toast(hasUndo ? "撤回失敗" : "已刪除", hasUndo ? "bad" : "ok");
+      }
     };
   });
 }
@@ -78,7 +100,7 @@ function listHtml(todos, isDone) {
                 ${isDone
                   ? `<button data-undo="${t.id}">↺ 重新打開</button>`
                   : `<button data-edit="${t.id}">編輯</button> <button class="primary" data-done="${t.id}">完成</button>`}
-                <button class="danger" data-del="${t.id}">刪</button>
+                <button class="danger" data-revoke="${t.id}" title="${t.undo_payload && ((t.undo_payload.ad_snapshots?.length || 0) + (t.undo_payload.added_ad_ids?.length || 0)) > 0 ? "撤回:還原此次決定的資料變動" : "刪除提醒(無可還原資料)"}">${t.undo_payload && ((t.undo_payload.ad_snapshots?.length || 0) + (t.undo_payload.added_ad_ids?.length || 0)) > 0 ? "↩ 撤回" : "刪"}</button>
               </td>
             </tr>
           `).join("")}
@@ -88,7 +110,8 @@ function listHtml(todos, isDone) {
   `;
 }
 
-const ACTION_TYPES = ["手動", "權重變更", "新增廣告", "廣告續費", "成效驅動權重調整", "提前結束（成效淘汰）", "其他"];
+// 與各個 view 寫入的 action_type 對齊(風格 X:看名字就知道目的)
+const ACTION_TYPES = ["手動", "手動改權重", "新增廣告", "廣告續費", "成效調整權重", "補日花費缺口", "淘汰廣告", "其他"];
 
 function openTodoEditor(id) {
   const s = getState();

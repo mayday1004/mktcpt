@@ -30,6 +30,9 @@ function spawnFrom(source, patch) {
     daily_amort_twd: source.daily_amort_twd,
     purchase_mode: source.purchase_mode || "shared",
     weights: { ...(source.weights || {}) },
+    lock_perf_adjust: !!source.lock_perf_adjust,
+    lock_full: !!source.lock_full,
+    eliminated: !!source.eliminated,
     renewal_of: source.id,
     renewal_reason: "續費",
     ...patch,
@@ -38,34 +41,23 @@ function spawnFrom(source, patch) {
   return next;
 }
 
-// 權重調整：生效日 + 新 weights，金額/匯率/攤提天/每日攤提皆沿用
-export function buildWeightAdjust(source, effectiveDate, newWeights) {
+// 權重調整：生效日 + 新 weights + 選填備註，金額/匯率/攤提天/每日攤提皆沿用
+//
+// 備註欄是給「跨產品搬遷」做註記用（例：「AV9 50% → 愛威奶破圈 50%」）。
+// 「轉移」事件已併入此函式（CLAUDE.md §3.4），新段一律 renewal_reason='權重調整'，
+// 跨產品的細節在備註欄記錄。
+export function buildWeightAdjust(source, effectiveDate, newWeights, notes) {
   if (effectiveDate <= source.start_date || effectiveDate >= source.end_date) {
     throw new Error(`生效日 ${effectiveDate} 必須落在原段區間 (${source.start_date} ~ ${source.end_date}) 之間`);
   }
   const closed = trimEnd(source, effectiveDate);
-  const newSeg = spawnFrom(source, {
+  const patch = {
     start_date: effectiveDate,
     end_date: source.end_date,
     weights: { ...newWeights },
     renewal_reason: "權重調整",
-  });
+  };
+  if (notes != null && String(notes).trim()) patch.notes = String(notes).trim();
+  const newSeg = spawnFrom(source, patch);
   return { closed, segments: [newSeg] };
 }
-
-// 轉移：生效日 + 新 weights（使用者手填，例如把 AV9 的 50% 移到 av9_poquan）
-// 不檢查源/目產品具體欄位，只負責關段+開新段
-export function buildTransfer(source, effectiveDate, newWeights) {
-  if (effectiveDate <= source.start_date || effectiveDate >= source.end_date) {
-    throw new Error(`生效日 ${effectiveDate} 必須落在原段區間之間`);
-  }
-  const closed = trimEnd(source, effectiveDate);
-  const newSeg = spawnFrom(source, {
-    start_date: effectiveDate,
-    end_date: source.end_date,
-    weights: { ...newWeights },
-    renewal_reason: "轉移",
-  });
-  return { closed, segments: [newSeg] };
-}
-

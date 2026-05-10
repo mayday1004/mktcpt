@@ -15,24 +15,57 @@ import { evalFormula, validateFormula, REPORT_EXTRA_VARS } from "../lib/formula.
 import { bindPerfImportButtons } from "./perf-import-ui.js";
 
 let selectedProductId = null;
+let reportFilter = "all";
+let expandedRows = new Set();
 
-// 預設隱藏：依產品類型給出合理的初始隱藏欄。使用者按「設定欄位」儲存後就以儲存值為準，
-// 即使儲存的 hidden_metrics 是空陣列也不會 fallback 到預設（避免「我故意全顯示」被覆蓋）。
-function defaultHiddenForType(type) {
-  const APP_HIDE = ["廠商安裝", "總活躍用戶", "總下載點擊", "事件計數"];
-  const ISLAND_HIDE = [
-    "不重複安裝數", "廠商安裝", "不重複首頁開啟數", "不重複活躍用戶數",
-    "首儲訂單數", "首儲購買金額", "加總訂單數", "加總購買金額",
-    "所有渠道不重複安裝數", "所有渠道不重複活躍用戶數",
-    "總活躍用戶", "總下載點擊", "事件計數",
-  ];
-  const list = type === "island" ? ISLAND_HIDE : APP_HIDE;
-  return list.map((m) => `metric:${m}`);
+// 預設設定:依產品 id 給出合理的初始 hidden_metrics + custom_metrics。
+// 使用者按「設定欄位」儲存後就以儲存值為準,即使是空陣列也不會 fallback。
+const ALL_METRICS = [
+  "不重複安裝數", "廠商安裝", "不重複首頁開啟數", "不重複活躍用戶數",
+  "首儲訂單數", "首儲購買金額", "加總訂單數", "加總購買金額",
+  "所有渠道不重複安裝數", "所有渠道不重複活躍用戶數",
+  "總活躍用戶", "總下載點擊", "事件計數",
+];
+
+function hiddenExcept(visibleMetricNames, extra = []) {
+  const hidden = ALL_METRICS.filter((m) => !visibleMetricNames.includes(m)).map((m) => `metric:${m}`);
+  return [...hidden, ...extra];
 }
 
-// 取「該產品最終要使用的設定」：
-//   - 已儲存（state.report_config[pid] 存在）→ 用儲存值
-//   - 未儲存 → 套產品類型預設 hidden + 空 custom_metrics
+function defaultConfigForProduct(product) {
+  const APP_INSTALL_PIDS = new Set(["AV9", "av9_poquan", "JK", "jk_poquan"]);
+
+  const presetA = () => ({
+    hidden_metrics: hiddenExcept(["不重複安裝數", "所有渠道不重複安裝數"]),
+    custom_metrics: [
+      { id: uid("cm"), name: "首存ROI", formula: "首儲購買金額*收入匯率/花費", show_as_percent: false },
+      { id: uid("cm"), name: "活躍率", formula: "不重複活躍用戶數/不重複安裝數", show_as_percent: true },
+      { id: uid("cm"), name: "排重安裝率", formula: "所有渠道不重複安裝數/不重複安裝數", show_as_percent: true },
+    ],
+  });
+  const presetB = () => ({
+    hidden_metrics: hiddenExcept(["不重複安裝數", "總活躍用戶", "總下載點擊"]),
+    custom_metrics: [
+      { id: uid("cm"), name: "活躍用戶CPI", formula: "花費/總活躍用戶", show_as_percent: false },
+    ],
+  });
+  const presetC = () => ({
+    hidden_metrics: hiddenExcept(["事件計數"], ["fixed:group"]),
+    custom_metrics: [],
+  });
+
+  // 三個明確 preset
+  if (APP_INSTALL_PIDS.has(product.id)) return presetA();   // 排重安裝CPI 系列
+  if (product.id === "HYC") return presetB();               // 下載CPC
+  if (product.type === "island") return presetC();          // 小島(CPC)
+
+  // 未列舉的新 APP 產品:fallback 到 Preset A
+  return presetA();
+}
+
+// 取「該產品最終要使用的設定」:
+//   - 已儲存(state.report_config[pid] 存在) → 用儲存值
+//   - 未儲存 → 套 defaultConfigForProduct
 function effectiveConfig(state, product) {
   const saved = state?.report_config?.[product.id];
   if (saved) {
@@ -41,10 +74,7 @@ function effectiveConfig(state, product) {
       custom_metrics: saved.custom_metrics || [],
     };
   }
-  return {
-    hidden_metrics: defaultHiddenForType(product.type),
-    custom_metrics: [],
-  };
+  return defaultConfigForProduct(product);
 }
 
 export function render(root) {
@@ -94,24 +124,37 @@ export function render(root) {
   if (btnSettings && product) {
     btnSettings.onclick = () => openColumnSettings(product, root);
   }
+  root.querySelectorAll("[data-report-filter]").forEach((el) => {
+    el.onclick = () => {
+      reportFilter = el.dataset.reportFilter;
+      render(root);
+    };
+  });
+  root.querySelectorAll("[data-report-expand]").forEach((el) => {
+    el.onclick = () => {
+      const key = el.dataset.reportExpand;
+      if (expandedRows.has(key)) expandedRows.delete(key);
+      else expandedRows.add(key);
+      render(root);
+    };
+  });
 }
 
 function renderImportCard() {
   return `
-    <div class="card">
+    <div class="card perf-import-card">
       <div class="card-head">
         <h2>📥 成效資料匯入</h2>
         <div class="ink-3" style="font-size:12px">
-          先把本週成效資料貼到 Sheets「成效輸入」分頁，再按「附加本週成效」拉進來
+          從 Sheets「成效輸入」分頁同步本週資料
         </div>
       </div>
-      <div class="sheets-actions" style="border-top:0;padding-top:0">
-        <button id="btn-perf-init" title="在 Sheets 建立空的成效輸入分頁">🗂️ 建立成效輸入分頁</button>
-        <button id="btn-perf-import" class="primary">📥 附加本週成效</button>
+      <div class="perf-import-body">
+        <button id="btn-perf-import" style="background:#fff;color:var(--accent);border-color:var(--accent)">匯入本週成效</button>
         <div id="perf-import-status" class="sync-status"></div>
       </div>
-      <div class="ink-3" style="font-size:12px;margin-top:8px">
-        匯入規則：依 (廣告代碼 × 產品 × 期間) 去重；同一基本碼支援 dh 前綴與英文字尾變體 fuzzy 配對。
+      <div class="perf-import-note">
+        匯入規則：依 (廣告代碼 × 產品 × 期間) 去重；同一基本碼支援 dh 前綴與英文字尾變體的模糊比對。若分頁尚未建立，按下匯入時會提示自動建立。
       </div>
     </div>
   `;
@@ -150,7 +193,6 @@ function renderProductReport(s, product) {
   const hidden = new Set(cfg.hidden_metrics);
   const customMetrics = cfg.custom_metrics;
   const targets = product.performance_targets || [];
-  const showGroup = !hidden.has("fixed:group");
 
   const perfData = (s.performance_data || [])
     .filter((r) => r.product_id === product.id)
@@ -167,11 +209,14 @@ function renderProductReport(s, product) {
   const reportVars = { "收入匯率": incomeRate, "支出匯率": expenseRate };
 
   // 可見欄位（hidden set 控制）
-  const visibleMetrics = METRICS.filter((m) => !hidden.has(`metric:${m}`));
+  const reportMetrics = METRICS.filter((m) => !isFixedSpendMetric(m));
+  const visibleMetrics = reportMetrics.filter((m) => !hidden.has(`metric:${m}`));
+  const hiddenMetrics = reportMetrics.filter((m) => hidden.has(`metric:${m}`));
   const visibleTargets = targets.filter((t) => !hidden.has(`target:${t.id}`));
-  const visibleCustom = customMetrics.filter((m) => !hidden.has(`custom:${m.id}`));
+  const visibleCustom = customMetrics;
+  const groupVisible = !hidden.has("fixed:group");
 
-  const totalCols = visibleMetrics.length + visibleTargets.length + visibleCustom.length;
+  const totalCols = (groupVisible ? 1 : 0) + visibleMetrics.length + visibleTargets.length + visibleCustom.length;
   const settingsBtn = `<button id="btn-report-settings" class="link-btn" style="margin-left:8px;font-size:12px">⚙ 設定欄位（${totalCols} 個顯示中）</button>`;
 
   if (perfData.length === 0) {
@@ -189,49 +234,60 @@ function renderProductReport(s, product) {
     `;
   }
 
-  const targetCols = visibleTargets.map((t) => {
-    const dirArrow = t.direction === "lower_better" ? "↓" : "↑";
-    return `<th class="num" title="${esc(t.formula)}">
-      ${esc(t.name)}
-      <div class="ink-3" style="font-size:10px;font-weight:400">${dirArrow} ${fmt2(t.goal_value)}</div>
-    </th>`;
-  }).join("");
+  const rows = perfData.map((r) => buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibleCustom, reportVars));
+  const failedRows = rows.filter((r) => r.status === "bad");
+  const okRows = rows.filter((r) => r.status === "ok");
+  const noConversionRows = rows.filter((r) => (Number(r.firstOrders) || 0) === 0 && (Number(r.purchaseOrders) || 0) === 0);
+  const buyerRows = rows.filter((r) => (Number(r.firstOrders) || 0) > 0 || (Number(r.purchaseOrders) || 0) > 0);
+  // 加權平均:對所有 row 的指標先加總,再套「主要目標」公式
+  // 比起算術平均,這對 ratio 公式(如 CPC=花費/事件計數)更準 — 大廣告 vs 小廣告會按花費 / 事件數量比例自動加權
+  // 例:兩支廣告,A 花 100 萬事件 50 萬(CPC 2)+ B 花 100 元事件 5(CPC 20)
+  //   算術平均 = (2+20)/2 = 11(被 B 嚴重拉高)
+  //   加權平均 = (1000000+100)/(500000+5) ≈ 2.0(才是真實的單位事件成本)
+  const primaryTarget = visibleTargets[0];
+  let avgPrimary = null;
+  if (primaryTarget && rows.length > 0) {
+    const aggVars = { ...reportVars };
+    for (const m of METRICS) {
+      aggVars[m] = rows.reduce((sum, r) => sum + (Number(r.raw[m]) || 0), 0);
+    }
+    try { avgPrimary = evalFormula(primaryTarget.formula, aggVars); } catch { avgPrimary = null; }
+  }
 
-  const customCols = visibleCustom.map((m) => `
-    <th class="num" title="${esc(m.formula)}">
-      ${esc(m.name)}
-      <div class="ink-3" style="font-size:10px;font-weight:400">自訂${m.show_as_percent ? " · %" : ""}</div>
-    </th>
-  `).join("");
+  let filtered = rows;
+  if (reportFilter === "bad") filtered = rows.filter((r) => r.status === "bad");
+  else if (reportFilter === "buyer") filtered = buyerRows;
+  else if (reportFilter === "dead") filtered = noConversionRows;
+  else if (reportFilter === "spend") filtered = [...rows].sort((a, b) => (Number(b.spend) || 0) - (Number(a.spend) || 0));
 
-  const rows = perfData.map((r) => {
-    const evalVars = { ...r, ...reportVars };
-    const targetCells = visibleTargets.map((t) => {
-      let actual = null;
-      try { actual = evalFormula(t.formula, evalVars); } catch { actual = null; }
-      if (actual == null) return `<td class="num ink-3">—</td>`;
-      const met = t.direction === "lower_better" ? actual <= t.goal_value : actual >= t.goal_value;
-      return `<td class="num ${met ? "ok" : "bad"}"><strong>${fmt2(actual)}</strong> ${met ? "✓" : "✗"}</td>`;
-    }).join("");
-    const customCells = visibleCustom.map((m) => {
-      let actual = null;
-      try { actual = evalFormula(m.formula, evalVars); } catch { actual = null; }
-      if (actual == null) return `<td class="num ink-3">—</td>`;
-      return `<td class="num"><strong>${fmtMetric(actual, m.show_as_percent)}</strong></td>`;
-    }).join("");
-    return `
-      <tr>
-        <td class="mono">${r.period_start || ""}</td>
-        <td class="mono">${r.period_end || ""}</td>
-        <td class="mono">${esc(r.ad_code || "")}</td>
-        <td>${esc(r.ad_name || "")}</td>
-        ${showGroup ? `<td>${esc(r.group || "")}</td>` : ""}
-        ${visibleMetrics.map((m) => `<td class="num">${fmt(r[m])}</td>`).join("")}
-        ${targetCells}
-        ${customCells}
-      </tr>
-    `;
-  }).join("");
+  const primaryLabel = visibleTargets[0]?.name || "主要目標";
+  const primaryGoal = visibleTargets[0] ? `${visibleTargets[0].direction === "lower_better" ? "≤" : "≥"} ${fmt2(visibleTargets[0].goal_value)}` : "未設定";
+  const summary = `
+    <div class="perf-summary-grid">
+      <div class="perf-stat"><div class="k">本產品紀錄</div><div class="v">${rows.length}</div></div>
+      <div class="perf-stat ok"><div class="k">達標</div><div class="v">${okRows.length}</div></div>
+      <div class="perf-stat bad"><div class="k">未達標</div><div class="v">${failedRows.length}</div></div>
+      <div class="perf-stat" title="加權平均 = 對所有紀錄的各指標先加總,再套主要目標公式。對 CPC/CPI 等率比公式比算術平均更準。"><div class="k">加權平均 ${esc(primaryLabel)}</div><div class="v">${avgPrimary != null && Number.isFinite(avgPrimary) ? fmt2(avgPrimary) : "—"}</div></div>
+    </div>
+  `;
+
+  const filters = `
+    <div class="filter-row" style="margin-bottom:12px">
+      <span class="ink-3" style="font-size:12px">快速篩選：</span>
+      <button class="filter-chip ${reportFilter === "all" ? "active" : ""}" data-report-filter="all">全部</button>
+      <button class="filter-chip ${reportFilter === "bad" ? "active" : ""}" data-report-filter="bad">只看未達標</button>
+      <button class="filter-chip ${reportFilter === "spend" ? "active" : ""}" data-report-filter="spend">花費高到低</button>
+      <button class="filter-chip ${reportFilter === "buyer" ? "active" : ""}" data-report-filter="buyer">只看有購買</button>
+      <button class="filter-chip ${reportFilter === "dead" ? "active" : ""}" data-report-filter="dead">無轉換</button>
+    </div>
+  `;
+
+  const outsideColumnCount = visibleMetrics.length + visibleCustom.length;
+  // 8 = 期間/代碼/廣告/分組/花費/主要目標/狀態/展開鈕。分組隱藏時 -1。
+  const tableColspan = 8 + outsideColumnCount - (groupVisible ? 0 : 1);
+  const metricHeaders = visibleMetrics.map((m) => `<th class="num" title="${esc(m)}">${esc(m)}</th>`).join("");
+  const customHeaders = visibleCustom.map((m) => `<th class="num" title="${esc(m.formula)}">${esc(m.name)}</th>`).join("");
+  const tableRows = filtered.map((row) => renderSummaryRow(row, primaryLabel, primaryGoal, tableColspan, groupVisible)).join("");
 
   return `
     <div class="card">
@@ -241,30 +297,147 @@ function renderProductReport(s, product) {
           <span class="pill ${product.type}" style="margin-left:6px;font-size:10px">${product.type === "app" ? "APP" : "小島"}</span>
         </h2>
         <div class="ink-3" style="font-size:12px">
-          ${perfData.length} 筆紀錄
+          ${filtered.length} / ${perfData.length} 筆紀錄
           ${settingsBtn}
         </div>
       </div>
-      ${(targets.length || customMetrics.length) ? renderColumnsHint(targets, customMetrics) : ""}
+      ${summary}
+      ${filters}
       <div class="table-wrap" style="max-height:600px">
-        <table style="font-size:12px">
+        <table class="perf-summary-table" style="font-size:12px">
           <thead>
             <tr>
-              <th>資料起始日</th>
-              <th>資料結束日</th>
-              <th>廣告代碼</th>
-              <th>廣告名稱</th>
-              ${showGroup ? "<th>廣告分組</th>" : ""}
-              ${visibleMetrics.map((m) => `<th class="num">${esc(m)}</th>`).join("")}
-              ${targetCols}
-              ${customCols}
+              <th style="width:82px">期間</th>
+              <th style="width:92px">代碼</th>
+              <th>廣告</th>
+              ${groupVisible ? `<th style="width:150px">分組</th>` : ""}
+              <th class="num" style="width:100px">花費</th>
+              ${metricHeaders}
+              ${customHeaders}
+              <th class="num" style="width:128px">${esc(primaryLabel)}</th>
+              <th style="width:86px">狀態</th>
+              <th style="width:70px"></th>
             </tr>
           </thead>
-          <tbody>${rows}</tbody>
+          <tbody>${tableRows || `<tr><td colspan="${tableColspan}" class="ink-3">此篩選沒有符合的紀錄</td></tr>`}</tbody>
         </table>
       </div>
     </div>
   `;
+}
+
+function buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibleCustom, reportVars) {
+  const evalVars = { ...r, ...reportVars };
+  const targetResults = visibleTargets.map((t) => {
+    let actual = null;
+    try { actual = evalFormula(t.formula, evalVars); } catch { actual = null; }
+    const met = actual == null ? null : (t.direction === "lower_better" ? actual <= t.goal_value : actual >= t.goal_value);
+    return { target: t, actual, met };
+  });
+  const customResults = visibleCustom.map((m) => {
+    let actual = null;
+    try { actual = evalFormula(m.formula, evalVars); } catch { actual = null; }
+    return { metric: m, actual };
+  });
+  const primary = targetResults[0] || null;
+  const failed = targetResults.some((t) => t.met === false);
+  const passed = targetResults.length > 0 && targetResults.every((t) => t.met === true);
+  const key = `${r.product_id || ""}|${r.period_start || ""}|${r.period_end || ""}|${r.ad_code || ""}|${r.ad_id || ""}`;
+  return {
+    key,
+    raw: r,
+    visibleMetrics,
+    hiddenMetrics,
+    targetResults,
+    customResults,
+    status: failed ? "bad" : passed ? "ok" : "none",
+    primaryActual: primary?.actual,
+    primaryMet: primary?.met,
+    spend: pickMetric(r, ["花費", "广告花费", "廣告花費", "spend", "cost"]),
+    summaryMetric: pickMetric(r, ["不重複安裝數", "排重安裝", "安裝", "install"]),
+    firstOrders: pickMetric(r, ["首儲訂單數", "首储订单数", "首儲", "first_orders"]),
+    purchaseOrders: pickMetric(r, ["加總訂單數", "加總訂單", "购买订单", "purchase_orders"]),
+  };
+}
+
+function renderSummaryRow(row, primaryLabel, primaryGoal, tableColspan, groupVisible = true) {
+  const r = row.raw;
+  const expanded = expandedRows.has(row.key);
+  const statusPill = row.status === "bad"
+    ? `<span class="pill bad">未達</span>`
+    : row.status === "ok"
+      ? `<span class="pill ok">達標</span>`
+      : `<span class="pill">未判定</span>`;
+  const primaryCls = row.primaryMet === false ? "bad" : row.primaryMet === true ? "ok" : "ink-3";
+  const metricCells = row.visibleMetrics.map((m) => `<td class="num">${fmt(r[m])}</td>`).join("");
+  const customCells = row.customResults.map(({ metric, actual }) => `
+    <td class="num" title="${esc(metric.formula)}">${actual != null ? fmtMetric(actual, metric.show_as_percent) : "—"}</td>
+  `).join("");
+  const main = `
+    <tr class="${row.status === "bad" ? "perf-row-bad" : ""}">
+      <td class="mono">${compactDateRange(r.period_start, r.period_end)}</td>
+      <td class="mono">${esc(r.ad_code || "")}</td>
+      <td>
+        <strong>${esc(r.ad_name || "")}</strong>
+        <div class="ink-3" style="font-size:11px">${row.status === "bad" ? "需要檢查投放或淘汰" : row.status === "ok" ? "成效在目標內" : "尚無完整目標判定"}</div>
+      </td>
+      ${groupVisible ? `<td>${esc(r.group || "")}</td>` : ""}
+      <td class="num">${fmt(row.spend)}</td>
+      ${metricCells}
+      ${customCells}
+      <td class="num ${primaryCls}"><strong>${row.primaryActual != null ? fmt2(row.primaryActual) : "—"}</strong><div class="ink-3" style="font-size:10px">${esc(primaryGoal)}</div></td>
+      <td>${statusPill}</td>
+      <td><button class="link-btn" data-report-expand="${esc(row.key)}">${expanded ? "收起" : "展開"}</button></td>
+    </tr>
+  `;
+  const detail = expanded ? `
+    <tr class="perf-detail-row">
+      <td colspan="${tableColspan}">
+        <div class="perf-detail-box">
+          <div class="perf-detail-card">
+            <h3>展開內建指標</h3>
+            ${row.hiddenMetrics.map((m) => `<div class="perf-kv"><span>${esc(m)}</span><strong>${fmt(r[m])}</strong></div>`).join("") || `<div class="ink-3">沒有被收進展開的內建指標</div>`}
+          </div>
+          <div class="perf-detail-card">
+            <h3>成效目標</h3>
+            ${row.targetResults.map(({ target, actual, met }) => `
+              <div class="perf-kv">
+                <span title="${esc(target.formula)}">${esc(target.name)}</span>
+                <strong class="${met === false ? "bad" : met === true ? "ok" : ""}">${actual != null ? fmt2(actual) : "—"} ${met === false ? "✗" : met === true ? "✓" : ""}</strong>
+              </div>
+            `).join("") || `<div class="ink-3">此產品尚未設定成效目標</div>`}
+          </div>
+          <div class="perf-detail-card">
+            <h3>外顯自訂欄位公式</h3>
+            ${row.customResults.map(({ metric }) => `<div class="perf-kv"><span>${esc(metric.name)}</span><strong title="${esc(metric.formula)}">${esc(metric.formula)}</strong></div>`).join("") || `<div class="ink-3">沒有自訂欄位</div>`}
+          </div>
+        </div>
+      </td>
+    </tr>
+  ` : "";
+  return main + detail;
+}
+
+function pickMetric(row, preferred) {
+  for (const key of preferred) {
+    if (row[key] != null && row[key] !== "") return row[key];
+  }
+  const keys = Object.keys(row || {});
+  const loose = keys.find((key) =>
+    preferred.some((name) => String(key).toLowerCase().includes(String(name).toLowerCase()))
+  );
+  return loose ? row[loose] : null;
+}
+
+function isFixedSpendMetric(metric) {
+  return ["花費", "廣告花費", "广告花费", "spend", "cost"].includes(String(metric));
+}
+
+function compactDateRange(start, end) {
+  const s = start ? String(start).slice(5).replace("-", "/") : "";
+  const e = end ? String(end).slice(5).replace("-", "/") : "";
+  if (s && e) return `${s}~${e}`;
+  return s || e || "";
 }
 
 function renderColumnsHint(targets, customMetrics) {
@@ -310,20 +483,20 @@ function openColumnSettings(product, root) {
   const html = `
     <h2>${esc(product.name)} — 報表欄位設定</h2>
     <p class="ink-3" style="font-size:12px;margin:0 0 12px">
-      勾選 = 顯示，取消勾選 = 隱藏。顯示偏好按產品分別存在本機。
+      內建指標勾選 = 顯示在外層，取消勾選 = 收到展開明細。自訂欄位一律顯示在外層。
       ${isFirstTime ? `<br><span style="color:var(--accent)">目前是「${product.type === "island" ? "小島" : "APP"}」預設顯示組合</span>` : ""}
     </p>
 
     <div class="settings-section" style="margin-bottom:14px">
       <h3 style="font-size:14px;margin:0 0 6px">基本欄位</h3>
       ${renderCheckbox("fixed:group", "廣告分組")}
-      <div class="ink-3" style="font-size:11px">資料起始日 / 結束日 / 廣告代碼 / 廣告名稱 永遠顯示。</div>
+      <div class="ink-3" style="font-size:11px">期間 / 廣告代碼 / 廣告名稱 / 花費 永遠顯示。</div>
     </div>
 
     <div class="settings-section" style="margin-bottom:14px">
-      <h3 style="font-size:14px;margin:0 0 6px">內建指標（${METRICS.length}）</h3>
+      <h3 style="font-size:14px;margin:0 0 6px">內建指標（${METRICS.filter((m) => !isFixedSpendMetric(m)).length}）</h3>
       <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:0 16px">
-        ${METRICS.map((m) => renderCheckbox(`metric:${m}`, m)).join("")}
+        ${METRICS.filter((m) => !isFixedSpendMetric(m)).map((m) => renderCheckbox(`metric:${m}`, m)).join("")}
       </div>
     </div>
 
@@ -379,10 +552,8 @@ function openColumnSettings(product, root) {
       return;
     }
     host.innerHTML = draft.customMetrics.map((m, i) => {
-      const hiddenKey = `custom:${m.id}`;
       return `
         <div style="display:flex;gap:8px;align-items:center;padding:6px 8px;background:#f7f9fc;border-radius:4px;flex-wrap:wrap">
-          <input type="checkbox" data-tk="${esc(hiddenKey)}" ${draft.hidden.has(hiddenKey) ? "" : "checked"} title="顯示/隱藏" />
           <input data-cm-i="${i}" data-cm-f="name" value="${esc(m.name)}" style="flex:1;min-width:100px" />
           <input data-cm-i="${i}" data-cm-f="formula" value="${esc(m.formula)}" style="flex:2;min-width:200px;font-family:var(--mono)" />
           <label style="display:flex;align-items:center;gap:4px;font-size:11px" title="勾起：值 × 100 + %">
@@ -467,7 +638,7 @@ function openColumnSettings(product, root) {
     update((st) => {
       if (!st.report_config) st.report_config = {};
       st.report_config[product.id] = {
-        hidden_metrics: [...draft.hidden],
+        hidden_metrics: [...draft.hidden].filter((key) => !String(key).startsWith("custom:")),
         custom_metrics: draft.customMetrics.map((m) => ({
           id: m.id,
           name: m.name.trim(),

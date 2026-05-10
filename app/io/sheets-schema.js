@@ -153,7 +153,7 @@ export const TABLES = [
       "幣別", "原幣金額", "原幣→RMB匯率",
       "人民幣金額", "匯率", "台幣金額",
       "開始日期", "結束日期", "攤提天數", "每日攤提(台幣)",
-      "購買模式", "續費來源", "調整原因", "鎖定不調整", "備註",
+      "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動", "備註",
     ],
     toRows: (s) => s.ads.map((a) => [
       a.id, a.ad_code, a.ad_name, a.group || "",
@@ -167,6 +167,7 @@ export const TABLES = [
       a.renewal_of || "",
       a.renewal_reason || "初始",
       a.lock_perf_adjust ? "Y" : "",
+      a.lock_full ? "Y" : "",
       a.notes || "",
     ]),
   },
@@ -210,23 +211,11 @@ export const TABLES = [
     headers: ["key", "value"],
     toRows: (s) => [
       ["current_month", s.settings.current_month || ""],
-      ["expense_rate", s.settings.expense_rate ?? 4.7],
-      ["income_rate", s.settings.income_rate ?? 4.5],
+      ["expense_rate", s.settings.expense_rate ?? 4.8],
+      ["income_rate", s.settings.income_rate ?? 4.6],
+      ["usdt_to_cny_rate", s.settings.usdt_to_cny_rate ?? 7],
+      ["usd_to_twd_rate", s.settings.usd_to_twd_rate ?? 32],
     ],
-  },
-  {
-    name: "每日攤提覆寫",
-    headers: ["日期", "產品ID", "每日攤提(台幣)", "備註"],
-    toRows: (s) => {
-      const over = s.daily_amort_override || {};
-      const rows = [];
-      for (const [date, byProduct] of Object.entries(over).sort(([a], [b]) => a.localeCompare(b))) {
-        for (const [pid, amt] of Object.entries(byProduct)) {
-          rows.push([date, pid, amt, "from xlsx 預估費用"]);
-        }
-      }
-      return rows;
-    },
   },
   {
     // 報表自訂計算欄位（如「首存ROI」）— 公式跨裝置共享。
@@ -364,6 +353,7 @@ export function assembleFromTables(raw) {
       renewal_of: o["續費來源"] ? String(o["續費來源"]) : null,
       renewal_reason: RENEWAL_REASONS.includes(reason) ? reason : "初始",
       lock_perf_adjust: String(o["鎖定不調整"] || "").trim().toUpperCase() === "Y",
+      lock_full: String(o["禁止挪動"] || "").trim().toUpperCase() === "Y",
       notes: String(o["備註"] || ""),
     };
   });
@@ -431,8 +421,10 @@ export function assembleFromTables(raw) {
 
   const settings = {
     current_month: "",
-    expense_rate: 4.7,
-    income_rate: 4.5,
+    expense_rate: 4.8,
+    income_rate: 4.6,
+    usdt_to_cny_rate: 7,
+    usd_to_twd_rate: 32,
     monthly_rates: {},
     sheets_webapp_url: "",
     sheets_token: "",
@@ -442,20 +434,10 @@ export function assembleFromTables(raw) {
     const o = toObj(setT.headers, r);
     const v = o.value;
     if (o.key === "current_month") settings.current_month = toYearMonth(v);
-    else if (o.key === "expense_rate") settings.expense_rate = Number(v) || 4.7;
-    else if (o.key === "income_rate") settings.income_rate = Number(v) || 4.5;
-  });
-
-  const overT = pick("每日攤提覆寫");
-  const daily_amort_override = {};
-  overT.rows.forEach((r) => {
-    const o = toObj(overT.headers, r);
-    const date = toYmd(o["日期"]);
-    const pid = String(o["產品ID"] || "");
-    const amt = Number(o["每日攤提(台幣)"]) || 0;
-    if (!date || !pid) return;
-    if (!daily_amort_override[date]) daily_amort_override[date] = {};
-    daily_amort_override[date][pid] = amt;
+    else if (o.key === "expense_rate") settings.expense_rate = Number(v) || 4.8;
+    else if (o.key === "income_rate") settings.income_rate = Number(v) || 4.6;
+    else if (o.key === "usdt_to_cny_rate") settings.usdt_to_cny_rate = Number(v) || 7;
+    else if (o.key === "usd_to_twd_rate") settings.usd_to_twd_rate = Number(v) || 32;
   });
 
   // 報表自訂欄位（公式跨裝置共享；hidden_metrics 是裝置端設定，不在這裡）
@@ -478,7 +460,7 @@ export function assembleFromTables(raw) {
 
   return {
     version: 3,
-    settings, products, monthly_budgets, daily_budgets, ads, todos, performance_data, daily_amort_override,
+    settings, products, monthly_budgets, daily_budgets, ads, todos, performance_data,
     budget_changes, report_config,
   };
 }

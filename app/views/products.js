@@ -275,6 +275,13 @@ function openEditor(id, ym) {
         </select>
       </div>
     </div>
+    <div class="field" style="margin-top:8px">
+      <label style="display:flex;align-items:center;gap:6px;font-weight:normal">
+        <input type="checkbox" id="f-no-band" ${p.no_band ? "checked" : ""} style="width:auto" />
+        <span>不檢查每日帶寬</span>
+        <span class="ink-3" style="font-size:11px">(破圈系列等極端花費產品勾選;成效調整、儀表板都跳過 ±範圍警示)</span>
+      </label>
+    </div>
 
     <h3 class="mt-16">${ym} 預算（台幣）</h3>
     <div id="budget-section"></div>
@@ -284,6 +291,14 @@ function openEditor(id, ym) {
     <h3 class="mt-16">成效目標</h3>
     <div id="targets"></div>
     <button class="mt-8" id="add-target">＋ 新增目標</button>
+
+    <details class="mt-8" style="font-size:12px;color:var(--ink-2)">
+      <summary style="cursor:pointer;user-select:none;color:var(--accent)">📖 公式可用的變數（${METRICS.length} 個）</summary>
+      <div style="margin-top:8px;padding:10px 12px;background:#f6f8fc;border:1px solid #e1e8f2;border-radius:6px;line-height:1.8">
+        ${METRICS.map((m) => `<code style="display:inline-block;margin:2px 6px 2px 0;padding:1px 6px;background:#fff;border:1px solid #d6def0;border-radius:3px;font-family:var(--mono);font-size:11px">${m}</code>`).join("")}
+        <div class="ink-3" style="margin-top:6px;font-size:11px">把上面變數名稱直接寫進公式，例如 <code class="mono">花費/不重複安裝數</code>（CPI）、<code class="mono">花費/事件計數</code>（CPC）。支援 + - * / 與括號。</div>
+      </div>
+    </details>
 
     <div class="modal-actions">
       <button id="cancel">取消</button>
@@ -366,6 +381,7 @@ function openEditor(id, ym) {
     const patch = {
       name: dlg.querySelector("#f-name").value.trim(),
       type: dlg.querySelector("#f-type").value,
+      no_band: !!dlg.querySelector("#f-no-band")?.checked,
       performance_targets: p.performance_targets.filter((t) => t.name),
     };
     if (!patch.name) { toast("請輸入名稱", "bad"); return; }
@@ -456,7 +472,7 @@ function targetRow(t, i) {
 
 function blank() {
   return {
-    name: "", type: "app",
+    name: "", type: "app", no_band: false,
     performance_targets: [],
   };
 }

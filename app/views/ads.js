@@ -3,18 +3,33 @@ import { suggestWeights } from "../domain/suggest.js";
 import { evalFormula } from "../lib/formula.js";
 import { getExpenseRate, getUsdtToCnyRate } from "../schema.js";
 import { expiringAds } from "../domain/alerts.js";
-import { todayTaipei, nowTaipeiStamp } from "../lib/dates.js";
-import {
-  buildWeightAdjust, buildTransfer,
-} from "../domain/lifecycle.js";
+import { renderGiftDayInfo } from "./dashboard.js";
+import { todayTaipei, nowTaipeiStamp, addDays } from "../lib/dates.js";
+import { buildWeightAdjust } from "../domain/lifecycle.js";
+import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
+import { captureUndoSnapshot } from "../domain/undo.js";
 
 // 模組級展開狀態（記住使用者點開的 ad_code，重渲染後不重置）
 const expanded = new Set();
+const expandedWeights = new Set();
 // 模組級分頁（"all" 或 product.id）
 let activeTab = "all";
 // 模組級日期區間過濾（皆 inclusive 視覺意義，內部用 overlaps 比對）
-let filterStart = "";  // YYYY-MM-DD
-let filterEnd = "";    // YYYY-MM-DD
+// 預設 = 昨天(只看「截至昨天還活著」的廣告,避免已淘汰段湧出來);要看當月按「於當月」按鈕。
+const _defaultFilterDay = addDays(todayTaipei(), -1);
+let filterStart = _defaultFilterDay;  // YYYY-MM-DD
+let filterEnd = _defaultFilterDay;    // YYYY-MM-DD
+// 模組級搜尋字串（廣告代碼或名稱，繁簡/大小寫不分）
+let searchQuery = "";
+
+// 計算「當月前 2 個月 1 日」當作停損 cutoff（例：2026-05 → 2026-03-01）
+function monthCutoffDate(ym) {
+  const [y, m] = (ym || "").split("-").map(Number);
+  if (!y || !m) return "0000-01-01";
+  let cy = y, cm = m - 2;
+  while (cm <= 0) { cy -= 1; cm += 12; }
+  return `${cy}-${String(cm).padStart(2, "0")}-01`;
+}
 
 function adOverlapsRange(ad, start, end) {
   // 沒填範圍 → 視為不限
@@ -44,24 +59,42 @@ export function render(root) {
   const validTabs = new Set(["all", ...s.products.map((p) => p.id)]);
   if (!validTabs.has(activeTab)) activeTab = "all";
 
+  // 停損：只顯示「起始日 >= 當月前 2 個月 1 日」的段（避免續費多年累積資料無限滾動）
+  // 例：當月 2026-05 → 起始日 >= 2026-03-01 才顯示；未來續費（如 6 月）也會顯示
+  const cutoffDate = monthCutoffDate(ym);
+  const recentAds = s.ads.filter((a) => (a.start_date || "") >= cutoffDate);
+  const hiddenOldCount = s.ads.length - recentAds.length;
+
   // 先依日期過濾（任一段重疊即保留整個 ad_code）
   const codesAlive = new Set();
-  for (const a of s.ads) {
+  for (const a of recentAds) {
     if (adOverlapsRange(a, filterStart, filterEnd)) codesAlive.add(a.ad_code);
   }
   const dateFiltered = (filterStart || filterEnd)
-    ? s.ads.filter((a) => codesAlive.has(a.ad_code))
-    : s.ads;
+    ? recentAds.filter((a) => codesAlive.has(a.ad_code))
+    : recentAds;
+
+  // 搜尋過濾（任一段命中即保留整個 ad_code）
+  const normQuery = normalizeForSearch(searchQuery);
+  const matchedCodes = new Set();
+  if (normQuery) {
+    for (const a of dateFiltered) {
+      if (adMatchesQuery(a, normQuery)) matchedCodes.add(a.ad_code);
+    }
+  }
+  const searchFiltered = normQuery
+    ? dateFiltered.filter((a) => matchedCodes.has(a.ad_code))
+    : dateFiltered;
 
   const filtered = activeTab === "all"
-    ? dateFiltered
-    : dateFiltered.filter((a) => Number(a.weights?.[activeTab]) > 0);
+    ? searchFiltered
+    : searchFiltered.filter((a) => Number(a.weights?.[activeTab]) > 0);
   const groups = groupByCode(filtered);
 
-  // 各 tab 的廣告數，當作 badge（套用日期過濾後的數量）
-  const counts = { all: groupByCode(dateFiltered).length };
+  // 各 tab 的廣告數，當作 badge（套用日期 + 搜尋過濾後的數量）
+  const counts = { all: groupByCode(searchFiltered).length };
   for (const p of s.products) {
-    const adsForP = dateFiltered.filter((a) => Number(a.weights?.[p.id]) > 0);
+    const adsForP = searchFiltered.filter((a) => Number(a.weights?.[p.id]) > 0);
     counts[p.id] = groupByCode(adsForP).length;
   }
 
@@ -81,6 +114,8 @@ export function render(root) {
     </div>
 
     ${renderExpiringCard(expiring, s.products)}
+
+    ${renderGiftDayInfo(s, { withFixButton: false })}
 
     <div class="tabs">
       <button class="tab ${activeTab === "all" ? "active" : ""}" data-tab="all">
@@ -103,6 +138,14 @@ export function render(root) {
       <button id="filt-clear">清除</button>
       ${(filterStart || filterEnd) ? `<span class="ink-3" style="font-size:12px;margin-left:auto">已過濾：${filterStart || "—"} ~ ${filterEnd || "—"}</span>` : ""}
     </div>
+    ${hiddenOldCount > 0 ? `<div class="ink-3" style="font-size:11px;margin:-4px 0 8px 4px">僅顯示起始日 ≥ ${cutoffDate} 的段（隱藏 ${hiddenOldCount} 段歷史資料；停損僅前 2 個月起算）</div>` : ""}
+
+    <div class="ad-filter">
+      <span class="ink-3" style="font-size:12px">搜尋：</span>
+      <input id="filt-search" type="search" placeholder="輸入廣告代碼或名稱（不分繁簡 / 大小寫）" value="${esc(searchQuery)}" style="flex:1;min-width:260px" />
+      ${searchQuery ? `<button id="filt-search-clear" title="清除搜尋">✕</button>` : ""}
+      ${searchQuery ? `<span class="ink-3" style="font-size:12px;margin-left:auto">已搜尋「${esc(searchQuery)}」</span>` : ""}
+    </div>
 
     <div class="card">
       <div class="table-wrap">
@@ -114,10 +157,10 @@ export function render(root) {
               <th>名稱</th>
               <th>分組</th>
               <th class="num">RMB</th>
-              <th>最新段起訖</th>
-              <th class="num">每日攤提</th>
-              <th>最新段權重</th>
-              <th></th>
+              <th>起訖</th>
+              <th class="num">每日</th>
+              <th>權重</th>
+              <th style="width:140px"></th>
             </tr>
           </thead>
           <tbody>
@@ -226,38 +269,67 @@ function renderGroup(group, products) {
   const latest = segs[segs.length - 1];
   const latestRmb = Number(latest.amount_cny) || 0;
   const isOpen = expanded.has(code);
+  const weightsOpen = expandedWeights.has(code);
   const isMulti = segs.length > 1;
   const eliminated = segs.some((s) => s.eliminated);
 
   const headRow = `
     <tr class="group-head ${isOpen ? "open" : ""} ${eliminated ? "ad-eliminated" : ""}">
       <td class="toggle">${isMulti ? `<button class="icon-btn" data-toggle="${esc(code)}">${isOpen ? "▾" : "▸"}</button>` : ""}</td>
-      <td class="mono">${esc(code)}</td>
+      <td class="code-cell mono">${esc(code)}</td>
       <td>
         <strong>${esc(latest.ad_name)}</strong>
         ${isMulti ? `<span class="seg-badge">${segs.length} 段</span>` : ""}
         ${eliminated ? `<span class="seg-badge" style="background:#fde3e3;color:var(--bad)">已淘汰</span>` : ""}
       </td>
       <td>${esc(latest.group || "—")}</td>
-      <td class="num">${Math.round(latestRmb).toLocaleString()}${isMulti ? `<div class="ink-3" style="font-size:11px">最新段</div>` : ""}</td>
-      <td class="mono nowrap" style="font-size:12px">${latest.start_date} ~ ${latest.end_date}</td>
+      <td class="num">${Math.round(latestRmb).toLocaleString()}</td>
+      <td class="date-compact mono nowrap">${formatCompactDateRange(latest.start_date, latest.end_date)}</td>
       <td class="num">${Math.round(latest.daily_amort_twd || 0).toLocaleString()}</td>
-      <td>${weightSummary(latest, products)}</td>
-      <td class="right nowrap">
+      <td>${weightSummary(latest, products, "bar", { code, open: weightsOpen, allSegs: segs, filterStart, filterEnd })}</td>
+      <td class="actions-cell right nowrap">
         ${actionButtons(latest, /*compact=*/true)}
       </td>
     </tr>
   `;
 
-  if (!isOpen || !isMulti) return headRow;
+  const weightDetailRow = weightsOpen ? renderWeightDetailRow(latest, products, { allSegs: segs, filterStart, filterEnd }) : "";
+
+  if (!isOpen || !isMulti) return headRow + weightDetailRow;
 
   // 展開時：用一列容納整個 vertical timeline
-  return headRow + `
+  return headRow + weightDetailRow + `
     <tr class="seg-timeline-row">
       <td></td>
       <td colspan="8">
         <div class="seg-timeline">
           ${segs.map((seg, i) => renderTimelineNode(seg, i, segs, products)).join("")}
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderWeightDetailRow(seg, products, opts = {}) {
+  const entries = opts.allSegs
+    ? aggregateGroupWeights(opts.allSegs, products, { filterStart: opts.filterStart, filterEnd: opts.filterEnd })
+    : productWeightEntries(seg, products);
+  if (entries.length <= 3) return "";
+  return `
+    <tr class="weight-detail-row">
+      <td></td>
+      <td colspan="8">
+        <div class="weight-detail-panel">
+          <div class="weight-detail-title">完整權重產品</div>
+          <div class="weight-detail-grid">
+            ${entries.map(({ pid, name, weight }) => `
+              <div class="weight-detail-item" style="--w-color:${productColor(pid)}">
+                <span class="weight-dot"></span>
+                <span class="weight-detail-name">${esc(name)}</span>
+                <strong>${Math.round(weight)}%</strong>
+              </div>
+            `).join("")}
+          </div>
         </div>
       </td>
     </tr>
@@ -282,9 +354,9 @@ function renderTimelineNode(seg, idx, segs, products) {
           <span>${seg.amortize_days} 天 @ ${seg.exchange_rate}</span>
           <span>${seg.currency === "USDT" ? `${Math.round(seg.amount_orig || 0).toLocaleString()} USDT × ${seg.currency_rate} = ${Math.round(seg.amount_cny || 0).toLocaleString()} RMB` : `${Math.round(seg.amount_cny || 0).toLocaleString()} RMB`}</span>
           <span>每日攤提 ${Math.round(seg.daily_amort_twd || 0).toLocaleString()}</span>
-          <span>${weightSummary(seg, products)}</span>
+          <span>${weightSummary(seg, products, "inline")}</span>
         </div>
-        ${seg.notes ? `<div class="tl-notes ink-2" style="font-size:12px;margin-top:4px;padding:4px 8px;background:#f7f9fc;border-radius:4px">📝 ${esc(seg.notes)}</div>` : ""}
+        ${(seg.notes && !/^V2 /.test(seg.notes.trim())) ? `<div class="tl-notes ink-2" style="font-size:12px;margin-top:4px;padding:4px 8px;background:#f7f9fc;border-radius:4px">📝 ${esc(seg.notes)}</div>` : ""}
         <div class="tl-actions">
           ${actionButtons(seg, /*compact=*/false)}
         </div>
@@ -310,19 +382,114 @@ function reasonClass(r) {
   if (r === "送天數" || r === "送天數結束") return "pill warn";
   if (r === "權重調整") return "pill";
   if (r === "轉移") return "pill warn";
-  if (r === "漲價" || r === "降價") return "pill warn";
+  if (r === "匯率調漲" || r === "匯率調降") return "pill warn";
   return "pill";
 }
 
-function weightSummary(seg, products) {
-  const entries = Object.entries(seg.weights || {})
+// 產品調色盤(11 色,搭配 productColor 的 stable hash 取色)
+const PRODUCT_PALETTE = [
+  "#6366f1", "#14b8a6", "#f59e0b", "#ef4444", "#a855f7",
+  "#06b6d4", "#84cc16", "#f43f5e", "#0ea5e9", "#818cf8", "#2dd4bf",
+];
+const _colorCache = new Map();
+function productColor(pid) {
+  if (!pid) return "#94a3b8";
+  if (_colorCache.has(pid)) return _colorCache.get(pid);
+  let h = 0;
+  for (let i = 0; i < pid.length; i++) h = ((h << 5) - h + pid.charCodeAt(i)) | 0;
+  const c = PRODUCT_PALETTE[Math.abs(h) % PRODUCT_PALETTE.length];
+  _colorCache.set(pid, c);
+  return c;
+}
+
+// 把日期改成緊湊格式:`4/25 → 5/22 (28天)`,跨年才顯示年份
+function formatCompactDateRange(start, end) {
+  if (!start || !end) return "—";
+  const m = (d) => `${parseInt(d.slice(5, 7), 10)}/${parseInt(d.slice(8, 10), 10)}`;
+  const sameYear = start.slice(0, 4) === end.slice(0, 4);
+  const head = sameYear ? `${m(start)} → ${m(end)}` : `${start} → ${end}`;
+  const days = Math.max(0, Math.round((Date.parse(end) - Date.parse(start)) / 86400000));
+  return `${head}<span class="date-days"> ${days}天</span>`;
+}
+
+// 權重摘要:模式 = "bar"(列表用,group 級彙總每產品最新權重) / "inline"(時間軸用,單段純文字 pill)
+function productWeightEntries(seg, products) {
+  return Object.entries(seg.weights || {})
     .filter(([, v]) => Number(v) > 0)
-    .sort(([, a], [, b]) => Number(b) - Number(a));
+    .sort(([, a], [, b]) => Number(b) - Number(a))
+    .map(([pid, w]) => ({
+      pid,
+      name: products.find((p) => p.id === pid)?.name || pid,
+      weight: Number(w) || 0,
+    }));
+}
+
+// 整個 group 的權重彙總:對每個產品,取「以 asOf 為基準仍 active 的段」中最新一段的權重
+// asOf = 濾器結束日 || 濾器開始日 || 今天。沒設濾器時用「今天」當基準。
+// 解決兩個問題:
+//   (a) INDEPENDENT 廣告同代碼多產品各自 100%,但只看 latest 段時其他產品看不到
+//   (b) 已被移出的產品(舊段有,新段沒有)不該再出現
+// fallback:若 asOf 完全沒命中任何段(整支廣告已結束),退回「整體 latest seg」避免空白
+function aggregateGroupWeights(segs, products, opts = {}) {
+  const today = todayTaipei();
+  const asOf = opts.filterEnd || opts.filterStart || today;
+
+  const collect = (filterFn) => {
+    const m = new Map();
+    for (const seg of segs) {
+      if (!filterFn(seg)) continue;
+      for (const [pid, w] of Object.entries(seg.weights || {})) {
+        const wn = Number(w) || 0;
+        if (wn <= 0) continue;
+        const cur = m.get(pid);
+        const sd = seg.start_date || "";
+        if (!cur || sd >= cur.startDate) {
+          m.set(pid, { weight: wn, startDate: sd });
+        }
+      }
+    }
+    return m;
+  };
+
+  // 主路徑:只看「以 asOf 為基準仍 active」的段(start_date <= asOf < end_date)
+  let byPid = collect((seg) =>
+    (!seg.end_date || seg.end_date > asOf) &&
+    (!seg.start_date || seg.start_date <= asOf)
+  );
+  // fallback:整支廣告已結束 → 退回所有段 latest
+  if (byPid.size === 0) byPid = collect(() => true);
+
+  return [...byPid.entries()]
+    .map(([pid, info]) => ({
+      pid,
+      name: products.find((p) => p.id === pid)?.name || pid,
+      weight: info.weight,
+    }))
+    .sort((a, b) => b.weight - a.weight);
+}
+
+function weightSummary(seg, products, mode = "bar", opts = {}) {
+  const entries = (mode === "bar" && opts.allSegs)
+    ? aggregateGroupWeights(opts.allSegs, products, { filterStart: opts.filterStart, filterEnd: opts.filterEnd })
+    : productWeightEntries(seg, products);
   if (entries.length === 0) return `<span class="ink-3">（無權重）</span>`;
-  return entries.map(([pid, w]) => {
-    const name = products.find((p) => p.id === pid)?.name || pid;
-    return `<span class="pill">${esc(name)} ${Math.round(Number(w) || 0)}%</span>`;
-  }).join(" ");
+
+  if (mode === "inline") {
+    return entries.map(({ pid, name, weight }) => {
+      return `<span class="pill" style="border-left:3px solid ${productColor(pid)};padding-left:6px">${esc(name)} ${Math.round(weight)}%</span>`;
+    }).join(" ");
+  }
+
+  const TOP_N = 3;
+  const top = entries.slice(0, TOP_N).map(({ pid, name, weight }, i) => {
+    const pct = `${Math.round(weight)}%`;
+    return `<span class="weight-top-item ${i === 0 ? "lead" : ""}" style="border-left:3px solid ${productColor(pid)};padding-left:6px">${esc(name)} ${pct}</span>`;
+  }).join("<span class=\"sep\"> · </span>");
+  const moreCount = entries.length - TOP_N;
+  const moreButton = moreCount > 0
+    ? `<button class="weight-more ${opts.open ? "active" : ""}" data-weight-toggle="${esc(opts.code || seg.ad_code)}" title="查看完整權重">+${moreCount} 個</button>`
+    : "";
+  return `<div class="weights-summary">${top}${moreButton}</div>`;
 }
 
 function actionButtons(seg, compact) {
@@ -362,6 +529,36 @@ function bindHandlers(root, s) {
     filterEnd = root.querySelector("#filt-end").value;
     render(root);
   };
+
+  // 搜尋：邊打邊重渲染（去抖 250ms），避免每個 keystroke 都跑完整渲染
+  const searchInput = root.querySelector("#filt-search");
+  if (searchInput) {
+    let _searchT = null;
+    searchInput.oninput = (e) => {
+      const v = e.target.value;
+      clearTimeout(_searchT);
+      _searchT = setTimeout(() => {
+        searchQuery = v;
+        render(root);
+        // 重渲染後焦點會掉，把焦點搶回來、游標放尾端
+        const next = root.querySelector("#filt-search");
+        if (next) {
+          next.focus();
+          next.setSelectionRange(next.value.length, next.value.length);
+        }
+      }, 250);
+    };
+    // Enter 立即套用
+    searchInput.onkeydown = (e) => {
+      if (e.key === "Enter") {
+        clearTimeout(_searchT);
+        searchQuery = e.target.value;
+        render(root);
+      }
+    };
+  }
+  const searchClear = root.querySelector("#filt-search-clear");
+  if (searchClear) searchClear.onclick = () => { searchQuery = ""; render(root); };
   root.querySelector("#filt-clear").onclick = () => {
     filterStart = ""; filterEnd = "";
     render(root);
@@ -380,6 +577,14 @@ function bindHandlers(root, s) {
     el.onclick = () => {
       const code = el.dataset.toggle;
       if (expanded.has(code)) expanded.delete(code); else expanded.add(code);
+      render(root);
+    };
+  });
+  root.querySelectorAll("[data-weight-toggle]").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const code = el.dataset.weightToggle;
+      if (expandedWeights.has(code)) expandedWeights.delete(code); else expandedWeights.add(code);
       render(root);
     };
   });
@@ -410,7 +615,6 @@ function bindHandlers(root, s) {
       if (!seg) return;
       const act = el.dataset.act;
       if (act === "weight") openWeightAdjust(seg);
-      else if (act === "transfer") openTransfer(seg);
       else if (act === "more") openMoreMenu(seg);
       else if (act === "eliminate") openEliminate(seg);
     };
@@ -442,8 +646,9 @@ async function openEliminate(seg) {
   });
   if (!ok) return;
   update((st) => {
-    // 對該 ad_code 所有段都標 eliminated（避免一支廣告多段時清單仍出現）
     const targetCode = seg.ad_code;
+    const targetIds = st.ads.filter((a) => a.ad_code === targetCode).map((a) => a.id);
+    const ad_snapshots = captureUndoSnapshot(st, targetIds);
     st.ads.forEach((a) => {
       if (a.ad_code === targetCode) a.eliminated = true;
     });
@@ -453,6 +658,7 @@ async function openEliminate(seg) {
       action_type: "淘汰廣告",
       description: `${seg.ad_code} ${seg.ad_name}：到期不再續費，已從即將到期清單移除`,
       status: "pending",
+      undo_payload: { ad_snapshots, added_ad_ids: [] },
     });
   }, "淘汰廣告");
   toast("已淘汰並建立待辦", "ok");
@@ -506,12 +712,25 @@ function openEditor(id, renewFrom = null, prefill = null) {
     };
   }
 
+  // 既有廣告分組 — 給下拉選單用（取唯一值並排序）
+  const existingGroups = [...new Set(s.ads.map((x) => x.group).filter((g) => g && g.trim()))].sort();
+  // 若 a.group 不在既有清單裡（新建中且使用者尚未選），允許落到「新增」模式
+  const groupInList = a.group && existingGroups.includes(a.group);
+
   const html = `
     <h2>${id ? "編輯廣告" : renewFrom ? "續費廣告" : "新增廣告"}</h2>
     <div class="field-row">
       <div class="field"><label>廣告代碼</label><input id="f-code" value="${esc(a.ad_code || "")}" /></div>
       <div class="field" style="flex:2"><label>廣告名稱</label><input id="f-name" value="${esc(a.ad_name || "")}" /></div>
-      <div class="field"><label>廣告分組</label><input id="f-group" value="${esc(a.group || "")}" /></div>
+      <div class="field">
+        <label>廣告分組</label>
+        <select id="f-group-select">
+          <option value="" ${!a.group ? "selected" : ""}>（未分組）</option>
+          ${existingGroups.map((g) => `<option value="${esc(g)}" ${groupInList && a.group === g ? "selected" : ""}>${esc(g)}</option>`).join("")}
+          <option value="__new__" ${a.group && !groupInList ? "selected" : ""}>＋ 新增分組…</option>
+        </select>
+        <input id="f-group-new" type="text" placeholder="輸入新分組名稱" value="${esc(!groupInList ? (a.group || "") : "")}" style="margin-top:4px;display:${a.group && !groupInList ? "block" : "none"}" />
+      </div>
     </div>
     <div class="amount-row">
       <div class="field" style="flex:0 0 110px">
@@ -545,7 +764,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
     <div class="field-row">
       <div class="field"><label>開始日（含）</label><input id="f-start" type="date" value="${a.start_date || ""}" /></div>
       <div class="field"><label>結束日（不含）</label><input id="f-end" type="date" value="${a.end_date || ""}" /></div>
-      <div class="field"><label>攤提天數（手動）</label><input id="f-days" type="number" value="${a.amortize_days || 30}" /></div>
+      <div class="field"><label>攤提天數${id ? "（編輯時不自動同步）" : "（自動 = 起迄天數）"}</label><input id="f-days" type="number" value="${a.amortize_days || 30}" /></div>
     </div>
     <div class="field">
       <label>每日攤提（台幣，自動）</label>
@@ -583,6 +802,21 @@ function openEditor(id, renewFrom = null, prefill = null) {
     q("#f-cny").disabled = usdt;  // USDT 模式：人民幣金額由 USDT × USDT→RMB 自動算，不可手填
   };
 
+  // 廣告分組：選「＋ 新增分組」時，把文字輸入框顯示出來並 focus
+  const groupSelect = q("#f-group-select");
+  const groupNew = q("#f-group-new");
+  if (groupSelect && groupNew) {
+    groupSelect.onchange = () => {
+      if (groupSelect.value === "__new__") {
+        groupNew.style.display = "block";
+        groupNew.focus();
+      } else {
+        groupNew.style.display = "none";
+        groupNew.value = "";
+      }
+    };
+  }
+
   const recalcDaily = () => {
     // USDT 模式：amount_cny = amount_orig × currency_rate
     const cur = q("#f-currency").value;
@@ -600,7 +834,17 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const start = q("#f-start").value, end = q("#f-end").value;
     if (start && end) {
       const spanDays = (new Date(end) - new Date(start)) / 86400000;
-      q("#f-daily-hint").textContent = `起迄區間 ${spanDays} 天 vs 攤提天數 ${days} 天${spanDays === days ? " ✓" : "（不一致將導致總攤提 ≠ 台幣金額）"}`;
+      let hint;
+      if (spanDays === days) {
+        hint = `起迄區間 ${spanDays} 天 vs 攤提天數 ${days} 天 ✓`;
+      } else if (days > spanDays) {
+        // 權重調整切段:am 沿用源段(>span)= 正常
+        hint = `起迄區間 ${spanDays} 天 < 攤提天數 ${days} 天（這段是切出來的片段,am 沿用原合約 ${days} 天 — 正常)`;
+      } else {
+        // am < span:每日攤提 × 區間天數 > amount_twd → 雙倍計算!
+        hint = `⚠️ 起迄區間 ${spanDays} 天 > 攤提天數 ${days} 天（這會讓本段重複計算 ${(spanDays / days).toFixed(2)}× 台幣金額,通常是錯誤資料)`;
+      }
+      q("#f-daily-hint").textContent = hint;
     } else {
       q("#f-daily-hint").textContent = "";
     }
@@ -652,6 +896,24 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const el = q("#"+id2);
     if (el) el.oninput = recalcDaily;
   });
+  // 改起迄日 → 自動把攤提天數帶成 (end - start)。使用者最後可以再手改 #f-days 蓋掉
+  // ★ 只在「新增 / 續費」模式觸發,編輯既有廣告(id 有值)時不自動同步 — 避免覆蓋
+  // 「權重調整切段」這類 am 沿用源段的場景(例:30 天合約被切成 11+19 兩段,
+  //   兩段 am 都應該保持 30,不該被改成 11/19,否則會雙倍計算)
+  if (!id) {
+    const syncDaysFromSpan = () => {
+      const start = q("#f-start").value;
+      const end = q("#f-end").value;
+      if (!start || !end) return;
+      const span = (new Date(end) - new Date(start)) / 86400000;
+      if (span > 0 && Number.isFinite(span)) {
+        q("#f-days").value = span;
+        recalcDaily();
+      }
+    };
+    q("#f-start").addEventListener("change", syncDaysFromSpan);
+    q("#f-end").addEventListener("change", syncDaysFromSpan);
+  }
   q("#f-currency").onchange = () => { applyCurrencyMode(); recalcDaily(); };
   applyCurrencyMode();
   recalcDaily();
@@ -708,10 +970,15 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const currency = q("#f-currency").value === "USDT" ? "USDT" : "CNY";
     const amount_orig = currency === "USDT" ? (Number(q("#f-amount-orig").value) || 0) : cny;
     const currency_rate = currency === "USDT" ? (Number(q("#f-cny-rate").value) || 0) : 1;
+    // 廣告分組：select 模式取下拉值；若選「新增」則改讀文字輸入
+    const groupSelectVal = q("#f-group-select").value;
+    const groupValue = groupSelectVal === "__new__"
+      ? (q("#f-group-new").value || "").trim()
+      : groupSelectVal;
     const patch = {
       ad_code: code,
       ad_name: name,
-      group: q("#f-group").value.trim(),
+      group: groupValue,
       currency,
       amount_orig,
       currency_rate,
@@ -731,21 +998,30 @@ function openEditor(id, renewFrom = null, prefill = null) {
 
     const origWeights = id ? (s.ads.find((x) => x.id === id)?.weights || {}) : {};
     const weightsChanged = !id || weightsDiff(origWeights, weights);
+    // 續費不進待辦(連結分流通常不需要動);新增 / 編輯-改權重才進
+    const isRenewal = !id && !!a.renewal_of;
+    const shouldCreateTodo = weightsChanged && !isRenewal;
 
     update((st) => {
+      // 撤回快照
+      const ad_snapshots = id ? captureUndoSnapshot(st, [id]) : [];
+      const added_ad_ids = [];
+      const newAdId = uid("ad");
       if (id) {
         const idx = st.ads.findIndex((x) => x.id === id);
         st.ads[idx] = { ...st.ads[idx], ...patch };
       } else {
-        st.ads.push({ id: uid("ad"), ...patch });
+        st.ads.push({ id: newAdId, ...patch });
+        added_ad_ids.push(newAdId);
       }
-      if (weightsChanged) {
+      if (shouldCreateTodo) {
         st.todos.push({
           id: uid("todo"),
           created_at: nowTaipeiStamp(),
-          action_type: id ? "權重變更" : (a.renewal_of ? "廣告續費" : "新增廣告"),
+          action_type: id ? "手動改權重" : "新增廣告",
           description: buildTodoDesc(patch, weights, st.products, id ? origWeights : null),
           status: "pending",
+          undo_payload: { ad_snapshots, added_ad_ids },
         });
       }
     });
@@ -766,7 +1042,7 @@ function renderPerfSection(ad, state) {
   if (records.length === 0) {
     return `
       <h3 class="mt-16">成效資料</h3>
-      <div class="hint">尚無此廣告（以「廣告名稱 + 對應產品」比對）的成效資料。可到「設定」分頁按「📥 附加本週成效」匯入。</div>
+      <div class="hint">尚無此廣告（以「廣告名稱 + 對應產品」比對）的成效資料。可到「成效報表」分頁按「📥 匯入本週成效」匯入。</div>
     `;
   }
 
@@ -917,19 +1193,21 @@ function openWeightAdjust(seg) {
     if (Object.keys(newWeights).length === 0) { toast("至少一個產品權重 > 0", "bad"); return; }
     const notes = q("#f-notes").value.trim();
     let result;
-    try { result = buildWeightAdjust(seg, eff, newWeights); }
+    try { result = buildWeightAdjust(seg, eff, newWeights, notes); }
     catch (e) { toast(e.message, "bad"); return; }
-    if (notes) result.segments.forEach((s) => { s.notes = notes; });
     update((st) => {
+      const ad_snapshots = captureUndoSnapshot(st, [seg.id]);
       const i = st.ads.findIndex((a) => a.id === seg.id);
       if (i >= 0) st.ads[i] = result.closed;
       st.ads.push(...result.segments);
+      const added_ad_ids = result.segments.map((s) => s.id);
       st.todos.push({
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
-        action_type: "權重調整",
+        action_type: "手動改權重",
         description: buildTodoDesc(seg, newWeights, st.products, seg.weights),
         status: "pending",
+        undo_payload: { ad_snapshots, added_ad_ids },
       });
     });
     modal.close();
@@ -937,130 +1215,30 @@ function openWeightAdjust(seg) {
   };
 }
 
-// ── 生命週期動作：轉移 ─────────────────────────────────────────────
-function openTransfer(seg) {
-  const s = getState();
-  const today = todayTaipei();
-  const defEff = today > seg.start_date && today < seg.end_date ? today : seg.start_date;
-  const newWeights = { ...(seg.weights || {}) };
-
-  const fromOptions = Object.keys(seg.weights || {}).filter((pid) => Number(seg.weights[pid]) > 0);
-  const toOptions = s.products.map((p) => p.id);
-
-  const html = `
-    <h2>轉移：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
-    <p class="ink-2" style="font-size:13px">把某產品的權重轉到另一個產品（例：AV9 → av9_poquan）。可手動再修。</p>
-    <div class="field-row">
-      <div class="field"><label>生效日</label><input id="eff" type="date" value="${defEff}" min="${seg.start_date}" max="${seg.end_date}" /></div>
-      <div class="field">
-        <label>源產品</label>
-        <select id="from">${fromOptions.map((pid) => `<option value="${esc(pid)}">${esc(s.products.find((p) => p.id === pid)?.name || pid)} (${seg.weights[pid]}%)</option>`).join("")}</select>
-      </div>
-      <div class="field">
-        <label>目產品</label>
-        <select id="to">${toOptions.map((pid) => `<option value="${esc(pid)}">${esc(s.products.find((p) => p.id === pid)?.name || pid)}</option>`).join("")}</select>
-      </div>
-      <div class="field" style="flex:0 0 110px"><label>移轉 %</label><input id="amt" type="number" min="1" max="100" step="1" value="${seg.weights[fromOptions[0]] || 0}" /></div>
-    </div>
-    <div class="modal-actions" style="justify-content:flex-start">
-      <button id="apply-shift">套用移轉至下方權重</button>
-      <span class="ink-3" style="font-size:12px;align-self:center">下方可再手動微調</span>
-    </div>
-
-    <h3 class="mt-16">新段權重</h3>
-    <div id="weights"></div>
-    <div class="weight-sum" id="weight-sum">合計：<span id="wsum-val">0</span>%</div>
-
-    <div class="field mt-16">
-      <label>備註（選填，例：AV9 → 破圈轉移）</label>
-      <textarea id="f-notes" rows="2" style="width:100%;resize:vertical"></textarea>
-    </div>
-
-    <div class="modal-actions">
-      <button id="cancel">取消</button>
-      <button class="primary" id="save">套用</button>
-    </div>
-  `;
-  const dlg = modal.open(html);
-  const q = (sel) => dlg.querySelector(sel);
-
-  const renderWeights = () => {
-    q("#weights").innerHTML = s.products.map((p) => `
-      <div class="weight-grid">
-        <div>${esc(p.name)} <span class="ink-3 mono" style="font-size:11px">${esc(p.id)}</span></div>
-        <input type="number" min="0" max="100" step="1" data-pid="${esc(p.id)}" value="${newWeights[p.id] ?? ""}" placeholder="0" />
-      </div>
-    `).join("");
-    q("#weights").querySelectorAll("input[data-pid]").forEach((inp) => {
-      inp.oninput = () => {
-        const v = inp.value === "" ? 0 : Number(inp.value);
-        if (v > 0) newWeights[inp.dataset.pid] = v;
-        else delete newWeights[inp.dataset.pid];
-        recalcSum();
-      };
-    });
-    recalcSum();
-  };
-  const recalcSum = () => {
-    const sum = Object.values(newWeights).reduce((x, y) => x + Number(y || 0), 0);
-    const sumEl = q("#weight-sum");
-    sumEl.classList.toggle("ok", sum === 100);
-    sumEl.classList.toggle("bad", sum !== 100 && sum > 0);
-    sumEl.innerHTML = `合計：<span>${sum}</span>%`;
-  };
-  renderWeights();
-
-  q("#apply-shift").onclick = () => {
-    const fromPid = q("#from").value;
-    const toPid = q("#to").value;
-    const amt = Number(q("#amt").value) || 0;
-    if (fromPid === toPid) { toast("源與目相同", "bad"); return; }
-    const cur = Number(newWeights[fromPid]) || 0;
-    if (amt > cur) { toast(`源產品僅 ${cur}%，不夠移轉 ${amt}%`, "bad"); return; }
-    newWeights[fromPid] = cur - amt;
-    newWeights[toPid] = (Number(newWeights[toPid]) || 0) + amt;
-    if (newWeights[fromPid] <= 0) delete newWeights[fromPid];
-    renderWeights();
-  };
-
-  q("#cancel").onclick = () => modal.close();
-  q("#save").onclick = () => {
-    const eff = q("#eff").value;
-    if (!eff) { toast("請選生效日", "bad"); return; }
-    if (Object.keys(newWeights).length === 0) { toast("至少一個產品權重 > 0", "bad"); return; }
-    const notes = q("#f-notes").value.trim();
-    let result;
-    try { result = buildTransfer(seg, eff, newWeights); }
-    catch (e) { toast(e.message, "bad"); return; }
-    if (notes) result.segments.forEach((s) => { s.notes = notes; });
-    update((st) => {
-      const i = st.ads.findIndex((a) => a.id === seg.id);
-      if (i >= 0) st.ads[i] = result.closed;
-      st.ads.push(...result.segments);
-      st.todos.push({
-        id: uid("todo"),
-        created_at: nowTaipeiStamp(),
-        action_type: "轉移",
-        description: buildTodoDesc(seg, newWeights, st.products, seg.weights),
-        status: "pending",
-      });
-    });
-    modal.close();
-    toast("已產生轉移段，已建立待辦", "ok");
-  };
-}
 
 // 摺疊列上的 "⋯" 按鈕：展開更多動作
 function openMoreMenu(seg) {
-  const locked = !!seg.lock_perf_adjust;
+  const lockState = seg.lock_full ? "full" : (seg.lock_perf_adjust ? "weight" : "free");
   const eliminated = !!seg.eliminated;
+  const lockBtn = (id, icon, label, hint, isCurrent) => `
+    <button data-pick="lock-${id}" ${isCurrent ? 'disabled style="opacity:0.4"' : ""}>
+      ${icon} ${label}${isCurrent ? "（目前狀態）" : ""}
+      <div class="ink-3" style="font-size:11px;font-weight:400;margin-top:2px">${hint}</div>
+    </button>`;
   const html = `
     <h2>更多動作：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
     <p class="ink-2" style="font-size:13px">選擇要對此段執行的動作。</p>
     <div class="more-actions">
       <button data-pick="weight">權重調整</button>
-      <button data-pick="transfer">轉移</button>
-      <button data-pick="lock">${locked ? "🔓 解鎖（恢復可被成效自動調整）" : "🔒 鎖定（不被成效自動調整）"}</button>
+    </div>
+    <h3 style="margin-top:16px;font-size:13px">自動建議調整的鎖定設定</h3>
+    <p class="ink-3" style="font-size:11px;margin:0 0 8px">手動編輯權重永遠可用,這個設定只影響系統自動建議。</p>
+    <div class="more-actions" style="display:flex;flex-direction:column;gap:6px">
+      ${lockBtn("free",   "🔓", "自由",       "成效驅動 / 補空檔 都可動權重",            lockState === "free")}
+      ${lockBtn("weight", "🔒", "鎖權重",     "權重比例不變,但仍可被建議「整桶搬到別產品」",  lockState === "weight")}
+      ${lockBtn("full",   "🚫", "禁止挪動",   "完全不納入自動建議,成效爛只會建議淘汰",       lockState === "full")}
+    </div>
+    <div class="more-actions" style="margin-top:12px">
       <button data-pick="eliminate" ${eliminated ? "" : 'class="danger"'}>${eliminated ? "↺ 取消淘汰（恢復追蹤）" : "❌ 淘汰（不再通知）"}</button>
       <button data-pick="del" class="danger">刪除此段</button>
     </div>
@@ -1073,13 +1251,16 @@ function openMoreMenu(seg) {
       const pick = b.dataset.pick;
       modal.close();
       if (pick === "weight") openWeightAdjust(seg);
-      else if (pick === "transfer") openTransfer(seg);
-      else if (pick === "lock") {
+      else if (pick === "lock-free" || pick === "lock-weight" || pick === "lock-full") {
+        const newState = pick.split("-")[1];
+        const labels = { free: "自由", weight: "鎖權重", full: "禁止挪動" };
         update((st) => {
           const a = st.ads.find((x) => x.id === seg.id);
-          if (a) a.lock_perf_adjust = !locked;
-        }, locked ? "解鎖廣告" : "鎖定廣告");
-        toast(locked ? "已解鎖" : "已鎖定", "ok");
+          if (!a) return;
+          a.lock_perf_adjust = (newState === "weight" || newState === "full");
+          a.lock_full = (newState === "full");
+        }, `鎖定狀態: ${labels[newState]}`);
+        toast(`已設為「${labels[newState]}」`, "ok");
       } else if (pick === "eliminate") {
         if (eliminated) {
           // 取消淘汰：清掉同代碼所有段的 eliminated
@@ -1104,4 +1285,3 @@ function openMoreMenu(seg) {
     };
   });
 }
-

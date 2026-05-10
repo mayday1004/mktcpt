@@ -1,5 +1,5 @@
 import { getMonthlyBudget } from "../schema.js";
-import { bandsForMonth } from "./budget.js";
+import { bandsForMonth, checkMonthlyTotal } from "./budget.js";
 import { dailySpendGrid, monthlyTotals } from "./spending.js";
 import { daysOfMonth, addDays, todayTaipei } from "../lib/dates.js";
 import { scoreRecord } from "./perf-adjust.js";
@@ -39,9 +39,9 @@ export function evaluatePoorPerf(state, ad) {
 //   severity: "bad" / "warn" / "info"
 //   link:    URL hash 例如 "#dashboard"，或 null
 //
-// 規則（與 §3 對齊）：
-// - budget: 月攤提超花 > 1萬 (bad) / 0~1萬 (warn) / 少花 > 2萬 (warn)
-// - band:   小島產品任一日峰值超過 band.upper（bad）；APP 超過上緣 (warn)
+// 規則(與 §3 對齊,透過 checkMonthlyTotal 統一閾值):
+// - budget: 多花太多 (bad/紅) / 少花太多 (warn/橘) / 容許內不告警(綠/不顯示)
+// - band:   小島產品任一日峰值超過 band.upper(bad);APP 超過上限 (warn)
 // - expiry: 7 天內 end_date 且尚未有續費段
 // - todo:   pending todo > 3 天的數量
 export function computeAlerts(state, ymd /* today YYYY-MM-DD */) {
@@ -50,21 +50,15 @@ export function computeAlerts(state, ymd /* today YYYY-MM-DD */) {
   const today = ymd || todayTaipei();
 
   // ── 1. 月預算 ─────────────────────────────────────
-  // 用 daily_amort_override 優先，沒有才用算的
-  const overrideTotals = monthOverrideTotals(state, ym);
-  const computedTotals = monthlyTotals(state.ads, ym);
-  const totalsToUse = Object.keys(overrideTotals).length ? overrideTotals : computedTotals;
+  const totalsToUse = monthlyTotals(state.ads, ym);
   for (const p of state.products) {
     const budget = getMonthlyBudget(state, p.id, ym);
     if (budget == null) continue;
     const total = totalsToUse[p.id] || 0;
-    const diff = total - budget;
-    if (diff > 10000) {
-      out.push({ kind: "budget", severity: "bad", msg: `${p.name} 超花 ${Math.round(diff).toLocaleString()} TWD（上限 1 萬）`, link: "#dashboard" });
-    } else if (diff > 0) {
-      out.push({ kind: "budget", severity: "warn", msg: `${p.name} 已超花 ${Math.round(diff).toLocaleString()}（容許 1 萬內）`, link: "#dashboard" });
-    } else if (-diff > 20000) {
-      out.push({ kind: "budget", severity: "warn", msg: `${p.name} 少花 ${Math.round(-diff).toLocaleString()}（上限 2 萬）`, link: "#dashboard" });
+    const check = checkMonthlyTotal(total, budget, p.type);
+    // 只有非「容許內」才需要告警
+    if (check.kind === "bad" || check.kind === "warn") {
+      out.push({ kind: "budget", severity: check.kind, msg: `${p.name} ${check.msg}`, link: "#dashboard" });
     }
   }
 
@@ -89,7 +83,7 @@ export function computeAlerts(state, ymd /* today YYYY-MM-DD */) {
     out.push({
       kind: "band",
       severity: sev,
-      msg: `${p.name} 未來有 ${breachDays.length} 天超出建議日花費上緣：${sample}${breachDays.length > 3 ? "…" : ""}`,
+      msg: `${p.name} 未來有 ${breachDays.length} 天超出建議日花費上限：${sample}${breachDays.length > 3 ? "…" : ""}`,
       link: "#dashboard",
     });
   }
@@ -158,7 +152,11 @@ export function computeAlerts(state, ymd /* today YYYY-MM-DD */) {
 export function expiringAds(state, days = 10, todayYmd) {
   const today = todayYmd || todayTaipei();
   const horizon = addDays(today, days);
-  const SKIP_REASONS = new Set(["權重調整", "轉移", "送天數", "送天數結束"]);
+  // 「送天數」/「送天數結束」是舊系統暫時段,理論上不會是 latestByCode 取出的最末段,留作防呆。
+  // 「權重調整」/「轉移」原本被跳過是 bug — latestByCode 已經用 end_date 取最末段了,renewal_reason
+  // 描述的是該段「是怎麼產生的」,跟廣告何時到期無關。最末段即使是「權重調整」也代表廣告即將真正到期,
+  // 應該照常通知(原本因此漏掉重口社這類「最末段 reason=權重調整」5/10 結束的廣告)。
+  const SKIP_REASONS = new Set(["送天數", "送天數結束"]);
 
   // 依 ad_code 分組，取「最後結束日」最大者那筆當代表
   const latestByCode = new Map();
@@ -181,14 +179,3 @@ export function expiringAds(state, days = 10, todayYmd) {
   return out.sort((a, b) => a.daysLeft - b.daysLeft);
 }
 
-function monthOverrideTotals(state, ym) {
-  const ov = state.daily_amort_override || {};
-  const totals = {};
-  for (const [date, byProduct] of Object.entries(ov)) {
-    if (!date.startsWith(ym)) continue;
-    for (const [pid, amt] of Object.entries(byProduct)) {
-      totals[pid] = (totals[pid] || 0) + amt;
-    }
-  }
-  return totals;
-}

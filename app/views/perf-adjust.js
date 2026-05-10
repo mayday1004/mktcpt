@@ -1,8 +1,14 @@
 import { getState, update, uid } from "../state.js";
-import { NO_BAND_PIDS } from "../schema.js";
-import { buildAdPivot, previewImpact } from "../domain/perf-adjust.js";
+import { isNoBand, getMonthlyBudget } from "../schema.js";
+import { buildAdPivot, previewImpact, computeProductBudgetStatus } from "../domain/perf-adjust.js";
 import { buildWeightAdjust } from "../domain/lifecycle.js";
-import { todayTaipei, nowTaipeiStamp } from "../lib/dates.js";
+import { todayTaipei, nowTaipeiStamp, daysOfMonth } from "../lib/dates.js";
+import { detectFutureGaps, detectShortfalls, detectAppMonthlyUnderspend } from "../domain/gift-days.js";
+import { openGiftDayFixModal } from "./gift-day-fix-modal.js";
+import { checkMonthlyTotal, bandsForMonth } from "../domain/budget.js";
+import { captureUndoSnapshot } from "../domain/undo.js";
+import { dailySpendGrid } from "../domain/spending.js";
+import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
 
 // 模組級狀態：使用者覆寫的「該廣告該產品 final 權重」
 // key: `${adId}|${pid}` → number
@@ -17,12 +23,19 @@ let agreedAdIds = new Set();
 let filterMode = "changed";
 // 影響表是否摺疊 APP 列（預設展開）
 let collapseApp = false;
+// 套用後預估 區塊摺疊（預設摺疊）
+let collapseImpact = true;
+// 「展開全部產品」狀態 (CLAUDE.md §5.4.2)：哪些 ad 的權重欄要顯示全部 11 個產品 (含 0%)
+let expandedAds = new Set();
+let spendScenario = "renewal";
 
 export function render(root) {
   const s = getState();
   const ym = s.settings.current_month;
 
-  const pivot = buildAdPivot(s, ym);
+  const scenario = scenarioFor(s, ym);
+  const pivotAll = buildAdPivot(scenario.state, ym);
+  const pivot = pivotAll.filter((e) => !e.ad.projected_renewal);
   if (pivot.length === 0) {
     root.innerHTML = `
       <div class="view-head">
@@ -33,21 +46,44 @@ export function render(root) {
     return;
   }
 
-  // 計算各 ad 的最終權重（pending > suggested > old）
+  // 計算「列上要顯示的權重」(pending > suggested > old) — 給下方表格用
+  // 也納入 pending 對「不在 perProduct 的產品」(使用者手動加的 0%→N%)
   const newWeightsByAd = {};
-  for (const e of pivot) {
+  for (const e of pivotAll) {
     const final = { ...e.oldWeights };
+    const handled = new Set();
     for (const pp of e.perProduct) {
       const key = `${e.ad.id}|${pp.product.id}`;
       const overridden = pending.get(key);
       const w = overridden != null ? overridden : pp.new;
       if (w > 0) final[pp.product.id] = w;
       else delete final[pp.product.id];
+      handled.add(pp.product.id);
+    }
+    // pending 對未在 perProduct 的產品(手動加的 0% → N%)
+    for (const [k, w] of pending.entries()) {
+      const prefix = e.ad.id + "|";
+      if (!k.startsWith(prefix)) continue;
+      const pid = k.slice(prefix.length);
+      if (handled.has(pid)) continue;
+      if (w > 0) final[pid] = w;
+      else delete final[pid];
     }
     newWeightsByAd[e.ad.id] = final;
   }
 
-  const impact = previewImpact(s, ym, newWeightsByAd);
+  // 影響預覽只反映「✓套用」勾選的廣告(CLAUDE.md §5.4.1)
+  // 未勾選 = 原權重不動。手動覆寫但未勾,也不算進預覽。
+  const effectiveWeightsByAd = {};
+  for (const e of pivotAll) {
+    effectiveWeightsByAd[e.ad.id] = agreedAdIds.has(e.ad.id)
+      ? newWeightsByAd[e.ad.id]
+      : { ...e.oldWeights };
+  }
+  const impact = previewImpact(scenario.state, ym, effectiveWeightsByAd);
+
+  // 每產品的預算狀態(headroom 提示用,CLAUDE.md §5.4.2)
+  const productStatus = computeProductBudgetStatus(scenario.state, ym, pivotAll);
 
   // 過濾廣告
   const filtered = pivot.filter((e) => {
@@ -60,20 +96,40 @@ export function render(root) {
     return true;
   });
 
+  // 廣告調整入口(CLAUDE.md §5.8 v2):當有 shortfall 或 APP 月攤提少花 > 6 萬時顯示一鍵入口
+  const shortfalls = detectShortfalls(s, todayTaipei());
+  const underspends = detectAppMonthlyUnderspend(s, todayTaipei());
+  const totalIssues = shortfalls.length + underspends.length;
+  const giftDayBanner = totalIssues > 0 ? `
+    <div class="card" style="border-left:3px solid var(--warn);background:#fffbf0;margin-bottom:12px">
+      <div class="card-head">
+        <h3 style="margin:0;font-size:14px">🎁 偵測到 ${shortfalls.length > 0 ? `${shortfalls.length} 個產品日花費低於下限` : ""}${shortfalls.length > 0 && underspends.length > 0 ? "、" : ""}${underspends.length > 0 ? `${underspends.length} 個 APP 產品月攤提少花 > 6 萬` : ""}</h3>
+        <button class="primary" id="pa-gd-fix-open">→ 一鍵調整</button>
+      </div>
+      <div class="ink-2" style="font-size:12px;line-height:1.7;margin-top:6px">
+        系統會按優先序(小島補下限 → APP 補月預算 → APP 補下限)從可借的廣告挪權重。可在彈窗內勾選或取消個別調整。
+      </div>
+    </div>
+  ` : "";
+
   root.innerHTML = `
     <div class="view-head">
       <div>
         <h1>權重調整</h1>
-        <div class="desc">以廣告為主：左欄原權重、右欄系統建議；可手動覆寫或鎖定整支廣告不調。<br>建議的雙重 cap：未來日峰值 ≤ band 上緣（破圈跳過）+ 月攤提合計 ≤ 月預算（破圈/小島/APP 一律強制）。月攤提＝過去實際攤提 + 未來權重計算值。</div>
+        <div class="desc">以廣告為主：左欄原權重、右欄系統建議；可手動覆寫或鎖定整支廣告不調。<br>建議有兩道安全限制:未來日花費高峰 ≤ 建議日花費上限(破圈產品跳過) + 月攤提合計 ≤ 月預算(破圈/小島/APP 一律強制)。月攤提 = 過去實際攤提 + 未來依權重計算的金額。</div>
       </div>
     </div>
 
+    ${giftDayBanner}
+
     ${renderImpactSummary(impact)}
 
-    <div class="card">
+    ${renderImpactDailyGrid(scenario.state, ym, effectiveWeightsByAd, scenario)}
+
+    <div class="card perf-advice-card">
       <div class="card-head">
         <h2>廣告調整建議</h2>
-        <div class="ink-3">勾選「✓套用」表示同意這筆建議，最後批量送出；🔒 = 鎖定，永久排除自動建議</div>
+        <div class="ink-3">勾選「✓套用」表示同意這筆建議,最後批量送出;鎖定狀態 🔓自由 / 🔒鎖權重(可整桶搬) / 🚫禁止挪動,點擊圖示循環切換</div>
       </div>
 
       <div class="filter-row">
@@ -91,23 +147,8 @@ export function render(root) {
       ${filtered.length === 0 ? `
         <div class="empty">此過濾沒有匹配的廣告</div>
       ` : `
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th title="勾選＝同意套用此建議；最後一起批量送出">套用</th>
-                <th title="鎖定後該廣告不會被自動建議影響">🔒</th>
-                <th>代碼</th>
-                <th>名稱</th>
-                <th>原權重</th>
-                <th>建議權重（可改）</th>
-                <th>說明</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${filtered.map((e) => renderAdRow(e, s, newWeightsByAd)).join("")}
-            </tbody>
-          </table>
+        <div class="ad-cards">
+          ${filtered.map((e) => renderAdCard(e, s, newWeightsByAd, productStatus)).join("")}
         </div>
       `}
 
@@ -121,57 +162,92 @@ export function render(root) {
   bindHandlers(root, pivot, newWeightsByAd);
 }
 
+function scenarioFor(state, ym) {
+  if (spendScenario !== "renewal") {
+    return { state, virtualRenewals: [], excludedPoorPerf: [] };
+  }
+  const projection = projectAdsWithRenewals(state, ym, { fromDate: todayTaipei(), excludePoorPerf: true });
+  return {
+    state: { ...state, ads: projection.ads },
+    virtualRenewals: projection.virtualRenewals,
+    excludedPoorPerf: projection.excludedPoorPerf,
+  };
+}
+
+function uniqueByCode(ads) {
+  const seen = new Set();
+  const out = [];
+  for (const ad of ads || []) {
+    const key = ad.ad_code || ad.id;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(ad);
+  }
+  return out;
+}
+
 function renderImpactSummary(impacts) {
   const islands = impacts.filter((c) => c.product.type === "island");
   const apps = impacts.filter((c) => c.product.type === "app");
   const visible = collapseApp ? islands : impacts;
+
+  // 共用:把數字變成「↑ +X」或「↓ -X」或「持平」(花費上升=綠、下降=紅)
+  const fmtDelta = (d) => {
+    if (d === 0) return `<span class="impact-delta zero">→ 持平</span>`;
+    const cls = d > 0 ? "up" : "down";
+    const arrow = d > 0 ? "↑" : "↓";
+    const sign = d > 0 ? "+" : "";
+    return `<span class="impact-delta ${cls}">${arrow} ${sign}${Math.round(d).toLocaleString()}</span>`;
+  };
 
   const rows = visible.map((c) => {
     const { product, budget, band, oldTotal, newTotal, oldDailyPeak, newDailyPeak, oldPeakDay, newPeakDay } = c;
     const totalDelta = newTotal - oldTotal;
     const peakDelta = newDailyPeak - oldDailyPeak;
     const isIsland = product.type === "island";
-    const checkBand = !NO_BAND_PIDS.has(product.id);
-    const totalCls = budget == null ? "ink-3" :
-      Math.abs(newTotal - budget) <= 5000 ? "ok" :
-      newTotal - budget > 10000 ? "bad" :
-      newTotal - budget < -20000 ? "warn" : "warn";
+    const checkBand = !isNoBand(product);
 
-    // 評估：新日花費對照建議日花費區間
+    // 月預算狀態(用 checkMonthlyTotal 統一閾值;APP/小島自動套對應 tolerance)
+    const monthCheck = budget != null ? checkMonthlyTotal(newTotal, budget, product.type) : null;
+    const monthKind = monthCheck?.kind || "ink-3";
+    const monthBadge = monthCheck
+      ? `<span class="pill ${monthKind}" style="font-size:11px;margin-top:4px;display:inline-block">${monthCheck.msg}</span>`
+      : `<span class="ink-3" style="font-size:11px">未設預算</span>`;
+
+    // 評估:新日花費對照建議日花費區間
     let evalCell;
     if (!checkBand) {
-      evalCell = `<span class="ink-3">不檢查（破圈）</span>`;
+      evalCell = `<span class="pill" style="background:#eef1f6;color:var(--ink-3);font-size:11px">不檢查(破圈)</span>`;
     } else if (band.upper <= 0 || budget == null) {
-      evalCell = `<span class="ink-3">未設預算</span>`;
+      evalCell = `<span class="pill" style="background:#eef1f6;color:var(--ink-3);font-size:11px">未設預算</span>`;
     } else if (newDailyPeak > band.upper) {
       const over = newDailyPeak - band.upper;
-      evalCell = `<span class="bad">✗ 超出上緣 +${Math.round(over).toLocaleString()}</span>
-        <div class="ink-3" style="font-size:11px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;
+      evalCell = `<span class="pill bad" style="font-size:11px">✗ 超出上限 +${Math.round(over).toLocaleString()}</span>
+        <div class="ink-3" style="font-size:10px;margin-top:3px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;
     } else if (newDailyPeak < band.lower && newDailyPeak > 0) {
       const under = band.lower - newDailyPeak;
-      evalCell = `<span class="warn">⚠ 低於下緣 -${Math.round(under).toLocaleString()}</span>
-        <div class="ink-3" style="font-size:11px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;
+      evalCell = `<span class="pill warn" style="font-size:11px">⚠ 低於下限 -${Math.round(under).toLocaleString()}</span>
+        <div class="ink-3" style="font-size:10px;margin-top:3px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;
     } else {
-      evalCell = `<span class="ok">✓ 在區間內</span>
-        <div class="ink-3" style="font-size:11px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;
+      evalCell = `<span class="pill ok" style="font-size:11px">✓ 在區間內</span>
+        <div class="ink-3" style="font-size:10px;margin-top:3px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;
     }
 
     return `
-      <tr class="${isIsland ? "island-row" : ""}">
+      <tr class="${isIsland ? "island-row" : ""} impact-row impact-row-${monthKind}">
         <td>
           <strong>${esc(product.name)}</strong>
           <span class="pill ${product.type}" style="margin-left:6px;font-size:10px">${product.type === "app" ? "APP" : "小島"}</span>
         </td>
         <td class="num">${budget != null ? Math.round(budget).toLocaleString() : "<span class='ink-3'>未設</span>"}</td>
-        <td class="num">${Math.round(oldTotal).toLocaleString()}</td>
-        <td class="num ${totalCls}"><strong>${Math.round(newTotal).toLocaleString()}</strong>
-          <div class="ink-3" style="font-size:11px">${totalDelta >= 0 ? "+" : ""}${Math.round(totalDelta).toLocaleString()}${budget != null ? ` / 預算差 ${Math.round(newTotal - budget) >= 0 ? "+" : ""}${Math.round(newTotal - budget).toLocaleString()}` : ""}</div>
+        <td class="num">
+          <div class="impact-cell-main"><strong class="${monthKind}">${Math.round(newTotal).toLocaleString()}</strong></div>
+          <div class="impact-cell-sub">原 ${Math.round(oldTotal).toLocaleString()} ${fmtDelta(totalDelta)}</div>
+          <div>${monthBadge}</div>
         </td>
-        <td class="num">${Math.round(oldDailyPeak).toLocaleString()}
-          ${oldPeakDay ? `<div class="ink-3" style="font-size:10px">於 ${oldPeakDay.slice(5)}</div>` : ""}
-        </td>
-        <td class="num"><strong>${Math.round(newDailyPeak).toLocaleString()}</strong>
-          ${peakDelta !== 0 ? `<div class="ink-3" style="font-size:11px">${peakDelta >= 0 ? "+" : ""}${Math.round(peakDelta).toLocaleString()}</div>` : ""}
+        <td class="num">
+          <div class="impact-cell-main"><strong>${Math.round(newDailyPeak).toLocaleString()}</strong></div>
+          <div class="impact-cell-sub">原 ${Math.round(oldDailyPeak).toLocaleString()} ${fmtDelta(peakDelta)}</div>
           ${newPeakDay ? `<div class="ink-3" style="font-size:10px">於 ${newPeakDay.slice(5)}</div>` : ""}
         </td>
         <td>${evalCell}</td>
@@ -179,42 +255,208 @@ function renderImpactSummary(impacts) {
     `;
   }).join("");
 
+  const chevron = collapseImpact ? "▶" : "▼";
   return `
-    <div class="card">
+    <div class="card perf-impact-card">
       <div class="card-head">
-        <h2>套用後預估</h2>
+        <h2 id="btn-toggle-impact" style="cursor:pointer;user-select:none">${chevron} 套用後預估</h2>
         <div class="ink-3" style="font-size:12px">
-          顯示套用建議調整後，每個產品月攤提與日花費的變化
-          ${apps.length > 0 ? `<button id="btn-toggle-app" class="link-btn" style="margin-left:8px">${collapseApp ? `展開 APP（${apps.length}）` : "只看小島"}</button>` : ""}
+          顯示套用建議調整後,每個產品月攤提與日花費的變化
+          ${!collapseImpact && apps.length > 0 ? `<button id="btn-toggle-app" class="link-btn" style="margin-left:8px">${collapseApp ? `展開 APP(${apps.length})` : "只看小島"}</button>` : ""}
         </div>
       </div>
+      ${collapseImpact ? "" : `
+      <div class="impact-legend">
+        <span class="impact-legend-item"><span class="pill ok" style="font-size:10px">綠</span> 容許範圍內</span>
+        <span class="impact-legend-item"><span class="pill warn" style="font-size:10px">橘</span> 少花太多</span>
+        <span class="impact-legend-item"><span class="pill bad" style="font-size:10px">紅</span> 多花太多</span>
+      </div>
       <div class="table-wrap">
-        <table>
+        <table class="impact-table">
+          <colgroup>
+            <col style="width:120px">
+            <col>
+            <col>
+            <col>
+            <col style="width:170px">
+          </colgroup>
           <thead>
             <tr>
               <th>產品</th>
               <th class="num">月預算</th>
-              <th class="num">原月攤提</th>
-              <th class="num">新月攤提</th>
-              <th class="num">原日花費</th>
-              <th class="num">新日花費</th>
+              <th class="num">月花費(新 / 原 → 變化)</th>
+              <th class="num">日花費(新 / 原 → 變化)</th>
               <th>評估</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
+      `}
     </div>
   `;
 }
 
-// 計算「會被批量送出」的廣告筆數：使用者勾選同意 + 沒鎖 + 沒過期 + 不是淘汰建議 + 權重真有變動
+// 套用後每日攤提預覽
+// 用 effectiveWeightsByAd(只反映「✓套用」勾選的廣告)patch 廣告權重,跟原始 grid 對比。
+// 每格主數字 = 套用後值;有變化的同時顯示 ↑ +X 或 ↓ -X。
+// 紅底 = 該日超出建議花費上限;橘底 = 低於下限。
+function renderImpactDailyGrid(state, ym, effectiveWeightsByAd, scenario = null) {
+  if (!state || !ym) return "";
+  const today = todayTaipei();
+
+  // 把 ads 的 weights 換成 effective(只 patch 有勾選的)
+  // ★ 權重變更只影響今日及未來 — 對 active 段在 today 切兩半:過去用原 weights、未來用新 weights
+  const patchedAds = [];
+  for (const a of state.ads) {
+    const eff = effectiveWeightsByAd[a.id];
+    if (!eff || sameWeights(a.weights || {}, eff)) {
+      patchedAds.push(a);
+      continue;
+    }
+    if (a.start_date >= today) {
+      // 整段都還沒開始 → 新 weights 套到整段(不影響過去,因為沒過去)
+      patchedAds.push({ ...a, weights: eff });
+    } else if (a.end_date <= today) {
+      // 整段已結束 → 不該改(理論上不會走到這,因為 applyAll 已過濾)
+      patchedAds.push(a);
+    } else {
+      // active 段 → 切兩半:[start, today) 原 weights、[today, end) 新 weights
+      patchedAds.push({ ...a, end_date: today });
+      patchedAds.push({ ...a, id: `${a.id}__preview_new`, start_date: today, weights: eff });
+    }
+  }
+
+  const newGrid = dailySpendGrid(patchedAds, ym);
+  const oldGrid = dailySpendGrid(state.ads, ym);
+  const products = state.products || [];
+  const monthDays = [...daysOfMonth(ym)];
+  const dayBandsByPid = Object.fromEntries(products.map((p) => [p.id, bandsForMonth(state, p, ym)]));
+
+  // 月合計
+  const newTotals = Object.fromEntries(products.map((p) => [p.id, 0]));
+  const oldTotals = Object.fromEntries(products.map((p) => [p.id, 0]));
+  let newGrand = 0, oldGrand = 0;
+  let anyChanged = false;
+
+  const bodyRows = monthDays.map((d) => {
+    const newRow = newGrid[d] || {};
+    const oldRow = oldGrid[d] || {};
+    let newDayTotal = 0, oldDayTotal = 0;
+    const cells = products.map((p) => {
+      const newAmt = newRow[p.id] || 0;
+      const oldAmt = oldRow[p.id] || 0;
+      newDayTotal += newAmt;
+      oldDayTotal += oldAmt;
+      newTotals[p.id] += newAmt;
+      oldTotals[p.id] += oldAmt;
+      const delta = newAmt - oldAmt;
+      if (Math.abs(delta) >= 0.5) anyChanged = true;
+      const b = dayBandsByPid[p.id]?.[d];
+      const isFuture = d >= today;
+      const checkBand = isFuture && b && b.budget_set && !isNoBand(p) && newAmt > 0;
+      const isUnder = checkBand && newAmt < b.lower;
+      const isOver = checkBand && newAmt > b.upper;
+      const cls = `num ${isUnder ? "dg-under-band" : ""} ${isOver ? "dg-over-band" : ""} ${d < today ? "dg-past" : ""}`;
+      let inner;
+      if (newAmt === 0 && oldAmt === 0) {
+        inner = "<span class='ink-3'>—</span>";
+      } else {
+        inner = `${Math.round(newAmt).toLocaleString()}`;
+        if (Math.abs(delta) >= 0.5) {
+          const deltaSign = delta > 0 ? "+" : "";
+          const deltaCls = delta > 0 ? "delta-up" : "delta-down";
+          inner += `<div class="${deltaCls}" style="font-size:10px;font-weight:500">${deltaSign}${Math.round(delta).toLocaleString()}</div>`;
+        }
+      }
+      return `<td class="${cls}">${inner}</td>`;
+    }).join("");
+    newGrand += newDayTotal;
+    oldGrand += oldDayTotal;
+    const todayCls = d === today ? " dg-today" : "";
+    return `<tr class="${todayCls.trim()}">
+      <td class="mono">${d.slice(5)}${d === today ? " <span class='pill' style='font-size:10px;padding:0 4px;margin-left:2px;background:#111;color:#fff'>今天</span>" : ""}</td>
+      ${cells}
+      <td class="num"><strong>${Math.round(newDayTotal).toLocaleString()}</strong></td>
+    </tr>`;
+  }).join("");
+
+  // 月合計列
+  const footerCells = products.map((p) => {
+    const newT = newTotals[p.id];
+    const oldT = oldTotals[p.id];
+    const budget = getMonthlyBudget(state, p.id, ym) || 0;
+    const diff = newT - budget;
+    const delta = newT - oldT;
+    const diffClass = !budget ? "ink-3" : diff > 10000 ? "bad" : diff > 0 ? "warn" : -diff > 20000 ? "warn" : "ok";
+    let deltaTag = "";
+    if (Math.abs(delta) >= 0.5) {
+      const deltaSign = delta > 0 ? "+" : "";
+      const deltaCls = delta > 0 ? "delta-up" : "delta-down";
+      deltaTag = `<div class="${deltaCls}" style="font-size:10px">${deltaSign}${Math.round(delta).toLocaleString()}</div>`;
+    }
+    return `<td class="num dg-foot">
+      <strong>${Math.round(newT).toLocaleString()}</strong>
+      ${deltaTag}
+      ${budget ? `<div class="dg-foot-sub ${diffClass}">${diff >= 0 ? "+" : ""}${Math.round(diff).toLocaleString()}</div>` : ""}
+    </td>`;
+  }).join("");
+
+  const headerCells = products.map((p) => `<th class="num">${esc(p.name)}</th>`).join("");
+
+  const subhint = anyChanged
+    ? "綠色 = 套用後增加,紅色 = 減少。紅底 = 該日超出建議花費上限,橘底 = 低於下限。"
+    : `目前沒有勾選任何「✓套用」,下表 = ${spendScenario === "renewal" ? "續費預估" : "實際資料"}每日攤提(無變化)。勾選下方建議後此表會即時反映變化。`;
+  const scenarioNote = spendScenario === "renewal" && scenario
+    ? `<div class="ink-3" style="font-size:12px">已含 ${uniqueByCode(scenario.virtualRenewals).length} 支預估續費廣告；虛擬續費段只參與 baseline，不會被批量套用。</div>`
+    : "";
+  const scenarioChips = `
+    <div style="display:flex;align-items:center;gap:6px">
+      <span class="ink-3" style="font-size:12px">攤提模式：</span>
+      <button class="filter-chip ${spendScenario === "renewal" ? "active" : ""}" data-spend-scenario="renewal">續費預估</button>
+      <button class="filter-chip ${spendScenario === "actual" ? "active" : ""}" data-spend-scenario="actual">實際資料</button>
+    </div>
+  `;
+
+  return `
+    <div class="card" style="margin-top:14px">
+      <div class="card-head">
+        <h2>套用後每日攤提預覽 (${ym})</h2>
+        ${scenarioChips}
+      </div>
+      <div class="ink-3" style="font-size:12px;margin-bottom:6px">${subhint}</div>
+      ${scenarioNote}
+      <div class="table-wrap" style="max-height:560px;overflow:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>日期</th>
+              ${headerCells}
+              <th class="num">當日合計</th>
+            </tr>
+          </thead>
+          <tbody>${bodyRows}</tbody>
+          <tfoot>
+            <tr class="dg-foot-row">
+              <td><strong>月合計</strong><div class="ink-3" style="font-size:11px">vs 預算</div></td>
+              ${footerCells}
+              <td class="num dg-foot"><strong>${Math.round(newGrand).toLocaleString()}</strong></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// 計算「會被批量送出」的廣告筆數：使用者勾選同意 + 沒過期 + 不是淘汰建議 + 權重真有變動
+// 🔒 鎖權重的 single-product 100% 廣告可套用「整桶搬」建議。
 function countAgreedChanges(pivot, newWeightsByAd) {
   const today = todayTaipei();
   let n = 0;
   for (const e of pivot) {
     if (!agreedAdIds.has(e.ad.id)) continue;
-    if (e.ad.lock_perf_adjust) continue;
+    if (e.ad.lock_perf_adjust && !e.transferTarget) continue;
     if (!e.ad.end_date || e.ad.end_date <= today) continue;
     if (e.suggestEliminate) continue;
     if (sameWeights(e.oldWeights || {}, newWeightsByAd[e.ad.id] || {})) continue;
@@ -223,122 +465,286 @@ function countAgreedChanges(pivot, newWeightsByAd) {
   return n;
 }
 
-function renderAdRow(entry, state, newWeightsByAd) {
-  const { ad, oldWeights, perProduct, suggestEliminate } = entry;
+function renderAdCard(entry, state, newWeightsByAd, productStatus) {
+  const { ad, oldWeights, perProduct, suggestEliminate, transferTarget, transferSourcePid } = entry;
   const productNameOf = Object.fromEntries(state.products.map((p) => [p.id, p.name]));
-  const products = state.products.filter((p) => oldWeights[p.id] > 0);
-  const locked = !!ad.lock_perf_adjust;
-  const lockBtn = `
-    <button class="lock-btn ${locked ? "locked" : ""}" data-lock-adid="${esc(ad.id)}"
-            title="${locked ? "已鎖定（點擊解鎖）" : "鎖定 — 永久排除自動建議"}">🔒</button>
-  `;
 
-  const oldSum = products.reduce((s, p) => s + (Number(oldWeights[p.id]) || 0), 0);
-  const oldCells = products.map((p) =>
-    `<span class="weight-pill">${esc(p.name)} <strong>${oldWeights[p.id]}%</strong></span>`
-  ).join(" ");
+  const lockState = ad.lock_full ? "full" : (ad.lock_perf_adjust ? "weight" : "free");
+  const locked = lockState !== "free";
+  const lockIconMap = { free: "🔓", weight: "🔒", full: "🚫" };
+  const lockTitleMap = {
+    free: "自由 — 自動建議可改權重(點擊切換鎖定狀態)",
+    weight: "🔒 鎖權重 — 權重比例不變,但可被建議整桶搬到別產品(點擊切換)",
+    full: "🚫 禁止挪動 — 完全不納入自動建議,成效爛只建議淘汰(點擊切換)",
+  };
+  const lockBtn = `<button class="lock-btn ${locked ? "locked" : ""}" data-lock-adid="${esc(ad.id)}" title="${esc(lockTitleMap[lockState])}">${lockIconMap[lockState]}</button>`;
 
-  // 建議淘汰 — 整列以「淘汰建議」呈現，不顯示權重輸入
-  if (suggestEliminate) {
-    const reasons = perProduct.map((pp) => {
-      const ratio = pp.score?.ratio;
-      const ratioPct = ratio == null ? "—" : `${Math.round(ratio * 100)}%`;
-      return `<div class="bad" style="font-size:11px">${esc(productNameOf[pp.product.id] || pp.product.id)}：${ratioPct} 達成 — 削 ${pp.old}%</div>`;
-    }).join("");
-    return `
-      <tr class="row-eliminate">
-        <td class="ink-3" style="text-align:center" title="淘汰建議不走批量送出，請點下方「淘汰」">—</td>
-        <td>${lockBtn}</td>
-        <td class="mono">${esc(ad.ad_code)}</td>
-        <td><strong>${esc(ad.ad_name)}</strong><div class="ink-3" style="font-size:11px">${ad.start_date} ~ ${ad.end_date}</div></td>
-        <td>${oldCells || `<span class="ink-3">—</span>`}</td>
-        <td colspan="2">
-          <div class="eliminate-banner">
-            <strong>❌ 建議淘汰</strong>
-            <span class="ink-2" style="font-size:12px">所有產品成效都最差。</span>
-            <button class="primary danger eliminate-action" data-eliminate="${esc(ad.id)}" ${locked ? "disabled title='已鎖定'" : ""}>淘汰（到期不續費）</button>
-          </div>
-          <div style="margin-top:6px">${reasons}</div>
-        </td>
-      </tr>
-    `;
+  // 套用勾選框邏輯
+  const today = todayTaipei();
+  const isPast = !ad.end_date || ad.end_date <= today;
+  const noChange = sameWeights(oldWeights || {}, (newWeightsByAd && newWeightsByAd[ad.id]) || {});
+  const canApplyLockedTransfer = !!transferTarget && lockState === "weight";
+  const agreeDisabled = (locked && !canApplyLockedTransfer) || isPast || noChange || suggestEliminate;
+  const agreeChecked = !agreeDisabled && agreedAdIds.has(ad.id);
+  const agreeTitle = suggestEliminate ? "建議淘汰,請點「淘汰」按鈕"
+    : locked && !canApplyLockedTransfer ? "已鎖定,無法套用"
+    : isPast ? "已過期,無法套用"
+    : noChange ? "無變動"
+    : "勾選同意套用此建議";
+  // 一般鎖定 / 建議淘汰 不能批量套用;🔒 整桶搬是鎖權重的例外。
+  const agreeBox = ((locked && !canApplyLockedTransfer) || suggestEliminate)
+    ? `<span class="ad-card-pick" title="${esc(agreeTitle)}">—</span>`
+    : `<input type="checkbox" class="agree-toggle" data-agree-adid="${esc(ad.id)}" ${agreeChecked ? "checked" : ""} ${agreeDisabled ? "disabled" : ""} title="${agreeTitle}" />`;
+
+  // 卡片狀態 class
+  const cardCls = [
+    "ad-card",
+    suggestEliminate ? "ad-card-eliminate" : "",
+    transferTarget ? "ad-card-transfer" : "",
+    agreeChecked ? "ad-card-agreed" : (!agreeDisabled && !noChange ? "ad-card-dim" : ""),
+  ].filter(Boolean).join(" ");
+
+  // 建議淘汰 banner(淘汰按鈕永遠可點 — 淘汰是使用者決策,不受鎖定影響)
+  const eliminateBanner = suggestEliminate ? `
+    <div class="ad-card-banner ad-card-banner-bad">
+      <strong>❌ 建議淘汰</strong>
+      <span>所有產品成效都最差</span>
+      <button class="primary danger eliminate-action" data-eliminate="${esc(ad.id)}">淘汰(到期不續費)</button>
+    </div>
+  ` : "";
+
+  // ── 一般 / 整桶搬建議 ──
+
+  // 決定要顯示哪些產品(預設只顯示有權重 / 系統建議的;展開顯示全部)
+  const isExpanded = expandedAds.has(ad.id);
+  let displayProducts;
+  if (isExpanded) {
+    displayProducts = state.products;
+  } else {
+    const includedIds = new Set();
+    for (const pid of Object.keys(oldWeights)) if (Number(oldWeights[pid]) > 0) includedIds.add(pid);
+    for (const pp of perProduct) {
+      if (Number(pp.new) > 0 || pp.systemAdded) includedIds.add(pp.product.id);
+    }
+    for (const [k, w] of pending.entries()) {
+      const prefix = ad.id + "|";
+      if (!k.startsWith(prefix)) continue;
+      if (Number(w) > 0) includedIds.add(k.slice(prefix.length));
+    }
+    displayProducts = state.products.filter((p) => includedIds.has(p.id));
   }
+  const hiddenCount = state.products.length - displayProducts.length;
 
-  // 計算新權重合計（用 pending override 蓋過建議）
+  // 排序:按原權重從大到小,0% 排最後
+  displayProducts = [...displayProducts].sort((a, b) => {
+    const wa = Number(oldWeights[a.id]) || 0;
+    const wb = Number(oldWeights[b.id]) || 0;
+    if (wa !== wb) return wb - wa;
+    return a.name.localeCompare(b.name);
+  });
+
+  // 計算新權重合計
   let newSum = 0;
+  const oldSum = displayProducts.reduce((s, p) => s + (Number(oldWeights[p.id]) || 0), 0);
   let anyCappedByAdSum = false;
-  const newCells = products.map((p) => {
+  const lockedAd = !!ad.lock_perf_adjust;
+
+  const productRows = displayProducts.map((p) => {
     const key = `${ad.id}|${p.id}`;
     const pp = perProduct.find((x) => x.product.id === p.id);
-    const suggestedW = pp ? pp.new : oldWeights[p.id];
+    const oldW = Number(oldWeights[p.id]) || 0;
+    const suggestedW = pp ? pp.new : oldW;
     const overridden = pending.get(key);
     const finalW = overridden != null ? overridden : suggestedW;
     newSum += Number(finalW) || 0;
     if (pp?.cappedByAdSum) anyCappedByAdSum = true;
-    const delta = finalW - (oldWeights[p.id] || 0);
-    const deltaCls = delta > 0 ? "ok" : delta < 0 ? "bad" : "ink-3";
-    const locked = !!ad.lock_perf_adjust;
+
+    const delta = finalW - oldW;
+    const deltaText = delta === 0
+      ? `<span class="delta-zero">→ 0</span>`
+      : delta > 0
+        ? `<span class="delta-up">↑ +${delta}</span>`
+        : `<span class="delta-down">↓ ${delta}</span>`;
+
+    // 成效狀態 cell
+    const scoreCell = formatScoreCell(pp, false);
+
+    // 建議結果 cell — 主標籤 + 原因(口語化,不暴露 score.ratio 百分比)
+    // 🔒 整桶搬建議:source 顯示「整個挪走」、target 顯示「接收該廣告」(優先於 locked 判斷)
+    const sub = (txt) => `<div class="ink-3" style="font-size:10px;line-height:1.3;margin-top:2px">${txt}</div>`;
+    const score = pp?.score;
+    let reasonText;
+    if (transferTarget && p.id === transferTarget) {
+      reasonText = `<span class="ok">接收該廣告</span>${sub("從鎖定廣告轉入此產品")}`;
+    } else if (transferTarget && p.id === transferSourcePid) {
+      reasonText = `<span class="bad">整個挪走</span>${sub("廣告對此產品成效不佳,移到其他產品")}`;
+    } else if (pp?.locked) {
+      const why = lockState === "full" ? "禁止挪動,不參與自動調整" : "非權重廣告,全部移出";
+      reasonText = `${lockState === "full" ? "🚫 禁止挪動" : "🔒 鎖權重"}${sub(why)}`;
+    } else if (suggestEliminate) {
+      reasonText = `<span class="bad">削減</span>${sub("廣告對所有產品成效都不佳,建議淘汰")}`;
+    } else if (delta === 0) {
+      let why;
+      if (!score || score.ratio == null) why = "尚無成效資料,維持原權重";
+      else if (score.ratio >= 1.0) why = "廣告成效達標,維持原權重";
+      else why = "成效尚可,本廣告非此產品最差";
+      reasonText = `維持${sub(why)}`;
+    } else if (delta > 0) {
+      let why;
+      if (pp.crossBorrowed) why = "此產品預算還有空間,從其他產品接收權重";
+      else if (pp.cappedByAdSum && (pp.scaleAdjust || 0) > 0) why = "本廣告權重未滿 100%,補回";
+      else if (!score || score.ratio == null) why = "從成效不佳的廣告接收權重";
+      else if (score.ratio >= 1.0) why = "廣告成效達標,增加權重";
+      else why = "本廣告對此產品相對較好,增加權重";
+      reasonText = `<span class="ok">接收</span>${sub(why)}`;
+    } else {
+      let why;
+      if (pp.crossLent) why = "此產品預算飽和,讓出權重給預算不足的產品";
+      else if (pp.cappedByBand) why = "已達日花費上限,削回";
+      else if (pp.cappedByAdSum && (pp.scaleAdjust || 0) < 0) why = "本廣告權重超過 100%,縮回";
+      else if (score && score.ratio != null && score.ratio < 1.0) why = "廣告成效不佳,減少權重";
+      else if (score && score.ratio >= 1.0) why = "雖達標,但其他廣告對此產品更好";
+      else why = "尚無成效資料,依排序削減";
+      reasonText = `<span class="bad">削減</span>${sub(why)}`;
+    }
+    if (pp?.cappedByBand) {
+      reasonText += ` <span class="band-cap-badge" title="此產品建議已削至建議日花費上限">⤓ 削至上限</span>`;
+    }
+    if (pp?.bandBreached) {
+      reasonText += ` <span class="band-breach-badge" title="為了把廣告 sum 補到 100%,APP 產品允許突破日 band.upper(僅 APP,小島嚴格不破)">↑ 超日上限</span>`;
+    }
+
+    // 預算 headroom icon(0% 且該產品有 budget 餘額)
+    const isSystemAdded = !!pp?.systemAdded && finalW > 0 && oldW === 0;
+    const status = productStatus?.[p.id];
+    const hasHeadroom = status?.headroom > 0;
+    const isZero = finalW === 0;
+    let inputBadge = "";
+    if (isZero && hasHeadroom) {
+      inputBadge = `<span class="weight-headroom" title="本月還有 ${Math.round(status.headroom).toLocaleString()} TWD 預算可花,可手動加進此廣告">💰</span>`;
+    }
+    if (isSystemAdded) {
+      inputBadge += `<span class="weight-system-added" title="系統建議從其他產品借權重補預算">＋</span>`;
+    }
+
+    const productType = p.type === "app" ? "APP" : "小島";
+    const rowCls = isZero && oldW === 0 ? "zero-row" : isSystemAdded ? "system-added-row" : "";
+
     return `
-      <span class="weight-edit">
-        ${esc(p.name)}
-        <input type="number" min="0" max="100" step="1" class="w-input"
-          data-adid="${esc(ad.id)}" data-pid="${esc(p.id)}"
-          value="${finalW}" ${locked ? "disabled" : ""} />
-        <span class="${deltaCls}" style="font-size:11px;font-family:var(--mono)">${delta > 0 ? "+" : ""}${delta}</span>
-      </span>
+      <tr class="${rowCls}">
+        <td>${esc(p.name)} <span class="pill ${p.type}" style="font-size:10px;margin-left:4px">${productType}</span></td>
+        <td class="num">${oldW}%</td>
+        <td class="num"><div class="weight-input-wrap">
+          ${inputBadge}<input type="number" min="0" max="100" step="1" class="w-input"
+                 data-adid="${esc(ad.id)}" data-pid="${esc(p.id)}"
+                 value="${finalW}" ${lockedAd ? "disabled" : ""} />
+        </div></td>
+        <td class="num">${deltaText}</td>
+        <td>${scoreCell}</td>
+        <td class="ink-2" style="font-size:12px">${reasonText}</td>
+      </tr>
     `;
   }).join("");
 
-  // 合計 badge：=100 綠、<100 黃（手動覆寫造成）、>100 紅（手動覆寫造成）；
-  // 系統自動建議經 per-ad scale 後一定 = 100%，只有使用者手改才會偏離
+  // 展開/收起按鈕
+  const toggleExpandBtn = isExpanded
+    ? `<button class="link-btn" data-toggle-expand="${esc(ad.id)}">⊖ 收起</button>`
+    : (hiddenCount > 0
+        ? `<button class="link-btn" data-toggle-expand="${esc(ad.id)}">⊕ 展開全部產品 (還有 ${hiddenCount} 個)</button>`
+        : "");
+
+  // 合計 badge
   const sumCls = newSum === 100 ? "ok" : newSum > 100 ? "bad" : newSum > 0 ? "warn" : "ink-3";
-  const sumBadge = `<div class="weight-sum-badge ${sumCls}">合計 <strong>${newSum}%</strong>${
-    anyCappedByAdSum ? `<span class="band-cap-badge" style="margin-left:6px" title="系統已等比例縮放使合計=100%">已校準至 100</span>` : ""
-  }</div>`;
-  const oldSumBadge = oldSum !== 100 ? `<div class="weight-sum-badge ink-3" style="background:transparent;border:1px solid var(--line)">原合計 ${oldSum}%</div>` : "";
+  const sumBadge = `<span class="weight-sum-badge ${sumCls}">合計 <strong>${newSum}%</strong></span>`;
+  // 只在「真的已校準到 100」時才顯示;否則 cappedByAdSum 已被後續 band 削回,sumBadge 會自己顯示實際合計
+  const calibratedBadge = (anyCappedByAdSum && newSum === 100) ? `<span class="band-cap-badge" title="系統已等比例縮放使合計=100%">已校準至 100</span>` : "";
+  const oldSumNote = oldSum !== 100 ? `<span class="ink-3" style="font-size:11px">原合計 ${oldSum}%</span>` : "";
 
-  // 各產品建議：「最終 delta% — 成效狀態」統一格式（不再拆解 削／縮回／接收／補滿，避免混亂）
-  const reasons = perProduct.map((pp) => {
-    const cls = pp.locked ? "ink-3"
-      : pp.score?.ratio == null ? "ink-3"
-      : pp.score.ratio >= 0.66 ? "ok"
-      : pp.score.ratio < 0.33 ? "bad"
-      : "ink-2";
-    const cap = pp.cappedByBand ? ` <span class="band-cap-badge" title="此產品建議已削至建議日花費上緣">⤓ 削至上緣</span>` : "";
-    return `<div class="${cls}" style="font-size:11px">${esc(productNameOf[pp.product.id] || pp.product.id)}：${formatReason(pp)}${cap}</div>`;
-  }).join("");
-
-  // 「套用」勾選框：鎖定 / 過期 / 無變動 → 禁用
-  const today = todayTaipei();
-  const isPast = !ad.end_date || ad.end_date <= today;
-  const noChange = sameWeights(oldWeights || {}, (newWeightsByAd && newWeightsByAd[ad.id]) || {});
-  const agreeDisabled = locked || isPast || noChange;
-  const agreeChecked = !agreeDisabled && agreedAdIds.has(ad.id);
-  const agreeTitle = locked ? "已鎖定，無法套用"
-    : isPast ? "已過期，無法套用"
-    : noChange ? "無變動"
-    : "勾選同意套用此建議";
-  const agreeBox = `<input type="checkbox" class="agree-toggle" data-agree-adid="${esc(ad.id)}" ${agreeChecked ? "checked" : ""} ${agreeDisabled ? "disabled" : ""} title="${agreeTitle}" />`;
+  // 整桶搬建議 banner
+  const transferBanner = transferTarget
+    ? `<span class="transfer-badge" title="${esc(entry.transferReason || "")}">🔒 整桶搬建議 → ${esc(productNameOf[transferTarget] || transferTarget)}</span>`
+    : "";
 
   return `
-    <tr class="${agreeChecked ? "row-agreed" : ""}">
-      <td>${agreeBox}</td>
-      <td>${lockBtn}</td>
-      <td class="mono">${esc(ad.ad_code)}</td>
-      <td><strong>${esc(ad.ad_name)}</strong><div class="ink-3" style="font-size:11px">${ad.start_date} ~ ${ad.end_date}</div></td>
-      <td>${oldCells || `<span class="ink-3">—</span>`}${oldSumBadge}</td>
-      <td>${newCells || `<span class="ink-3">—</span>`}${sumBadge}</td>
-      <td>${reasons || `<span class="ink-3" style="font-size:11px">—</span>`}</td>
-    </tr>
+    <div class="${cardCls}">
+      <div class="ad-card-head">
+        <span class="ad-card-pick">${agreeBox}</span>
+        ${lockBtn}
+        <span class="mono ad-code-tag">${esc(ad.ad_code)}</span>
+        <strong class="ad-name">${esc(ad.ad_name)}</strong>
+        <span class="ad-period ink-3">${ad.start_date} ~ ${ad.end_date}</span>
+        ${eliminateBanner}
+        ${transferBanner}
+        <span class="ad-card-spacer"></span>
+        ${oldSumNote}
+        ${sumBadge}
+        ${calibratedBadge}
+      </div>
+      <table class="ad-products">
+        <colgroup>
+          <col style="width:130px">
+          <col><col><col><col>
+          <col style="width:120px">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>產品</th>
+            <th class="num">原權重</th>
+            <th class="num">建議權重</th>
+            <th>變化</th>
+            <th>成效</th>
+            <th>建議結果</th>
+          </tr>
+        </thead>
+        <tbody>${productRows}</tbody>
+      </table>
+      ${toggleExpandBtn ? `<div class="ad-card-foot">${toggleExpandBtn}</div>` : ""}
+    </div>
   `;
 }
 
+// 成效 cell:
+//  - 一律顯示實際成效值(CPI/CPC 等),不用「達標 m/n」「N% (m/n)」百分比文字
+//  - 達標=綠色、未達標=紅色
+//  - 鎖定的廣告也照樣顯示成效(不另外標「已鎖定」)
+//  - alwaysBad=true(淘汰分支)強制紅色
+function formatScoreCell(pp, alwaysBad) {
+  const score = pp?.score;
+  if (!score || !score.details || score.details.length === 0) {
+    return `<span class="ink-3">無資料</span>`;
+  }
+  return score.details.map((d) => {
+    if (d.actual == null || !Number.isFinite(d.actual)) {
+      return `<span class="ink-3">${esc(d.name)} 無</span>`;
+    }
+    const met = !!d.met && !alwaysBad;
+    const cls = met ? "ok" : "bad";
+    const sym = met ? "✓" : "✗";
+    return `<span class="${cls}">${sym} ${esc(d.name)} ${formatMetric(d.actual)}</span>`;
+  }).join(" ");
+}
+
+// 成效實際值固定 2 位小數(CPI/CPC 等典型值都需小數點精度)
+function formatMetric(v) {
+  if (!Number.isFinite(v)) return "—";
+  return v.toFixed(2);
+}
+
 function bindHandlers(root, pivot, newWeightsByAd) {
+  // 廣告調整建議一鍵入口
+  const gdBtn = root.querySelector("#pa-gd-fix-open");
+  if (gdBtn) gdBtn.onclick = () => openGiftDayFixModal(() => render(root));
+
   root.querySelectorAll("[data-filter]").forEach((el) => {
     el.onclick = () => { filterMode = el.dataset.filter; render(root); };
   });
+  root.querySelectorAll("[data-spend-scenario]").forEach((el) => {
+    el.onclick = () => { spendScenario = el.dataset.spendScenario; render(root); };
+  });
   const tg = root.querySelector("#btn-toggle-app");
-  if (tg) tg.onclick = () => { collapseApp = !collapseApp; render(root); };
+  if (tg) tg.onclick = (e) => { e.stopPropagation(); collapseApp = !collapseApp; render(root); };
+  const tgImpact = root.querySelector("#btn-toggle-impact");
+  if (tgImpact) tgImpact.onclick = () => { collapseImpact = !collapseImpact; render(root); };
 
   root.querySelectorAll("input.w-input").forEach((inp) => {
     inp.onchange = () => {
@@ -348,17 +754,37 @@ function bindHandlers(root, pivot, newWeightsByAd) {
     };
   });
 
-  // 🔒 鎖定按鈕
+  // 「⊕ 展開全部產品」/「⊖ 收起」 (CLAUDE.md §5.4.2)
+  root.querySelectorAll("[data-toggle-expand]").forEach((btn) => {
+    btn.onclick = () => {
+      const adId = btn.dataset.toggleExpand;
+      if (expandedAds.has(adId)) expandedAds.delete(adId);
+      else expandedAds.add(adId);
+      render(root);
+    };
+  });
+
+  // 🔒 鎖定按鈕(三段循環:自由 → 鎖權重 → 禁止挪動 → 自由)
   root.querySelectorAll("button.lock-btn").forEach((btn) => {
     btn.onclick = () => {
       const adId = btn.dataset.lockAdid;
-      const willLock = !root.querySelector(`button.lock-btn[data-lock-adid="${adId}"]`).classList.contains("locked");
+      let willClearAgree = false;
       update((st) => {
         const a = st.ads.find((x) => x.id === adId);
-        if (a) a.lock_perf_adjust = willLock;
+        if (!a) return;
+        const cur = a.lock_full ? "full" : (a.lock_perf_adjust ? "weight" : "free");
+        // 三段循環
+        if (cur === "free") {
+          a.lock_perf_adjust = true; a.lock_full = false;
+          willClearAgree = true;
+        } else if (cur === "weight") {
+          a.lock_perf_adjust = true; a.lock_full = true;
+          willClearAgree = true;
+        } else {
+          a.lock_perf_adjust = false; a.lock_full = false;
+        }
       });
-      // 鎖定 → 同步取消「同意套用」並清掉手動覆寫
-      if (willLock) {
+      if (willClearAgree) {
         agreedAdIds.delete(adId);
         for (const k of [...pending.keys()]) if (k.startsWith(adId + "|")) pending.delete(k);
       }
@@ -382,7 +808,7 @@ function bindHandlers(root, pivot, newWeightsByAd) {
   if (agreeAll) agreeAll.onclick = () => {
     const today = todayTaipei();
     for (const e of pivot) {
-      if (e.ad.lock_perf_adjust) continue;
+      if (e.ad.lock_perf_adjust && !e.transferTarget) continue;
       if (!e.ad.end_date || e.ad.end_date <= today) continue;
       if (e.suggestEliminate) continue;
       if (sameWeights(e.oldWeights || {}, newWeightsByAd[e.ad.id] || {})) continue;
@@ -422,17 +848,20 @@ async function eliminateAd(adId, root) {
   if (!ok) return;
 
   update((st) => {
-    // 對該 ad_code 所有段都標 eliminated（避免一支廣告多段時清單仍出現）
     const targetCode = ad.ad_code;
+    // 撤回快照:該 ad_code 所有段
+    const targetIds = st.ads.filter((a) => a.ad_code === targetCode).map((a) => a.id);
+    const ad_snapshots = captureUndoSnapshot(st, targetIds);
     st.ads.forEach((a) => {
       if (a.ad_code === targetCode) a.eliminated = true;
     });
     st.todos.push({
       id: uid("todo"),
       created_at: nowTaipeiStamp(),
-      action_type: "淘汰廣告（成效）",
+      action_type: "淘汰廣告",
       description: `${ad.ad_code} ${ad.ad_name}：因成效全線最差，到期不再續費`,
       status: "pending",
+      undo_payload: { ad_snapshots, added_ad_ids: [] },
     });
   }, "淘汰廣告");
   toast("已標記淘汰，並建立待辦", "ok");
@@ -442,10 +871,10 @@ async function eliminateAd(adId, root) {
 async function applyAll(pivot, newWeightsByAd, root) {
   const today = todayTaipei();
   const changes = [];
-  const eliminateCount = pivot.filter((e) => e.suggestEliminate && !e.ad.lock_perf_adjust).length;
+  const eliminateCount = pivot.filter((e) => e.suggestEliminate).length;
   for (const e of pivot) {
     if (!agreedAdIds.has(e.ad.id)) continue;  // 必須使用者明確勾選「同意套用」
-    if (e.ad.lock_perf_adjust) continue;
+    if (e.ad.lock_perf_adjust && !e.transferTarget) continue;
     if (!e.ad.end_date || e.ad.end_date <= today) continue;  // 過去廣告不能調
     if (e.suggestEliminate) continue;  // 建議淘汰的不走「權重調整」，需到廣告頁手動「提前結束」
     const oldW = e.oldWeights || {};
@@ -482,6 +911,10 @@ async function applyAll(pivot, newWeightsByAd, root) {
   let okCount = 0, errCount = 0;
   const successDetails = [];
   update((st) => {
+    // 撤回快照:被改的 ads
+    const ad_snapshots = captureUndoSnapshot(st, changes.map((ch) => ch.ad.id));
+    const added_ad_ids = [];
+
     const nameOf = Object.fromEntries(st.products.map((p) => [p.id, p.name]));
     const fmtW = (w) => Object.entries(w || {})
       .filter(([, v]) => Math.round(Number(v) || 0) > 0)
@@ -504,6 +937,7 @@ async function applyAll(pivot, newWeightsByAd, root) {
           const i = st.ads.findIndex((a) => a.id === seg.id);
           if (i >= 0) st.ads[i] = r.closed;
           st.ads.push(...r.segments);
+          added_ad_ids.push(...r.segments.map((s) => s.id));
           okCount++;
           successDetails.push(`${seg.ad_code} ${seg.ad_name}｜${oldStr} → ${newStr}`);
         }
@@ -514,9 +948,10 @@ async function applyAll(pivot, newWeightsByAd, root) {
       st.todos.push({
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
-        action_type: "成效驅動權重調整",
+        action_type: "成效調整權重",
         description: `${head}\n${successDetails.join("\n")}\n（請至連結隨機縮網址後台調整權重）`,
         status: "pending",
+        undo_payload: { ad_snapshots, added_ad_ids },
       });
     }
   });

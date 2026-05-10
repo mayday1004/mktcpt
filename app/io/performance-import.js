@@ -127,33 +127,58 @@ export function parsePerfInputRows(headers, rows) {
       return;
     }
 
-    // 重疊天數最多者勝；若並列第一 → 衝突
-    const withOverlap = candidates.map((a) => {
-      const os = a.start_date > periodStart ? a.start_date : periodStart;
-      const oe = a.end_date < periodEnd ? a.end_date : periodEnd;
-      const overlap = (Date.parse(oe) - Date.parse(os)) / 86400000;
-      return { ad: a, overlap };
+    // 同 ad_code 視為同一支廣告的不同段(初始 / 續費 / 權重調整 …),按 ad_code 分組;
+    // 同 code 的多段在時間上是接續的,不算「競爭」候選,花費要橫跨所有段加總。
+    // 只有真正不同 ad_code(例 fuzzy match 撈到 st215 vs dh999st215X)的組重疊打平時,才需要使用者挑。
+    const byCode = new Map();
+    candidates.forEach((a) => {
+      if (!byCode.has(a.ad_code)) byCode.set(a.ad_code, []);
+      byCode.get(a.ad_code).push(a);
+    });
+
+    const groupStats = [...byCode.entries()].map(([code, segs]) => {
+      const overlap = segs.reduce((sum, a) => {
+        const os = a.start_date > periodStart ? a.start_date : periodStart;
+        const oe = a.end_date < periodEnd ? a.end_date : periodEnd;
+        const d = (Date.parse(oe) - Date.parse(os)) / 86400000;
+        return sum + (Number.isFinite(d) && d > 0 ? d : 0);
+      }, 0);
+      // 代表段:end_date 最大者(最新);相同則 start_date 最晚
+      const representative = segs.slice().sort((a, b) => {
+        if (a.end_date !== b.end_date) return b.end_date.localeCompare(a.end_date);
+        return b.start_date.localeCompare(a.start_date);
+      })[0];
+      return { code, segs, overlap, representative };
     }).sort((a, b) => b.overlap - a.overlap);
 
-    const topOverlap = withOverlap[0].overlap;
-    const ties = withOverlap.filter((x) => Math.abs(x.overlap - topOverlap) < 0.001);
-    if (ties.length > 1) {
+    const topOverlap = groupStats[0].overlap;
+    const tiedGroups = groupStats.filter((g) => Math.abs(g.overlap - topOverlap) < 0.001);
+
+    if (tiedGroups.length > 1) {
+      // 真衝突:多個不同 ad_code 並列重疊第一
       conflicts.push({
         rowNum,
         adCodeRaw,
-        adName: ties[0].ad.ad_name,  // 顯示用
+        adName: tiedGroups[0].representative.ad_name,
         productKey,
         periodStart,
         periodEnd,
-        candidates: ties.map((x) => x.ad),
+        candidates: tiedGroups.map((g) => g.representative),
+        // 解析衝突時用的 group → segs 對照(以代表段 id 為 key,resolve 時累加組內所有段花費)
+        candidateGroups: tiedGroups.map((g) => ({ repId: g.representative.id, segs: g.segs })),
         groupIn,
         metrics: Object.fromEntries(PERF_INPUT_METRICS.map((m) => [m, Number(get(m)) || 0])),
       });
       return;
     }
 
-    const ad = withOverlap[0].ad;
-    const spend = computeSpend(ad, productKey, periodStart, periodEnd);
+    // 自動選定:勝出組(同 ad_code 的所有段)花費加總、用最新段當代表
+    const winning = groupStats[0];
+    const ad = winning.representative;
+    const spend = winning.segs.reduce(
+      (sum, a) => sum + computeSpend(a, productKey, periodStart, periodEnd),
+      0
+    );
     const rec = {
       ad_id: ad.id,
       ad_code: ad.ad_code,           // 統一用 state 的標準代碼，不存外部變體
@@ -179,7 +204,13 @@ export function resolveConflicts(conflicts, chosenByRowNum) {
     if (!chosenId) continue;
     const ad = c.candidates.find((a) => a.id === chosenId);
     if (!ad) continue;
-    const spend = computeSpend(ad, c.productKey, c.periodStart, c.periodEnd);
+    // 若 conflict 帶有 candidateGroups(同 ad_code 的多段已合組),花費要累加組內所有段
+    const grp = c.candidateGroups?.find((g) => g.repId === chosenId);
+    const segs = grp?.segs || [ad];
+    const spend = segs.reduce(
+      (sum, a) => sum + computeSpend(a, c.productKey, c.periodStart, c.periodEnd),
+      0
+    );
     const rec = {
       ad_id: ad.id,
       ad_code: ad.ad_code,

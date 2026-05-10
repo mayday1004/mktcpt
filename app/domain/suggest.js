@@ -2,6 +2,7 @@ import { bandFor } from "./budget.js";
 import { monthlyTotals, dailySpendGrid } from "./spending.js";
 import { daysOfMonth, isInRange, nextDay } from "../lib/dates.js";
 import { getMonthlyBudget } from "../schema.js";
+import { evaluatePoorPerf } from "./alerts.js";
 
 // "2026-04" → "2026-05"；12 月跳年
 function nextMonthYM(ym) {
@@ -15,7 +16,7 @@ function nextMonthYM(ym) {
  * 演算法：
  *   1. 對每個產品，算當月剩餘預算（monthly_budget - already_spent）
  *   2. 依剩餘預算做比例分配（剩多的拿多）
- *   3. 檢查每個產品分到的每日攤提是否超過帶寬上緣，超過就削到上緣，把溢出的餘額重新分給其他人
+ *   3. 檢查每個產品分到的每日攤提是否超過建議日花費上限，超過就削到上限，把溢出的餘額重新分給其他人
  *   4. 轉成整數 %（最後一個產品用 100 - 其他產品累計值修正）
  *   5. 排除 0%，回傳 { product_id: weight }
  *
@@ -40,9 +41,25 @@ export function suggestWeights(state, products, existingAds, ym, newAd) {
   }
 
   // 下個月預算檢查：實際還沒設下月預算時，先假設＝本月，避免使用者買進一筆會把下月預算撐爆的廣告
+  // baseline 排除「成效全爛」廣告(所有有權重產品 ratio < 0.3),這些理論上不會續費
   const ymNext = nextMonthYM(ym);
   const inNextMonthDays = ymNext ? countActiveDays(newAd, ymNext) : 0;
-  const nextRenewalBaseline = ymNext ? projectNextMonthBaseline(existingAds, ym, ymNext) : {};
+  const nextBaselineResult = ymNext ? projectNextMonthBaseline(state, existingAds, ym, ymNext) : { baseline: {}, excludedPoorPerf: [] };
+  const nextRenewalBaseline = nextBaselineResult.baseline;
+  if (nextBaselineResult.excludedPoorPerf.length > 0) {
+    // 同一支廣告不分產品視為一組,以 ad_code 去重
+    const seen = new Set();
+    const uniqueAds = [];
+    for (const a of nextBaselineResult.excludedPoorPerf) {
+      const key = a.ad_code || a.id;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniqueAds.push(a);
+    }
+    const names = uniqueAds.map((a) => a.ad_name || a.ad_code).slice(0, 3).join("、");
+    const more = uniqueAds.length > 3 ? `…等 ${uniqueAds.length} 支` : "";
+    reasons.push(`下月建議日花費已排除計算 ${uniqueAds.length} 支成效全爛廣告(理論上不會續費):${names}${more}`);
+  }
 
   const daily = Number(newAd.daily_amort_twd) || 0;
 
@@ -69,7 +86,7 @@ export function suggestWeights(state, products, existingAds, ym, newAd) {
     const headroom = Math.max(0, band.upper - peakCurrent);
     let excludeReason = null;
     if (remaining <= 0) excludeReason = "月預算已用罄";
-    else if (headroom <= 0) excludeReason = "已達建議花費值上緣（補到位）";
+    else if (headroom <= 0) excludeReason = "已達建議花費上限（補到位）";
     return {
       p, budget, spent, remaining, band, peakCurrent, headroom, excludeReason,
       nextSpent, nextBudgetActual, nextBudgetAssumed, nextBudgetIsAssumed,
@@ -94,7 +111,7 @@ export function suggestWeights(state, products, existingAds, ym, newAd) {
   for (const c of usable) {
     const hr = c.headroom;
     if (raw[c.p.id] > hr) {
-      reasons.push(`${c.p.name} 被削到建議花費值上緣 ${Math.round(c.band.upper).toLocaleString()}`);
+      reasons.push(`${c.p.name} 被削到建議花費上限 ${Math.round(c.band.upper).toLocaleString()}`);
       const overflow = raw[c.p.id] - hr;
       raw[c.p.id] = hr;
       const others = usable.filter((x) => x.p.id !== c.p.id && raw[x.p.id] < x.headroom);
@@ -133,11 +150,15 @@ export function suggestWeights(state, products, existingAds, ym, newAd) {
 //     這樣同代碼的多段續費鏈只會被算一次（取最後那段的 daily 與 weights）
 //   - 平行買（同 code 不同 pid 同時跑）每條鏈各自算一份
 //   - 終端段視為「會繼續續費」→ 用該段 daily × weights × 下月天數
-//   - 已在更早月份結束的（end_date <= ym 月初）不納入（不會續費了）
-function projectNextMonthBaseline(existingAds, ym, ymNext) {
+//   - 已在更早月份結束的（end_date <= ym 月初）不納入（不會續費了)
+//   - **排除「成效全爛」廣告**(每個有權重產品的 ratio 都 < 0.3 + 有完整成效資料 + 有設目標)
+//     這類廣告理論上不會續費,把它們算進 baseline 會誤判下月預算超支
+//
+// 回 { baseline: {pid: TWD}, excludedPoorPerf: [ad,...] }
+function projectNextMonthBaseline(state, existingAds, ym, ymNext) {
   const ymFirst = `${ym}-01`;
   const nextDays = [...daysOfMonth(ymNext)].length;
-  if (nextDays === 0) return {};
+  if (nextDays === 0) return { baseline: {}, excludedPoorPerf: [] };
 
   // 每個 ad_code 分組
   const byCode = new Map();
@@ -159,10 +180,16 @@ function projectNextMonthBaseline(existingAds, ym, ymNext) {
 
   // 每個終端段攤到下月：daily × weights/100 × 下月天數
   const baseline = {};
+  const excludedPoorPerf = [];
   for (const ad of terminals) {
     const daily = Number(ad.daily_amort_twd) || 0;
     if (daily <= 0) continue;
     if (ad.eliminated) continue;
+    // 成效全爛 → 跳過(這類廣告理論上不會續費)
+    if (evaluatePoorPerf(state, ad)) {
+      excludedPoorPerf.push(ad);
+      continue;
+    }
     for (const [pid, w] of Object.entries(ad.weights || {})) {
       const wn = Number(w) || 0;
       if (wn <= 0) continue;
@@ -170,7 +197,7 @@ function projectNextMonthBaseline(existingAds, ym, ymNext) {
       baseline[pid] = (baseline[pid] || 0) + monthly;
     }
   }
-  return baseline;
+  return { baseline, excludedPoorPerf };
 }
 
 function countActiveDays(ad, ym) {

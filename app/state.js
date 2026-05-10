@@ -44,6 +44,8 @@ function migrate(st) {
   // 想看其他月份請至「概覽」頁的月份選擇器
   const _now = new Date();
   st.settings.current_month = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}`;
+  // 舊版有 daily_amort_override（給歷史 xlsx 匯入用），新系統不再使用，直接清掉
+  if (st.daily_amort_override) delete st.daily_amort_override;
   // budget_changes：每產品每月的預算變動時序（forward-only band）
   if (!st.budget_changes) st.budget_changes = {};
   // report_config：成效報表每產品的欄位顯示設定 + 自訂計算欄位
@@ -61,12 +63,20 @@ function migrate(st) {
         }
         delete p.monthly_budget_twd;
       }
+      // no_band 欄位:既有 av9_poquan / jk_poquan 第一次升上來時補成 true,
+      // 維持原本「破圈系列不檢查 ±30% 帶寬」的行為;其餘產品預設 false。
+      if (typeof p?.no_band !== "boolean") {
+        p.no_band = (p?.id === "av9_poquan" || p?.id === "jk_poquan");
+      }
     });
   }
   // Ads: ensure renewal_reason + purchase_mode + lock_perf_adjust + eliminated defaults
   if (Array.isArray(st.ads)) {
     st.ads.forEach((a) => {
       if (!a.renewal_reason) a.renewal_reason = a.renewal_of ? "續費" : "初始";
+      // 舊資料 / 舊匯入腳本的 reason 名稱遷移
+      if (a.renewal_reason === "漲價") a.renewal_reason = "匯率調漲";
+      else if (a.renewal_reason === "降價") a.renewal_reason = "匯率調降";
       if (!a.purchase_mode) {
         const wk = Object.keys(a.weights || {});
         a.purchase_mode = (wk.length === 1 && a.weights[wk[0]] === 100) ? "independent" : "shared";
@@ -74,6 +84,12 @@ function migrate(st) {
       if (typeof a.lock_perf_adjust !== "boolean") a.lock_perf_adjust = false;
       // 淘汰旗標：到期未續費、使用者明確標記不再通知。即將到期清單會跳過
       if (typeof a.eliminated !== "boolean") a.eliminated = false;
+      // 清掉舊匯入腳本(samples/build_v2_weight_log_priority.py)誤塞進 notes 的內部
+      // debug 訊息(例:「V2 fallback INDEPENDENT(…)」、「V2 匯入(權重紀錄為主;…)」)。
+      // notes 是給使用者寫備註的欄位,不該裝匯入腳本內部訊息。
+      if (typeof a.notes === "string" && /^V2 /.test(a.notes.trim())) {
+        a.notes = "";
+      }
     });
   }
   st.version = VERSION;
@@ -120,6 +136,14 @@ export function replaceState(next, label = "整批替換") {
 
 export function update(mutator, label) {
   pushUndo(label);
+  mutator(state);
+  persist();
+  emit();
+}
+
+// sync.js 專用：套用伺服器 LWW 合併。不進 undo（避免「同步」灌爆 ↶ 復原）；
+// 仍會 persist + emit 讓畫面更新。
+export function applySync(mutator) {
   mutator(state);
   persist();
   emit();

@@ -5,8 +5,8 @@ export const RENEWAL_REASONS = [
   "初始",        // 新增廣告
   "續費",        // 完整延續（可能改 RMB/匯率/攤提天/權重）
   "續費匯率",    // 續費時只改匯率
-  "漲價",        // 續費時 RMB 變高
-  "降價",        // 續費時 RMB 變低
+  "匯率調漲",    // 續費時 RMB 變高（沿用舊名「漲價」）
+  "匯率調降",    // 續費時 RMB 變低（沿用舊名「降價」）
   "權重調整",    // 成效調整後，只改 weights
   "送天數",      // 贈送期間，某些產品權重暫時歸 0
   "送天數結束",  // 贈送結束恢復
@@ -36,23 +36,40 @@ export const PRODUCT_TYPES = {
   island: { label: "小島", band_pct: 0.5,  desc: "每日攤提僅 ±0.5%" },
 };
 
-// 不需檢查每日帶寬的產品（破圈系列極端花費照常）。
-// 在每日攤提表、詳細檢視、成效調整影響表都跳過帶寬警示。
-export const NO_BAND_PIDS = new Set(["av9_poquan", "jk_poquan"]);
+// 「不檢查每日帶寬」標記:由產品的 no_band 欄位決定(可在 Sheets「產品」分頁
+// 設「不檢查每日帶寬=Y」或在產品編輯彈窗勾選)。原本寫死的 av9_poquan / jk_poquan
+// 在 migrate() 中自動補上 no_band=true,維持既有行為。
+export function isNoBand(product) {
+  return product?.no_band === true;
+}
+export function isNoBandPid(state, pid) {
+  return state?.products?.find((p) => p.id === pid)?.no_band === true;
+}
 
-export const PRODUCT_SEED = [
-  { id: "AV9",        name: "愛威奶",      type: "app" },
-  { id: "av9_poquan", name: "愛威奶破圈",  type: "app" },
-  { id: "JK",         name: "健康",        type: "app" },
-  { id: "jk_poquan",  name: "健康破圈",    type: "app" },
-  { id: "HYC",        name: "黃油圈",      type: "app" },
-  { id: "PJ8",        name: "破解吧",      type: "island" },
-  { id: "ZFB",        name: "汁婦寶",      type: "island" },
-  { id: "OJI",        name: "萬精游",      type: "island" },
-  { id: "MYS",        name: "磨欲爽",      type: "island" },
-  { id: "XRK",        name: "色軟庫",      type: "island" },
-  { id: "BS",         name: "熊貓巴士",    type: "island" },
-];
+// 廣告鎖定三段(影響「自動建議」是否可動權重;手動編輯永遠放行)
+//   free   = 完全自由,自動可分權重也可整桶搬
+//   weight = 鎖權重比例,只能整桶搬(100% → 100%);自動分權重不可
+//   full   = 禁止挪動,自動完全跳過;成效爛只顯示「建議淘汰」
+export const LOCK_STATES = {
+  free:   { id: "free",   icon: "🔓", label: "自由" },
+  weight: { id: "weight", icon: "🔒", label: "鎖權重" },
+  full:   { id: "full",   icon: "🚫", label: "禁止挪動" },
+};
+
+export function getAdLockState(ad) {
+  if (ad?.lock_full) return "full";
+  if (ad?.lock_perf_adjust) return "weight";
+  return "free";
+}
+
+// 直接 mutate(在 update() 內呼叫);也可單獨用,但要注意呼叫端責任 persist
+export function setAdLockState(ad, state) {
+  ad.lock_perf_adjust = (state === "weight" || state === "full");
+  ad.lock_full = (state === "full");
+}
+
+// 產品清單完全由使用者透過 Sheets「產品」分頁或 UI 維護,不再有 hardcode 預設值。
+// 第一次開啟(無資料 + 未連 Sheets)會看到空清單,使用者按「+ 新增產品」開始建立。
 
 export function defaultState() {
   return {
@@ -60,21 +77,17 @@ export function defaultState() {
     settings: {
       current_month: thisMonth(),
       // 預設匯率（當月份沒有指定 monthly_rates 時 fallback 用）
-      expense_rate: 4.7,
-      income_rate: 4.5,
-      usdt_to_cny_rate: 7.2,
-      // 每月匯率覆寫：monthly_rates[YYYY-MM] = { expense?, income?, usdt_to_cny? }
-      // 缺值就 fallback 到 settings.expense_rate / income_rate / usdt_to_cny_rate（單值預設）
+      expense_rate: 4.8,
+      income_rate: 4.6,
+      usdt_to_cny_rate: 7,
+      usd_to_twd_rate: 32,
+      // 每月匯率覆寫：monthly_rates[YYYY-MM] = { expense?, income?, usdt_to_cny?, usd_to_twd? }
+      // 缺值就 fallback 到 settings.expense_rate / income_rate / usdt_to_cny_rate / usd_to_twd_rate（單值預設）
       monthly_rates: {},
       sheets_webapp_url: "",
       sheets_token: "",
     },
-    products: PRODUCT_SEED.map((p) => ({
-      id: p.id,
-      name: p.name,
-      type: p.type,
-      performance_targets: [],
-    })),
+    products: [],
     // monthly_budgets[product_id][YYYY-MM] = budget_twd.
     // 未設定時 UI 顯示空白 + 警告（§5.1）；永遠不自動繼承前月。
     monthly_budgets: {},
@@ -85,7 +98,6 @@ export function defaultState() {
     ads: [],
     todos: [],
     performance_data: [],
-    daily_amort_override: {},
     // 預算變動歷程：budget_changes[product_id][YYYY-MM] = [{at_date, amount}, ...]
     // 第一筆代表月初預算；後續為「於 at_date 起改為 amount」的調整
     // 沒紀錄時系統自動視為 [{at_date: ym+'-01', amount: monthly_budgets[pid][ym]}]
@@ -207,27 +219,34 @@ export function getExpenseRate(state, ym) {
   const m = state?.settings?.monthly_rates?.[ym]?.expense;
   if (Number.isFinite(m) && m > 0) return m;
   const def = state?.settings?.expense_rate;
-  return Number.isFinite(def) && def > 0 ? def : 4.7;
+  return Number.isFinite(def) && def > 0 ? def : 4.8;
 }
 
 export function getIncomeRate(state, ym) {
   const m = state?.settings?.monthly_rates?.[ym]?.income;
   if (Number.isFinite(m) && m > 0) return m;
   const def = state?.settings?.income_rate;
-  return Number.isFinite(def) && def > 0 ? def : 4.5;
+  return Number.isFinite(def) && def > 0 ? def : 4.6;
 }
 
 // 取該月 USDT→RMB 匯率：先看 settings.monthly_rates[ym].usdt_to_cny，沒有就用 settings.usdt_to_cny_rate
-// 預設 7.2（這是個常見近似值，使用者可在「設定」頁調整）
 export function getUsdtToCnyRate(state, ym) {
   const m = state?.settings?.monthly_rates?.[ym]?.usdt_to_cny;
   if (Number.isFinite(m) && m > 0) return m;
   const def = state?.settings?.usdt_to_cny_rate;
-  return Number.isFinite(def) && def > 0 ? def : 7.2;
+  return Number.isFinite(def) && def > 0 ? def : 7;
+}
+
+// 取該月 USD→TWD 匯率：先看 settings.monthly_rates[ym].usd_to_twd，沒有就用 settings.usd_to_twd_rate
+export function getUsdToTwdRate(state, ym) {
+  const m = state?.settings?.monthly_rates?.[ym]?.usd_to_twd;
+  if (Number.isFinite(m) && m > 0) return m;
+  const def = state?.settings?.usd_to_twd_rate;
+  return Number.isFinite(def) && def > 0 ? def : 32;
 }
 
 // 'monthly' / 'default'
-export function getRateSource(state, ym, kind /* 'expense'|'income'|'usdt_to_cny' */) {
+export function getRateSource(state, ym, kind /* 'expense'|'income'|'usdt_to_cny'|'usd_to_twd' */) {
   const m = state?.settings?.monthly_rates?.[ym]?.[kind];
   return (Number.isFinite(m) && m > 0) ? "monthly" : "default";
 }
@@ -273,4 +292,24 @@ export function getBudgetChanges(state, pid, ym) {
 export function getLatestBudget(state, pid, ym) {
   const changes = getBudgetChanges(state, pid, ym);
   return changes.length > 0 ? changes[changes.length - 1].amount : null;
+}
+
+// 採買建議專用：取月預算，若該月未設定則往回找最近一個有設定的月份。
+// 用途：使用者跨月採買時，若下個月預算未填，仍能讓採買建議顯示（默認沿用本月）。
+// 不影響「產品」頁的「未設定」狀態顯示——只在 suggestion 路徑用。
+export function getMonthlyBudgetWithFallback(state, pid, ym) {
+  const direct = getMonthlyBudget(state, pid, ym);
+  if (direct != null) return direct;
+  let cursor = ym;
+  for (let i = 0; i < 12; i++) {
+    cursor = _prevMonth(cursor);
+    const v = getMonthlyBudget(state, pid, cursor);
+    if (v != null) return v;
+  }
+  return null;
+}
+
+function _prevMonth(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
 }

@@ -1,8 +1,9 @@
 import { getState, update, replaceState, resetAll } from "../state.js";
 import { pushToSheets, pullFromSheets, pingSheets } from "../io/sheets.js";
 import { showSyncBanner, markSyncDone } from "../lib/sync-banner.js";
+import { manualSync, resetSyncMeta } from "../io/sync.js";
 import { downloadText } from "../lib/csv.js";
-import { getExpenseRate, getIncomeRate, getRateSource, getUsdtToCnyRate } from "../schema.js";
+import { getExpenseRate, getIncomeRate, getRateSource, getUsdtToCnyRate, getUsdToTwdRate } from "../schema.js";
 import { nowTaipeiStamp } from "../lib/dates.js";
 import { DEPLOY_SHEETS_URL, DEPLOY_SHEETS_TOKEN, isDeployManaged } from "../lib/deploy-config.js";
 
@@ -77,8 +78,7 @@ export function render(root) {
       </div>
 
       <div class="sheets-actions">
-        <button id="btn-pull">⬇️ 從 Sheets 拉下來</button>
-        <button class="primary" id="btn-push">☁️ 推到 Sheets</button>
+        <button class="primary" id="btn-sync-now">🔄 立即同步</button>
         <div id="sync-status" class="sync-status"></div>
       </div>
 
@@ -90,12 +90,14 @@ export function render(root) {
     </div>
 
     <div class="${activeSub === "rates" ? "" : "hidden"}">
-    <div class="card">
+    <div class="card rates-default-card">
       <h2>預設匯率</h2>
-      <p class="ink-3" style="font-size:12px;margin:-4px 0 12px">「預設匯率」是當月份未在下方覆寫時 fallback 使用的值；變動頻率低時可全年沿用。</p>
-      <div class="grid-3">
-        <div class="field"><label>預設支出匯率（採買用）</label><input type="number" step="0.01" id="f-exp" value="${s.settings.expense_rate}" /></div>
-        <div class="field"><label>預設收入匯率</label><input type="number" step="0.01" id="f-inc" value="${s.settings.income_rate}" /></div>
+      <p class="ink-3 rates-default-desc">「預設匯率」是當月份沒在下方表格設定時，系統預設拿來用的值；匯率變動頻率低的話可以全年沿用。</p>
+      <div class="rates-default-grid">
+        <div class="field"><label>支出 RMB→TWD（採買用）</label><input type="number" step="0.01" id="f-exp" value="${s.settings.expense_rate ?? 4.8}" /></div>
+        <div class="field"><label>收入 RMB→TWD</label><input type="number" step="0.01" id="f-inc" value="${s.settings.income_rate ?? 4.6}" /></div>
+        <div class="field"><label>USDT→RMB</label><input type="number" step="0.01" id="f-usdt" value="${s.settings.usdt_to_cny_rate ?? 7}" /></div>
+        <div class="field"><label>USD→TWD（美元）</label><input type="number" step="0.01" id="f-usd" value="${s.settings.usd_to_twd_rate ?? 32}" /></div>
       </div>
       <div class="modal-actions" style="justify-content:flex-start">
         <button class="primary" id="save-rates-default">儲存預設匯率</button>
@@ -117,6 +119,18 @@ export function render(root) {
     </div>
 
     <div class="${activeSub === "advanced" ? "" : "hidden"}">
+    <div class="card" style="border-left:3px solid var(--bad);background:#fff8f8">
+      <h2>⚠️ 同步救援工具</h2>
+      <p class="ink-2" style="font-size:13px;line-height:1.7">
+        <strong style="color:var(--bad)">僅在資料壞掉、需要救援時使用。</strong>
+        平時使用「Google Sheets 同步」分頁的「🔄 立即同步」即可,系統會自動 row-level 雙向同步。<br>
+        下面兩顆按鈕是<strong>整份覆寫</strong>,會清掉對應端的所有改動。
+      </p>
+      <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:12px">
+        <button class="danger" id="btn-pull-overwrite" title="從 Sheets 整份覆寫本地 — 會清掉本地未推送的改動">⬇️ 從 Sheets 強制覆寫本地</button>
+        <button class="danger" id="btn-push-overwrite" title="把本地整份覆寫到 Sheets — 會清掉 Sheets 上別人的改動">☁️ 整份覆寫 Sheets</button>
+      </div>
+    </div>
     <div class="card">
       <h2>重設</h2>
       <p class="ink-3" style="font-size:13px">將清除所有本機資料並還原為預設產品。動作不可逆。</p>
@@ -131,6 +145,7 @@ export function render(root) {
   loadCodeBlock(root);
 }
 
+
 // 每月匯率覆寫卡片：顯示當月 + 其他已設過的月份；可新增月份
 function renderMonthlyRatesCard(s) {
   const ym = s.settings.current_month;
@@ -138,14 +153,17 @@ function renderMonthlyRatesCard(s) {
   const curExp = getExpenseRate(s, ym);
   const curInc = getIncomeRate(s, ym);
   const curUsdt = getUsdtToCnyRate(s, ym);
+  const curUsd = getUsdToTwdRate(s, ym);
   const curExpSrc = getRateSource(s, ym, "expense");
   const curIncSrc = getRateSource(s, ym, "income");
   const curUsdtSrc = getRateSource(s, ym, "usdt_to_cny");
-  const defUsdt = s.settings.usdt_to_cny_rate ?? 7.2;
+  const curUsdSrc = getRateSource(s, ym, "usd_to_twd");
+  const defUsdt = s.settings.usdt_to_cny_rate ?? 7;
+  const defUsd = s.settings.usd_to_twd_rate ?? 32;
 
   const cur = monthlyRates[ym] || {};
   const otherMonths = Object.keys(monthlyRates)
-    .filter((m) => m !== ym && monthlyRates[m] && (Number.isFinite(monthlyRates[m].expense) || Number.isFinite(monthlyRates[m].income) || Number.isFinite(monthlyRates[m].usdt_to_cny)))
+    .filter((m) => m !== ym && monthlyRates[m] && (Number.isFinite(monthlyRates[m].expense) || Number.isFinite(monthlyRates[m].income) || Number.isFinite(monthlyRates[m].usdt_to_cny) || Number.isFinite(monthlyRates[m].usd_to_twd)))
     .sort((a, b) => b.localeCompare(a));
 
   return `
@@ -176,6 +194,11 @@ function renderMonthlyRatesCard(s) {
             <input type="number" step="0.01" data-rate-month="${ym}" data-rate-kind="usdt_to_cny" value="${cur.usdt_to_cny ?? ""}" placeholder="${defUsdt}" />
             <span class="rate-eff ${curUsdtSrc}">→ <strong>${curUsdt.toFixed(2)}</strong> ${curUsdtSrc === "monthly" ? "(覆寫)" : "(預設)"}</span>
           </div>
+          <div class="rate-cell">
+            <label>USD→TWD</label>
+            <input type="number" step="0.01" data-rate-month="${ym}" data-rate-kind="usd_to_twd" value="${cur.usd_to_twd ?? ""}" placeholder="${defUsd}" />
+            <span class="rate-eff ${curUsdSrc}">→ <strong>${curUsd.toFixed(2)}</strong> ${curUsdSrc === "monthly" ? "(覆寫)" : "(預設)"}</span>
+          </div>
         </div>
 
         ${otherMonths.map((m) => {
@@ -183,6 +206,7 @@ function renderMonthlyRatesCard(s) {
           const expEff = getExpenseRate(s, m);
           const incEff = getIncomeRate(s, m);
           const usdtEff = getUsdtToCnyRate(s, m);
+          const usdEff = getUsdToTwdRate(s, m);
           return `
             <div class="rate-row">
               <div class="rate-month"><strong>${m}</strong></div>
@@ -200,6 +224,11 @@ function renderMonthlyRatesCard(s) {
                 <label>USDT→RMB</label>
                 <input type="number" step="0.01" data-rate-month="${m}" data-rate-kind="usdt_to_cny" value="${r.usdt_to_cny ?? ""}" placeholder="${defUsdt}" />
                 <span class="rate-eff">→ <strong>${usdtEff.toFixed(2)}</strong></span>
+              </div>
+              <div class="rate-cell">
+                <label>USD→TWD</label>
+                <input type="number" step="0.01" data-rate-month="${m}" data-rate-kind="usd_to_twd" value="${r.usd_to_twd ?? ""}" placeholder="${defUsd}" />
+                <span class="rate-eff">→ <strong>${usdEff.toFixed(2)}</strong></span>
               </div>
               <button class="ghost rate-remove" data-rate-remove="${m}" title="移除此月覆寫">✕</button>
             </div>
@@ -260,8 +289,10 @@ function bindHandlers(root) {
   // 「匯率」tab 預設匯率儲存
   bind("#save-rates-default", () => {
     update((st) => {
-      st.settings.expense_rate = Number(root.querySelector("#f-exp").value) || 4.7;
-      st.settings.income_rate = Number(root.querySelector("#f-inc").value) || 4.5;
+      st.settings.expense_rate = Number(root.querySelector("#f-exp").value) || 4.8;
+      st.settings.income_rate = Number(root.querySelector("#f-inc").value) || 4.6;
+      st.settings.usdt_to_cny_rate = Number(root.querySelector("#f-usdt").value) || 7;
+      st.settings.usd_to_twd_rate = Number(root.querySelector("#f-usd").value) || 32;
     }, "儲存預設匯率");
     toast("已儲存預設匯率", "ok");
   });
@@ -337,66 +368,93 @@ function bindHandlers(root) {
     } catch (e) { setStatus(`✗ ${e.message}`, "bad"); toast(`失敗：${e.message}`, "bad"); }
   });
 
-  bind("#btn-push", async () => {
+  // 立即同步：跑 row-level LWW 同步（與背景自動同步同樣邏輯）
+  bind("#btn-sync-now", async () => {
     saveSyncFields(root);
-    const ok = await confirmAsync({
-      title: "推到 Google Sheets",
-      body: "將以本地資料覆寫雲端 Sheets 各分頁。雲端原內容會被覆蓋。",
-      okText: "推送", danger: true,
-    });
-    if (!ok) return;
     setBusy(true);
     showProgress(true);
-    setStatus("推送中…", "");
-    showSyncBanner({ phase: "push", current: 0, total: 1, name: "啟動..." });
+    setStatus("同步中…", "");
     try {
-      const r = await pushToSheets(onProg);
-      const doneMsg = `✓ 推送完成（${r.tables} 個分頁 / ${r.rowsWritten} 列）`;
-      setStatus(doneMsg, "ok");
+      await manualSync();
+      setStatus(`✓ 同步完成`, "ok");
       if (progFill) progFill.style.width = "100%";
-      if (progText) progText.textContent = `✓ 完成（${r.tables} 個分頁 / ${r.rowsWritten} 列）`;
-      markSyncDone(doneMsg, "ok");
-      toast("已推到 Sheets", "ok");
+      if (progText) progText.textContent = `✓ 完成`;
+      toast("同步完成", "ok");
     } catch (e) {
       setStatus(`✗ ${e.message}`, "bad");
       if (progText) progText.textContent = `✗ ${e.message}`;
-      markSyncDone(`✗ 推送失敗：${e.message}`, "bad");
       toast(`失敗：${e.message}`, "bad");
     } finally {
       setBusy(false);
-      // 進度條保留 4 秒讓使用者看到結果，再隱藏
       setTimeout(() => showProgress(false), 4000);
     }
   });
 
-  bind("#btn-pull", async () => {
+  // 整份覆寫 Sheets：救援用，會清掉 Sheets 上別人的改動。事前先 reset sync_meta 強制 push 全部。
+  bind("#btn-push-overwrite", async () => {
     saveSyncFields(root);
     const ok = await confirmAsync({
-      title: "從 Sheets 拉下來",
-      body: "將以雲端資料覆寫本地全部。系統會先自動下載一份本地 JSON 備份。",
-      okText: "拉取覆寫", danger: true,
+      title: "整份覆寫 Sheets",
+      body: "將以本地資料整份覆寫到 Sheets，會清掉 Sheets 上其他人未同步到本地的改動。\n\n這個動作不可逆,只在「需要救援/重置」時用。一般協作不需要。",
+      okText: "整份覆寫", danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    showProgress(true);
+    setStatus("整份覆寫中…", "");
+    showSyncBanner({ phase: "push", current: 0, total: 1, name: "整份覆寫啟動..." });
+    try {
+      const r = await pushToSheets(onProg);
+      const doneMsg = `✓ 整份覆寫完成（${r.tables} 個分頁 / ${r.rowsWritten} 列）`;
+      setStatus(doneMsg, "ok");
+      if (progFill) progFill.style.width = "100%";
+      if (progText) progText.textContent = `✓ 完成`;
+      // 整份 push 後清掉 sync_meta — 下次 sync 會重新從 sheets 拉所有 row 重建 meta
+      resetSyncMeta();
+      markSyncDone(doneMsg, "ok");
+      toast("已整份覆寫 Sheets", "ok");
+    } catch (e) {
+      setStatus(`✗ ${e.message}`, "bad");
+      if (progText) progText.textContent = `✗ ${e.message}`;
+      markSyncDone(`✗ 整份覆寫失敗：${e.message}`, "bad");
+      toast(`失敗：${e.message}`, "bad");
+    } finally {
+      setBusy(false);
+      setTimeout(() => showProgress(false), 4000);
+    }
+  });
+
+  // 從 Sheets 強制覆寫本地：救援用,把 Sheets 整份拉回來覆寫 local。事前先備份本地 JSON。
+  bind("#btn-pull-overwrite", async () => {
+    saveSyncFields(root);
+    const ok = await confirmAsync({
+      title: "從 Sheets 強制覆寫本地",
+      body: "將以 Sheets 資料整份覆寫本地全部。會清掉本地未推送的改動。系統會先自動下載一份本地 JSON 備份。\n\n這個動作不可逆,只在「需要救援/重置」時用。",
+      okText: "強制覆寫本地", danger: true,
     });
     if (!ok) return;
     setBusy(true);
     showProgress(true);
     setStatus("拉取中…", "");
-    showSyncBanner({ phase: "pull", current: 0, total: 1, name: "啟動..." });
+    showSyncBanner({ phase: "pull", current: 0, total: 1, name: "強制覆寫本地啟動..." });
     try {
       const current = getState();
       const stamp = nowTaipeiStamp().replace(/[: ]/g, "-");
       downloadText(`buyads_backup_${stamp}.json`, JSON.stringify(current, null, 2), "application/json");
 
       const r = await pullFromSheets(onProg);
-      const doneMsg = `✓ 拉取完成（${r.tables} 個分頁）`;
+      const doneMsg = `✓ 強制覆寫完成（${r.tables} 個分頁）`;
       setStatus(doneMsg, "ok");
       if (progFill) progFill.style.width = "100%";
       if (progText) progText.textContent = `✓ 完成（${r.tables} 個分頁）`;
+      // 強制覆寫後 sync_meta 失效，下次 sync 會重建
+      resetSyncMeta();
       markSyncDone(doneMsg, "ok");
-      toast("已從 Sheets 拉下來", "ok");
+      toast("已從 Sheets 強制覆寫本地", "ok");
     } catch (e) {
       setStatus(`✗ ${e.message}`, "bad");
       if (progText) progText.textContent = `✗ ${e.message}`;
-      markSyncDone(`✗ 拉取失敗：${e.message}`, "bad");
+      markSyncDone(`✗ 強制覆寫失敗：${e.message}`, "bad");
       toast(`失敗：${e.message}`, "bad");
     } finally {
       setBusy(false);
@@ -436,7 +494,7 @@ function bindHandlers(root) {
   bind("#btn-reset", async () => {
     const ok = await confirmAsync({
       title: "重設全部資料",
-      body: "將刪除所有本地廣告、成效、設定，並重設為預設產品。此動作不可逆。",
+      body: "將清空所有本地產品、廣告、預算、成效、設定。下次同步會從 Sheets 拉回真資料。此動作不可逆。",
       okText: "重設", danger: true,
     });
     if (!ok) return;
