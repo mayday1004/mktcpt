@@ -28,6 +28,7 @@ let collapseImpact = true;
 // 「展開全部產品」狀態 (CLAUDE.md §5.4.2)：哪些 ad 的權重欄要顯示全部 11 個產品 (含 0%)
 let expandedAds = new Set();
 let spendScenario = "renewal";
+let autoAgreedSignature = "";
 
 export function render(root) {
   const s = getState();
@@ -71,6 +72,7 @@ export function render(root) {
     }
     newWeightsByAd[e.ad.id] = final;
   }
+  syncDefaultAgreed(pivot, newWeightsByAd);
 
   // 影響預覽只反映「✓套用」勾選的廣告(CLAUDE.md §5.4.1)
   // 未勾選 = 原權重不動。手動覆寫但未勾,也不算進預覽。
@@ -148,7 +150,7 @@ export function render(root) {
         <div class="empty">此過濾沒有匹配的廣告</div>
       ` : `
         <div class="ad-cards">
-          ${filtered.map((e) => renderAdCard(e, s, newWeightsByAd, productStatus)).join("")}
+          ${filtered.map((e) => safeRenderAdCard(e, s, newWeightsByAd, productStatus)).join("")}
         </div>
       `}
 
@@ -160,6 +162,30 @@ export function render(root) {
   `;
 
   bindHandlers(root, pivot, newWeightsByAd);
+}
+
+function isApplicableChange(entry, newWeightsByAd) {
+  const today = todayTaipei();
+  if (!entry?.ad) return false;
+  if (entry.ad.lock_perf_adjust && !entry.transferTarget) return false;
+  if (!entry.ad.end_date || entry.ad.end_date <= today) return false;
+  if (entry.suggestEliminate) return false;
+  return !sameWeights(entry.oldWeights || {}, newWeightsByAd[entry.ad.id] || {});
+}
+
+function syncDefaultAgreed(pivot, newWeightsByAd) {
+  const applicableIds = pivot
+    .filter((e) => isApplicableChange(e, newWeightsByAd))
+    .map((e) => e.ad.id)
+    .sort();
+  const signature = applicableIds.join("|");
+  if (signature === autoAgreedSignature) return;
+  autoAgreedSignature = signature;
+  const valid = new Set(applicableIds);
+  for (const id of [...agreedAdIds]) {
+    if (!valid.has(id)) agreedAdIds.delete(id);
+  }
+  for (const id of applicableIds) agreedAdIds.add(id);
 }
 
 function scenarioFor(state, ym) {
@@ -701,6 +727,25 @@ function renderAdCard(entry, state, newWeightsByAd, productStatus) {
       ${toggleExpandBtn ? `<div class="ad-card-foot">${toggleExpandBtn}</div>` : ""}
     </div>
   `;
+}
+
+function safeRenderAdCard(entry, state, newWeightsByAd, productStatus) {
+  try {
+    return renderAdCard(entry, state, newWeightsByAd, productStatus);
+  } catch (err) {
+    console.error("renderAdCard failed", entry?.ad, err);
+    const ad = entry?.ad || {};
+    return `
+      <div class="ad-card ad-card-eliminate">
+        <div class="ad-card-head">
+          <span class="mono ad-code-tag">${esc(ad.ad_code || ad.id || "unknown")}</span>
+          <strong class="ad-name">${esc(ad.ad_name || "廣告資料異常")}</strong>
+          <span class="pill bad">渲染失敗</span>
+          <span class="ink-3" style="font-size:12px">請重新同步資料或檢查此廣告的產品/權重資料</span>
+        </div>
+      </div>
+    `;
+  }
 }
 
 // 成效 cell:
