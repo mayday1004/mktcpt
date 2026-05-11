@@ -56,8 +56,14 @@ export async function pullFromSheets(onProgress) {
   const mergedRC = {};
   const allPids = new Set([...Object.keys(pulledRC), ...Object.keys(localRC)]);
   for (const pid of allPids) {
+    const local = localRC[pid];
     mergedRC[pid] = {
-      hidden_metrics: localRC[pid]?.hidden_metrics || [],
+      ...(local?.hidden_metrics_user_configured
+        ? { hidden_metrics: local.hidden_metrics || [], hidden_metrics_user_configured: true }
+        : {}),
+      ...(local?.custom_metrics_user_configured
+        ? { custom_metrics_user_configured: true }
+        : {}),
       custom_metrics: pulledRC[pid]?.custom_metrics || [],
     };
   }

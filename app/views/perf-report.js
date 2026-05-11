@@ -69,9 +69,16 @@ function defaultConfigForProduct(product) {
 function effectiveConfig(state, product) {
   const saved = state?.report_config?.[product.id];
   if (saved) {
+    const defaults = defaultConfigForProduct(product);
+    const hasSavedHidden =
+      saved.hidden_metrics_user_configured === true ||
+      (Array.isArray(saved.hidden_metrics) && saved.hidden_metrics.length > 0);
+    const hasSavedCustom =
+      saved.custom_metrics_user_configured === true ||
+      (Array.isArray(saved.custom_metrics) && saved.custom_metrics.length > 0);
     return {
-      hidden_metrics: saved.hidden_metrics || [],
-      custom_metrics: saved.custom_metrics || [],
+      hidden_metrics: hasSavedHidden ? saved.hidden_metrics : defaults.hidden_metrics,
+      custom_metrics: hasSavedCustom ? saved.custom_metrics : defaults.custom_metrics,
     };
   }
   return defaultConfigForProduct(product);
@@ -639,6 +646,8 @@ function openColumnSettings(product, root) {
       if (!st.report_config) st.report_config = {};
       st.report_config[product.id] = {
         hidden_metrics: [...draft.hidden].filter((key) => !String(key).startsWith("custom:")),
+        hidden_metrics_user_configured: true,
+        custom_metrics_user_configured: true,
         custom_metrics: draft.customMetrics.map((m) => ({
           id: m.id,
           name: m.name.trim(),

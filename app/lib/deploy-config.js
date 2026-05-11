@@ -2,9 +2,11 @@
 // SHEETS_WEBAPP_URL / SHEETS_TOKEN)。dev 模式（瀏覽器直接載 main.js 不經 bundle）
 // 兩個常數都未宣告，typeof 會回 "undefined"，安全 fallback 為空字串。
 export const DEPLOY_SHEETS_URL =
-  typeof __BUYADS_SHEETS_URL__ !== "undefined" ? __BUYADS_SHEETS_URL__ : "";
+  globalThis.__BUYADS_CONFIG__?.sheetsWebappUrl ||
+  (typeof __BUYADS_SHEETS_URL__ !== "undefined" ? __BUYADS_SHEETS_URL__ : "");
 export const DEPLOY_SHEETS_TOKEN =
-  typeof __BUYADS_SHEETS_TOKEN__ !== "undefined" ? __BUYADS_SHEETS_TOKEN__ : "";
+  globalThis.__BUYADS_CONFIG__?.sheetsToken ||
+  (typeof __BUYADS_SHEETS_TOKEN__ !== "undefined" ? __BUYADS_SHEETS_TOKEN__ : "");
 
 export const isDeployManaged = () => !!(DEPLOY_SHEETS_URL && DEPLOY_SHEETS_TOKEN);
 

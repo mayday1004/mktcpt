@@ -226,7 +226,7 @@ export function planAdjustments(state, today) {
   // pickOpts.preferAppSource:補小島時用,讓 APP source 排在小島 source 前面
   //   理由:小島自己嚴格不能破 lower,所以小島之間互借常常會卡住;
   //         APP 是優先 3-4(不超月預算 / 平均日花費),為了補小島(優先 1)可以軟性犧牲 APP 下限
-  const pickBestSource = (targetPid, day, pickOpts = {}) => {
+  const pickBestSources = (targetPid, day, pickOpts = {}) => {
     const dayYm = monthOf(day);
     const candidates = [];
     for (const ad of state.ads || []) {
@@ -271,7 +271,7 @@ export function planAdjustments(state, today) {
       // 3) score(多花金額大者前)
       return b.score - a.score;
     });
-    return candidates[0] || null;
+    return candidates;
   };
 
   // 把 deltaW(權重 %)受 §3.2 雙邊夾擠後,回傳合法的最大值
@@ -381,6 +381,25 @@ export function planAdjustments(state, today) {
     return deltaW;
   };
 
+  const tryBestSourceFix = (targetPid, day, requestedWOf, priority, label, pickOpts = {}, fixOpts = {}) => {
+    for (const candidate of pickBestSources(targetPid, day, pickOpts)) {
+      const dailyTwd = Number(candidate.ad.daily_amort_twd) || 0;
+      if (dailyTwd <= 0) continue;
+      const requestedW = requestedWOf(dailyTwd, candidate);
+      if (requestedW <= 0) continue;
+      const targetProduct = productsById[targetPid];
+      const sourceProduct = productsById[candidate.sourcePid];
+      const got = tryFix(
+        candidate.ad, candidate.sourcePid, targetPid, requestedW, day,
+        priority,
+        reasonOf(candidate, targetProduct, sourceProduct, day, label),
+        { ...fixOpts, mode: candidate.mode }
+      );
+      if (got > 0) return got;
+    }
+    return 0;
+  };
+
   // 算某產品 X 本月預估月攤提(原始過去 + effective 未來)
   const projectMonthly = (pid) => {
     const dayYm = monthOf(today);
@@ -410,38 +429,26 @@ export function planAdjustments(state, today) {
       if (cur >= band.lower) continue;
       const shortfall = band.lower - cur;
       // 第一輪:嚴格借(source 不破 lower)優先,APP source 排前面
-      let candidate = pickBestSource(product.id, day, { preferAppSource: true });
-      let got = 0;
-      if (candidate) {
-        const dailyTwd = Number(candidate.ad.daily_amort_twd) || 0;
-        if (dailyTwd > 0) {
-          const wantW = Math.ceil(shortfall / dailyTwd * 100);
-          const sourceProduct = productsById[candidate.sourcePid];
-          got = tryFix(
-            candidate.ad, candidate.sourcePid, product.id, wantW, day,
-            1,
-            reasonOf(candidate, product, sourceProduct, day, "補小島"),
-            { mode: candidate.mode }
-          );
-        }
-      }
+      let got = tryBestSourceFix(
+        product.id,
+        day,
+        (dailyTwd) => Math.ceil(shortfall / dailyTwd * 100),
+        1,
+        "補小島",
+        { preferAppSource: true }
+      );
       // 第二輪:嚴格借不滿足 → 允許 APP source 跌破 lower 再試一次
       // (反映優先序:小島補下限 > APP 不超預算 > APP 平均日花費)
       if (got === 0) {
-        candidate = pickBestSource(product.id, day, { preferAppSource: true });
-        if (candidate) {
-          const dailyTwd = Number(candidate.ad.daily_amort_twd) || 0;
-          if (dailyTwd > 0) {
-            const wantW = Math.ceil(shortfall / dailyTwd * 100);
-            const sourceProduct = productsById[candidate.sourcePid];
-            tryFix(
-              candidate.ad, candidate.sourcePid, product.id, wantW, day,
-              1,
-              reasonOf(candidate, product, sourceProduct, day, "補小島(可能讓 APP 破下限)"),
-              { mode: candidate.mode, allowAppSourceLowerBreak: true }
-            );
-          }
-        }
+        tryBestSourceFix(
+          product.id,
+          day,
+          (dailyTwd) => Math.ceil(shortfall / dailyTwd * 100),
+          1,
+          "補小島(可能讓 APP 破下限)",
+          { preferAppSource: true },
+          { allowAppSourceLowerBreak: true }
+        );
       }
     }
   }
@@ -465,17 +472,12 @@ export function planAdjustments(state, today) {
       const cur = effectiveBaseline(product.id, day);
       if (cur >= band.upper) continue;
       const headroom = band.upper - cur;
-      const candidate = pickBestSource(product.id, day);
-      if (!candidate) continue;
-      const dailyTwd = Number(candidate.ad.daily_amort_twd) || 0;
-      if (dailyTwd <= 0) continue;
-      const wantW = Math.ceil(headroom / dailyTwd * 100);
-      const sourceProduct = productsById[candidate.sourcePid];
-      const got = tryFix(
-        candidate.ad, candidate.sourcePid, product.id, wantW, day,
+      const got = tryBestSourceFix(
+        product.id,
+        day,
+        (dailyTwd) => Math.ceil(headroom / dailyTwd * 100),
         2,
-        reasonOf(candidate, product, sourceProduct, day, "補 APP 月預算"),
-        { mode: candidate.mode }
+        "補 APP 月預算"
       );
       if (got > 0) underspend = budget - projectMonthly(product.id);
     }
@@ -484,20 +486,17 @@ export function planAdjustments(state, today) {
     if (underspend > APP_UNDERSPEND_THRESHOLD) {
       for (const day of [...daysBetween(today, scanEnd)]) {
         if (underspend <= APP_UNDERSPEND_THRESHOLD) break;
-        const candidate = pickBestSource(product.id, day);
-        if (!candidate) continue;
-        const dailyTwd = Number(candidate.ad.daily_amort_twd) || 0;
-        if (dailyTwd <= 0) continue;
         // 想消化掉 (underspend - 60K),分散到剩下的天數
         const remainDays = [...daysBetween(day, scanEnd)].length || 1;
         const perDay = Math.ceil((underspend - APP_UNDERSPEND_THRESHOLD) / remainDays);
-        const wantW = Math.ceil(perDay / dailyTwd * 100);
-        const sourceProduct = productsById[candidate.sourcePid];
-        const got = tryFix(
-          candidate.ad, candidate.sourcePid, product.id, wantW, day,
+        const got = tryBestSourceFix(
+          product.id,
+          day,
+          (dailyTwd) => Math.ceil(perDay / dailyTwd * 100),
           2,
-          reasonOf(candidate, product, sourceProduct, day, "補 APP 月預算(突破上限)"),
-          { allowTargetUpperBreak: true, mode: candidate.mode }
+          "補 APP 月預算(突破上限)",
+          {},
+          { allowTargetUpperBreak: true }
         );
         if (got > 0) underspend = budget - projectMonthly(product.id);
       }
@@ -516,17 +515,12 @@ export function planAdjustments(state, today) {
       if (cur <= 0) continue;
       if (cur >= band.lower) continue;
       const shortfall = band.lower - cur;
-      const candidate = pickBestSource(product.id, day);
-      if (!candidate) continue;
-      const dailyTwd = Number(candidate.ad.daily_amort_twd) || 0;
-      if (dailyTwd <= 0) continue;
-      const wantW = Math.ceil(shortfall / dailyTwd * 100);
-      const sourceProduct = productsById[candidate.sourcePid];
-      tryFix(
-        candidate.ad, candidate.sourcePid, product.id, wantW, day,
+      tryBestSourceFix(
+        product.id,
+        day,
+        (dailyTwd) => Math.ceil(shortfall / dailyTwd * 100),
         3,
-        reasonOf(candidate, product, sourceProduct, day, "補 APP 下限"),
-        { mode: candidate.mode }
+        "補 APP 下限"
       );
     }
   }

@@ -47,6 +47,15 @@ const obf = JavaScriptObfuscator.obfuscate(bundled, {
 const finalCode = obf.getObfuscatedCode();
 fs.writeFileSync(path.join(dist, "app.js"), finalCode);
 
+const runtimeConfig = {
+  sheetsWebappUrl: deploySheetsUrl,
+  sheetsToken: deploySheetsToken,
+};
+fs.writeFileSync(
+  path.join(dist, "config.js"),
+  `globalThis.__BUYADS_CONFIG__=${JSON.stringify(runtimeConfig)};\n`,
+);
+
 const cssSrc = fs.readFileSync("app/styles.css");
 fs.writeFileSync(path.join(dist, "styles.css"), cssSrc);
 
@@ -62,7 +71,7 @@ let html = fs.readFileSync("index.html", "utf8");
 html = html.replace('href="app/styles.css"', `href="styles.css?v=${cssHash}"`);
 html = html.replace(
   /<script\s+type="module"\s+src="app\/main\.js"\s*><\/script>/,
-  `<script src="app.js?v=${jsHash}" defer></script>`,
+  `<script src="config.js" defer></script>\n  <script src="app.js?v=${jsHash}" defer></script>`,
 );
 fs.writeFileSync(path.join(dist, "index.html"), html);
 

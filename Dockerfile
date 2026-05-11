@@ -18,3 +18,5 @@ RUN npm run build
 FROM caddy:2-alpine
 COPY --from=build /src/dist /srv
 COPY Caddyfile /etc/caddy/Caddyfile
+COPY docker-entrypoint.sh /usr/local/bin/buyads-entrypoint
+CMD ["sh", "/usr/local/bin/buyads-entrypoint"]
