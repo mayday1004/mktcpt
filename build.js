@@ -29,22 +29,24 @@ const result = await esbuild.build({
 const bundled = result.outputFiles[0].text;
 const bundledSize = Buffer.byteLength(bundled);
 
-const obf = JavaScriptObfuscator.obfuscate(bundled, {
-  compact: true,
-  identifierNamesGenerator: "hexadecimal",
-  renameGlobals: false,
-  stringArray: true,
-  stringArrayEncoding: ["base64"],
-  stringArrayThreshold: 0.75,
-  splitStrings: true,
-  splitStringsChunkLength: 10,
-  transformObjectKeys: false,
-  unicodeEscapeSequence: false,
-  selfDefending: false,
-  controlFlowFlattening: false,
-  deadCodeInjection: false,
-});
-const finalCode = obf.getObfuscatedCode();
+const shouldObfuscate = process.env.OBFUSCATE_JS === "1";
+const finalCode = shouldObfuscate
+  ? JavaScriptObfuscator.obfuscate(bundled, {
+      compact: true,
+      identifierNamesGenerator: "hexadecimal",
+      renameGlobals: false,
+      stringArray: true,
+      stringArrayEncoding: ["base64"],
+      stringArrayThreshold: 0.75,
+      splitStrings: true,
+      splitStringsChunkLength: 10,
+      transformObjectKeys: false,
+      unicodeEscapeSequence: false,
+      selfDefending: false,
+      controlFlowFlattening: false,
+      deadCodeInjection: false,
+    }).getObfuscatedCode()
+  : bundled;
 fs.writeFileSync(path.join(dist, "app.js"), finalCode);
 
 const runtimeConfig = {
@@ -78,5 +80,5 @@ fs.writeFileSync(path.join(dist, "index.html"), html);
 const finalSize = Buffer.byteLength(finalCode);
 const deployTag = deploySheetsUrl ? "deploy-config: ON" : "deploy-config: OFF";
 console.log(
-  `built in ${Date.now() - t0}ms — bundle ${(bundledSize / 1024).toFixed(1)}kb → obfuscated ${(finalSize / 1024).toFixed(1)}kb · ${deployTag}`,
+  `built in ${Date.now() - t0}ms — bundle ${(bundledSize / 1024).toFixed(1)}kb → ${shouldObfuscate ? "obfuscated" : "minified"} ${(finalSize / 1024).toFixed(1)}kb · ${deployTag}`,
 );
