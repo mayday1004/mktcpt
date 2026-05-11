@@ -149,7 +149,7 @@ export function render(root) {
       ${filtered.length === 0 ? `
         <div class="empty">此過濾沒有匹配的廣告</div>
       ` : `
-        ${renderAdviceList(filtered, s, newWeightsByAd)}
+        ${renderEditableAdviceCards(filtered, s, newWeightsByAd)}
       `}
 
       <div class="modal-actions" style="margin-top:16px">
@@ -245,6 +245,155 @@ function renderAdviceList(entries, state, newWeightsByAd) {
       </table>
     </div>
   `;
+}
+
+function renderEditableAdviceCards(entries, state, newWeightsByAd) {
+  return `
+    <div class="ad-cards">
+      ${entries.map((entry) => renderEditableAdviceCard(entry, state, newWeightsByAd)).join("")}
+    </div>
+  `;
+}
+
+function renderEditableAdviceCard(entry, state, newWeightsByAd) {
+  const ad = entry.ad;
+  const productNameOf = Object.fromEntries((state.products || []).map((p) => [p.id, p.name]));
+  const oldWeights = entry.oldWeights || {};
+  const newWeights = newWeightsByAd[ad.id] || {};
+  const applicable = isApplicableChange(entry, newWeightsByAd);
+  const checked = applicable && agreedAdIds.has(ad.id);
+  const lockState = ad.lock_full ? "full" : (ad.lock_perf_adjust ? "weight" : "free");
+  const lockedAd = !!ad.lock_perf_adjust;
+  const lockIconMap = { free: "🔓", weight: "🔒", full: "🚫" };
+  const lockTitleMap = {
+    free: "自由 — 自動建議可改權重",
+    weight: "鎖權重 — 權重比例不變,但可整桶搬",
+    full: "禁止挪動 — 不納入自動建議",
+  };
+  const isExpanded = expandedAds.has(ad.id);
+  const includedIds = new Set();
+  if (isExpanded) {
+    for (const p of state.products || []) includedIds.add(p.id);
+  } else {
+    for (const pid of Object.keys(oldWeights)) if (Number(oldWeights[pid]) > 0) includedIds.add(pid);
+    for (const pid of Object.keys(newWeights)) if (Number(newWeights[pid]) > 0) includedIds.add(pid);
+    for (const pp of entry.perProduct || []) {
+      if (pp.systemAdded || Number(pp.new) > 0 || Number(pp.old) > 0) includedIds.add(pp.product.id);
+    }
+    for (const [k, w] of pending.entries()) {
+      const prefix = ad.id + "|";
+      if (k.startsWith(prefix) && Number(w) > 0) includedIds.add(k.slice(prefix.length));
+    }
+  }
+  let products = (state.products || []).filter((p) => includedIds.has(p.id));
+  products = products.sort((a, b) => {
+    const wa = Number(oldWeights[a.id]) || 0;
+    const wb = Number(oldWeights[b.id]) || 0;
+    if (wa !== wb) return wb - wa;
+    return a.name.localeCompare(b.name);
+  });
+  const hiddenCount = Math.max(0, (state.products || []).length - products.length);
+
+  const rows = products.map((p) => {
+    const key = `${ad.id}|${p.id}`;
+    const oldW = Math.round(Number(oldWeights[p.id]) || 0);
+    const suggestedW = Math.round(Number(newWeights[p.id]) || 0);
+    const finalW = pending.has(key) ? Math.round(Number(pending.get(key)) || 0) : suggestedW;
+    const delta = finalW - oldW;
+    const deltaCls = delta > 0 ? "delta-up" : delta < 0 ? "delta-down" : "delta-zero";
+    const deltaText = delta > 0 ? `↑ +${delta}` : delta < 0 ? `↓ ${delta}` : "→ 0";
+    const pp = (entry.perProduct || []).find((x) => x.product.id === p.id);
+    const scoreCell = formatScoreCell(pp, false);
+    const systemAdded = oldW === 0 && finalW > 0;
+    const rowCls = systemAdded ? "system-added-row" : (oldW === 0 && finalW === 0 ? "zero-row" : "");
+    return `
+      <tr class="${rowCls}">
+        <td>${esc(p.name)} <span class="pill ${p.type}" style="font-size:10px;margin-left:4px">${p.type === "app" ? "APP" : "小島"}</span></td>
+        <td class="num">${oldW}%</td>
+        <td class="num">
+          <span class="weight-input-wrap">
+            <input type="number" min="0" max="100" step="1" class="w-input"
+              data-adid="${esc(ad.id)}" data-pid="${esc(p.id)}"
+              value="${finalW}" ${lockedAd ? "disabled" : ""} />
+          </span>
+        </td>
+        <td class="num"><span class="${deltaCls}">${deltaText}</span></td>
+        <td>${scoreCell}</td>
+        <td class="ink-2" style="font-size:12px">${editableReason(pp, delta, entry, p.id)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  const oldSum = sumWeights(oldWeights);
+  const newSum = sumWeights(currentWeightsFromProducts(products, oldWeights, newWeights, ad.id));
+  const sumCls = newSum === 100 ? "ok" : newSum > 100 ? "bad" : "warn";
+  const statusTag = entry.suggestEliminate
+    ? `<span class="pill bad">建議淘汰</span>`
+    : entry.transferTarget
+      ? `<span class="pill warn">整桶搬 → ${esc(productNameOf[entry.transferTarget] || entry.transferTarget)}</span>`
+      : applicable
+        ? `<span class="pill ok">可套用</span>`
+        : `<span class="pill">無法套用</span>`;
+  const toggleExpandBtn = isExpanded
+    ? `<button class="link-btn" data-toggle-expand="${esc(ad.id)}">⊖ 收起</button>`
+    : hiddenCount > 0
+      ? `<button class="link-btn" data-toggle-expand="${esc(ad.id)}">⊕ 展開全部產品 (還有 ${hiddenCount} 個)</button>`
+      : "";
+  return `
+    <div class="ad-card ${checked ? "ad-card-agreed" : "ad-card-dim"}">
+      <div class="ad-card-head">
+        <span class="ad-card-pick">
+          <input type="checkbox" class="agree-toggle" data-agree-adid="${esc(ad.id)}" ${checked ? "checked" : ""} ${applicable ? "" : "disabled"} />
+        </span>
+        <button class="lock-btn ${lockState !== "free" ? "locked" : ""}" data-lock-adid="${esc(ad.id)}" title="${esc(lockTitleMap[lockState])}">${lockIconMap[lockState]}</button>
+        <span class="mono ad-code-tag">${esc(ad.ad_code || "")}</span>
+        <strong class="ad-name">${esc(ad.ad_name || "")}</strong>
+        <span class="ad-period ink-3">${esc(ad.start_date || "")} ~ ${esc(ad.end_date || "")}</span>
+        ${statusTag}
+        <span class="ad-card-spacer"></span>
+        <span class="ink-3" style="font-size:11px">原合計 ${oldSum}%</span>
+        <span class="weight-sum-badge ${sumCls}">合計 <strong>${newSum}%</strong></span>
+      </div>
+      <table class="ad-products">
+        <thead>
+          <tr>
+            <th>產品</th>
+            <th class="num">原權重</th>
+            <th class="num">建議權重</th>
+            <th>變化</th>
+            <th>成效</th>
+            <th>建議結果</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${toggleExpandBtn ? `<div class="ad-card-foot">${toggleExpandBtn}</div>` : ""}
+    </div>
+  `;
+}
+
+function currentWeightsFromProducts(products, oldWeights, newWeights, adId) {
+  const out = { ...(newWeights || {}) };
+  for (const p of products || []) {
+    const key = `${adId}|${p.id}`;
+    if (pending.has(key)) {
+      const v = Math.round(Number(pending.get(key)) || 0);
+      if (v > 0) out[p.id] = v;
+      else delete out[p.id];
+    } else if ((oldWeights[p.id] || newWeights[p.id]) && !(p.id in out)) {
+      out[p.id] = Math.round(Number(newWeights[p.id]) || 0);
+    }
+  }
+  return out;
+}
+
+function editableReason(pp, delta, entry, pid) {
+  if (entry.transferTarget && pid === entry.transferTarget) return `<span class="ok">接收該廣告</span>`;
+  if (entry.transferSourcePid && pid === entry.transferSourcePid) return `<span class="bad">整個挪走</span>`;
+  if (pp?.systemAdded) return `<span class="ok">系統新增產品</span>`;
+  if (delta > 0) return `<span class="ok">接收權重</span>`;
+  if (delta < 0) return `<span class="bad">削減權重</span>`;
+  return `<span class="ink-3">維持</span>`;
 }
 
 function sumWeights(weights) {
