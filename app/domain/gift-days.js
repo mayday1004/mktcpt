@@ -231,6 +231,7 @@ export function planAdjustments(state, today) {
     const candidates = [];
     for (const ad of state.ads || []) {
       if (ad.eliminated) continue;
+      if (ad.projected_renewal) continue;         // 虛擬續費段:只用來算 baseline,不能當操作對象
       if (ad.lock_full) continue;                 // 🚫 禁止挪動:跳過
       if (!isInRange(day, ad.start_date, ad.end_date)) continue;
       const dailyTwd = Number(ad.daily_amort_twd) || 0;

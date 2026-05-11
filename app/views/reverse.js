@@ -6,7 +6,7 @@ import { addDays, monthOf, monthEnd, daysOfMonth, todayTaipei } from "../lib/dat
 import { getMonthlyBudget, isNoBand } from "../schema.js";
 import { bandsForMonth } from "../domain/budget.js";
 import { detectShortfalls } from "../domain/gift-days.js";
-import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
+import { projectAdsWithRenewals, projectedDecisionState } from "../domain/renewal-projection.js";
 import { openGiftDayFixModal } from "./gift-day-fix-modal.js";
 
 let mode = "date";  // "date" | "amount"
@@ -338,7 +338,8 @@ function computeIntegerWeights(items) {
 // 若 pickedDate 當天有任何產品的日花費 < 建議下限 → 顯示警示 + 一鍵調整按鈕
 function renderGapWarningForDate(state, pickedDate) {
   const today = todayTaipei();
-  const shortfalls = detectShortfalls(state, today);
+  // 用 projection state:跟概覽 / 權重調整頁的偵測對齊,只警示真實缺口
+  const shortfalls = detectShortfalls(projectedDecisionState(state), today);
   const relevant = shortfalls.filter((sf) => sf.days.some((d) => d.date === pickedDate));
   if (relevant.length === 0) return "";
   const items = relevant.map((sf) => {

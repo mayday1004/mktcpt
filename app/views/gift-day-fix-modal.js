@@ -12,6 +12,7 @@ import {
 } from "../domain/gift-days.js";
 import { buildWeightAdjust } from "../domain/lifecycle.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
+import { projectedDecisionState } from "../domain/renewal-projection.js";
 import { todayTaipei, nowTaipeiStamp } from "../lib/dates.js";
 
 function esc(v) {
@@ -26,7 +27,10 @@ function gotoReverseWithDate(date) {
 }
 
 export function openGiftDayFixModal(onApplied) {
-  const state = getState();
+  const rawState = getState();
+  // baseline 用 projection state:預設「成效還行的廣告會續費」,「全爛廣告」不續(視同淘汰)
+  // 只剩「全爛 / 已淘汰」造成的真實缺口才會觸發補建議,跟權重調整頁的 baseline 對齊
+  const state = projectedDecisionState(rawState);
   const today = todayTaipei();
   const planned = planAdjustments(state, today);
 

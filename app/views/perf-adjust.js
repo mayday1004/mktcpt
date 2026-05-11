@@ -99,8 +99,9 @@ export function render(root) {
   });
 
   // 廣告調整入口(CLAUDE.md §5.8 v2):當有 shortfall 或 APP 月攤提少花 > 6 萬時顯示一鍵入口
-  const shortfalls = detectShortfalls(s, todayTaipei());
-  const underspends = detectAppMonthlyUnderspend(s, todayTaipei());
+  // 用 scenario.state(已套用續費 projection)— 跟 pivot baseline 對齊,只剩真實缺口才會出現
+  const shortfalls = detectShortfalls(scenario.state, todayTaipei());
+  const underspends = detectAppMonthlyUnderspend(scenario.state, todayTaipei());
   const totalIssues = shortfalls.length + underspends.length;
   const giftDayBanner = totalIssues > 0 ? `
     <div class="card" style="border-left:3px solid var(--warn);background:#fffbf0;margin-bottom:12px">

@@ -30,6 +30,19 @@ function cloneRenewal(ad, start, end, index) {
   };
 }
 
+// 給 detect / plan 等「決策層」函式用的 state — 預設套用續費 projection,
+// 並排除「全爛廣告」(成效全部 < 0.3,視同預設淘汰,不會被預估續費)。
+// settings.current_month 沒設或 fromDate 無效時退回原 state。
+export function projectedDecisionState(state) {
+  const ym = state?.settings?.current_month;
+  if (!ym) return state;
+  const projection = projectAdsWithRenewals(state, ym, {
+    fromDate: todayTaipei(),
+    excludePoorPerf: true,
+  });
+  return { ...state, ads: projection.ads };
+}
+
 export function projectAdsWithRenewals(state, ym, options = {}) {
   const fromDate = options.fromDate || todayTaipei();
   const monthEndExclusive = nextDay(`${ym}-${String(daysInMonth(ym)).padStart(2, "0")}`);

@@ -6,7 +6,7 @@ import { getMonthlyBudget, getDailyBudget, getBudgetSource, isNoBand, isNoBandPi
 import { scoreRecord } from "../domain/perf-adjust.js";
 import { expiringAds } from "../domain/alerts.js";
 import { detectFutureGaps, detectShortfalls, detectAppMonthlyUnderspend } from "../domain/gift-days.js";
-import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
+import { projectAdsWithRenewals, projectedDecisionState } from "../domain/renewal-projection.js";
 import { openGiftDayFixModal } from "./gift-day-fix-modal.js";
 
 // 概覽 KPI 群組（依使用者要求合併）
@@ -236,9 +236,11 @@ function renderActionRequired(state) {
   const today = todayStr();
   const expiring = expiringAds(state, 10);
   const upcoming = upcomingAds(state, 10);
-  const shortfalls = detectShortfalls(state, today);
-  const underspends = detectAppMonthlyUnderspend(state, today);
-  const gaps = detectFutureGaps(state, today);
+  // detect 用 projection state:預設「成效還行的廣告會續費」、「全爛廣告」視同預設淘汰
+  const decisionState = projectedDecisionState(state);
+  const shortfalls = detectShortfalls(decisionState, today);
+  const underspends = detectAppMonthlyUnderspend(decisionState, today);
+  const gaps = detectFutureGaps(decisionState, today);
   if (expiring.length === 0 && upcoming.length === 0 && shortfalls.length === 0 && underspends.length === 0 && gaps.length === 0) return "";
 
   // 即將到期：成效全爛優先排前；同名廣告去重（同 ads 頁邏輯）
@@ -396,7 +398,8 @@ function renderActionRequired(state) {
 export function renderGiftDayInfo(state, opts = {}) {
   const { withFixButton = true } = opts;
   const today = todayTaipei();
-  const gaps = detectFutureGaps(state, today);
+  const decisionState = projectedDecisionState(state);
+  const gaps = detectFutureGaps(decisionState, today);
   if (gaps.length === 0) return "";
   const md = (s) => s.slice(5).replace("-", "/");
   const items = gaps.slice(0, 12).map((g) => {
@@ -412,7 +415,7 @@ export function renderGiftDayInfo(state, opts = {}) {
       <span class="ink-3" style="font-size:11px">影響:${escape(pidNames)}</span>
     </li>`;
   }).join("");
-  const hasShortfall = detectShortfalls(state, today).length > 0;
+  const hasShortfall = detectShortfalls(decisionState, today).length > 0;
   let actionHtml;
   if (!withFixButton) {
     actionHtml = hasShortfall
