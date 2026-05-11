@@ -1,5 +1,6 @@
 import esbuild from "esbuild";
 import JavaScriptObfuscator from "javascript-obfuscator";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -46,16 +47,22 @@ const obf = JavaScriptObfuscator.obfuscate(bundled, {
 const finalCode = obf.getObfuscatedCode();
 fs.writeFileSync(path.join(dist, "app.js"), finalCode);
 
-fs.copyFileSync("app/styles.css", path.join(dist, "styles.css"));
+const cssSrc = fs.readFileSync("app/styles.css");
+fs.writeFileSync(path.join(dist, "styles.css"), cssSrc);
 
 fs.mkdirSync(path.join(dist, "apps-script"), { recursive: true });
 fs.copyFileSync("apps-script/Code.gs", path.join(dist, "apps-script", "Code.gs"));
 
+// 用 bundle 內容算 hash 當 cache-buster query。Caddyfile 對 *.js / *.css 設了 max-age=3600,
+// 固定檔名遇到 deploy 會讓瀏覽器繼續吃舊版最多 1 小時 — query 一變,瀏覽器就會重抓。
+const jsHash = crypto.createHash("sha256").update(finalCode).digest("hex").slice(0, 10);
+const cssHash = crypto.createHash("sha256").update(cssSrc).digest("hex").slice(0, 10);
+
 let html = fs.readFileSync("index.html", "utf8");
-html = html.replace('href="app/styles.css"', 'href="styles.css"');
+html = html.replace('href="app/styles.css"', `href="styles.css?v=${cssHash}"`);
 html = html.replace(
   /<script\s+type="module"\s+src="app\/main\.js"\s*><\/script>/,
-  '<script src="app.js" defer></script>',
+  `<script src="app.js?v=${jsHash}" defer></script>`,
 );
 fs.writeFileSync(path.join(dist, "index.html"), html);
 
