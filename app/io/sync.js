@@ -137,7 +137,14 @@ function legacyToServerRecords(spec, headers, rows) {
 //   5. 用 server 回的 server_version 更新 last-seen
 //
 // onProgress 收到 { phase, current, total, name } — 跟現有 sync-banner 介面相容
-export async function syncOnce(onProgress) {
+//
+// options:
+//   - serverWins (預設 false):server 死贏模式。拉到 server 資料後不做 LWW,
+//     一律以 server 覆寫 local;local 有但 server 沒的 row 直接刪除;meta 重設成 server 一致。
+//     並完全跳過 push 階段 — 用於「開站」與「背景輪詢」,避免把陳年舊資料推上 Sheets。
+//     僅在 server 是「modern schema(有 _id 欄)」時才動 local;empty / legacy 格式一律保留 local。
+export async function syncOnce(onProgress, options = {}) {
+  const { serverWins = false } = options;
   const meta = loadMeta();
   const lastSeenVersion = loadServerVersion();
 
@@ -161,46 +168,91 @@ export async function syncOnce(onProgress) {
     for (const spec of TABLE_SYNC_SPECS) {
       const { headers = [], rows = [] } = allSheets[spec.sheetName] || {};
       let serverRecords;
+      let isModern = false;  // server 是否為 modern schema(有 _id 欄) — 決定 serverWins 是否可動 local
       if (!headers.length) {
         serverRecords = [];
-        forcePushSheets.add(spec.sheetName);
+        // serverWins:server 是空 / 沒分頁 → 視為「無法判斷」,不要動 local
+        // 一般模式:照舊 forcePush 上去(seeding 行為)
+        if (!serverWins) forcePushSheets.add(spec.sheetName);
       } else {
         const parsed = parseServerRows(headers, rows);
         if (parsed === null) {
           serverRecords = legacyToServerRecords(spec, headers, rows);
-          forcePushSheets.add(spec.sheetName);
+          // serverWins:legacy 格式不動 local(避免半遷移狀態誤砍)
+          if (!serverWins) forcePushSheets.add(spec.sheetName);
         } else {
           serverRecords = parsed;
+          isModern = true;
         }
       }
 
-      // LWW 合併
+      // ── 合併分支 ──
+      // serverWins + modern schema:整片以 server 為準(無 LWW、刪除 local extras)
+      // 其餘:LWW 合併(原邏輯)
       const sheetMeta = meta[spec.sheetName] || {};
-      applySync((st) => {
-        for (const sr of serverRecords) {
-          const known = sheetMeta[sr._id];
-          const isNewerOrFirst = !known || (sr._updated_at && sr._updated_at > (known._updated_at || ""));
-          if (!isNewerOrFirst) continue;
-          if (sr._deleted) {
-            spec.removeFromState(st, sr._id);
-          } else {
-            const obj = Object.fromEntries(spec.dataHeaders.map((h, i) => [h, sr.dataRow[i]]));
-            spec.upsertInState(st, sr._id, obj);
+      if (serverWins && isModern) {
+        const serverIds = new Set(serverRecords.filter((r) => !r._deleted).map((r) => r._id));
+        applySync((st) => {
+          // 1. 套用 server 所有 row(刪除標記 / 資料一律覆寫,不檢查 _updated_at)
+          for (const sr of serverRecords) {
+            if (sr._deleted) {
+              spec.removeFromState(st, sr._id);
+            } else {
+              const obj = Object.fromEntries(spec.dataHeaders.map((h, i) => [h, sr.dataRow[i]]));
+              spec.upsertInState(st, sr._id, obj);
+            }
           }
+          // 2. 刪除 local 有但 server 沒有的 row(server 是唯一真相)
+          const localIds = spec.flatten(st).map((r) => r._id);
+          for (const id of localIds) {
+            if (!serverIds.has(id)) spec.removeFromState(st, id);
+          }
+        });
+        // 重設 meta = 跟 server 完全一致
+        meta[spec.sheetName] = {};
+        for (const sr of serverRecords) {
+          meta[spec.sheetName][sr._id] = sr._deleted
+            ? { _updated_at: sr._updated_at, fingerprint: TOMBSTONE_FP }
+            : { _updated_at: sr._updated_at, fingerprint: fingerprintDataRow(sr.dataRow) };
         }
-      });
+      } else if (serverWins) {
+        // server 是 empty / legacy / no-headers — 不動 local 也不動 meta
+        // 之後 push 階段也會被跳過(serverWins=true)
+      } else {
+        // 一般 LWW 合併(原邏輯)
+        applySync((st) => {
+          for (const sr of serverRecords) {
+            const known = sheetMeta[sr._id];
+            const isNewerOrFirst = !known || (sr._updated_at && sr._updated_at > (known._updated_at || ""));
+            if (!isNewerOrFirst) continue;
+            if (sr._deleted) {
+              spec.removeFromState(st, sr._id);
+            } else {
+              const obj = Object.fromEntries(spec.dataHeaders.map((h, i) => [h, sr.dataRow[i]]));
+              spec.upsertInState(st, sr._id, obj);
+            }
+          }
+        });
 
-      // 更新 meta
-      if (!meta[spec.sheetName]) meta[spec.sheetName] = {};
-      for (const sr of serverRecords) {
-        meta[spec.sheetName][sr._id] = sr._deleted
-          ? { _updated_at: sr._updated_at, fingerprint: TOMBSTONE_FP }
-          : { _updated_at: sr._updated_at, fingerprint: fingerprintDataRow(sr.dataRow) };
+        // 更新 meta
+        if (!meta[spec.sheetName]) meta[spec.sheetName] = {};
+        for (const sr of serverRecords) {
+          meta[spec.sheetName][sr._id] = sr._deleted
+            ? { _updated_at: sr._updated_at, fingerprint: TOMBSTONE_FP }
+            : { _updated_at: sr._updated_at, fingerprint: fingerprintDataRow(sr.dataRow) };
+        }
       }
     }
 
     // 更新 last-seen 到拉回來的版本（push 階段若有改變,後面會再覆蓋）
     saveServerVersion(serverVersion);
+  }
+
+  // serverWins 模式:不做 push,單純拉資料完事
+  if (serverWins) {
+    saveMeta(meta);
+    saveServerVersion(serverVersion);
+    return { ok: true, pulled: shouldPull, pushedTables: 0, serverWins: true };
   }
 
   // ---- Step 2: 對每張表計算 dirty + deletions → upsert ----
@@ -318,7 +370,7 @@ function hasCredentials() {
   return !!(getEffectiveSheetsUrl(s.settings) && getEffectiveSheetsToken(s.settings));
 }
 
-async function runSyncIfReady(reason) {
+async function runSyncIfReady(reason, options = {}) {
   if (isSyncing) return;
   if (!hasCredentials()) return;
   if (Date.now() < nextEarliestSyncAt) return;
@@ -328,7 +380,10 @@ async function runSyncIfReady(reason) {
   // 不預先顯示 banner — syncOnce 內部只在「真的做事」(實際拉表 / 實際 push)時才會呼叫 onProgress
   // 閒置時(server 沒變動 + 本機沒 dirty)整輪 sync 都不會顯示 banner
   try {
-    const result = await syncOnce((p) => showSyncBanner({ ...p, name: `${reason} · ${p.name}` }));
+    const result = await syncOnce(
+      (p) => showSyncBanner({ ...p, name: `${reason} · ${p.name}` }),
+      options,
+    );
     consecutiveFailures = 0;
     nextEarliestSyncAt = 0;
     // 只在真的有拉資料或推資料時才顯示完成 banner;閒置時靜默
@@ -350,10 +405,11 @@ export function initSyncOrchestrator() {
   if (orchestratorStarted) return;
   orchestratorStarted = true;
 
-  // 啟動時立即同步一次（拉同事最新改動）
-  setTimeout(() => runSyncIfReady("啟動載入"), 100);
+  // 啟動時立即同步一次 — serverWins 模式:server 整片覆寫 local,不 push 任何東西。
+  // 避免使用者「久未開站、本機資料陳舊」的情境下,把舊資料推回 Sheets 蓋掉現役資料。
+  setTimeout(() => runSyncIfReady("啟動載入", { serverWins: true }), 100);
 
-  // state 變動 → debounce 5 秒
+  // state 變動 → debounce 5 秒 → 正常同步(LWW + push)
   // 注意:同步進行中的 applySync 也會觸發 subscribe,我們用 isSyncing 過濾,
   // 避免「同步完成 → debounce 又觸發 → 再同步」的循環。
   subscribe(() => {
@@ -365,9 +421,9 @@ export function initSyncOrchestrator() {
     }, DEBOUNCE_AFTER_CHANGE_MS);
   });
 
-  // 每 30 秒 poll
+  // 每 30 秒 poll — 也用 serverWins(只拉不推),只有「使用者真的有改動」才會走 push 路徑
   if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(() => runSyncIfReady("背景輪詢"), POLL_INTERVAL_MS);
+  pollTimer = setInterval(() => runSyncIfReady("背景輪詢", { serverWins: true }), POLL_INTERVAL_MS);
 }
 
 // 提供給「☁️ 推到 Sheets」/「⬇️ 從 Sheets 拉下來」手動按鈕呼叫；行為跟 runSyncIfReady 相同（單向同步無意義，因為一律 LWW 合併）

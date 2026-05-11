@@ -41,6 +41,7 @@ function defaultConfigForProduct(product) {
       { id: uid("cm"), name: "首存ROI", formula: "首儲購買金額*收入匯率/花費", show_as_percent: false },
       { id: uid("cm"), name: "活躍率", formula: "不重複活躍用戶數/不重複安裝數", show_as_percent: true },
       { id: uid("cm"), name: "排重安裝率", formula: "所有渠道不重複安裝數/不重複安裝數", show_as_percent: true },
+      { id: uid("cm"), name: "首購率", formula: "首儲訂單數/不重複安裝數", show_as_percent: true },
     ],
   });
   const presetB = () => ({
