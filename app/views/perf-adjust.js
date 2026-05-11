@@ -149,9 +149,7 @@ export function render(root) {
       ${filtered.length === 0 ? `
         <div class="empty">此過濾沒有匹配的廣告</div>
       ` : `
-        <div class="ad-cards">
-          ${filtered.map((e) => safeRenderAdCard(e, s, newWeightsByAd, productStatus)).join("")}
-        </div>
+        ${renderAdviceList(filtered, s, newWeightsByAd)}
       `}
 
       <div class="modal-actions" style="margin-top:16px">
@@ -186,6 +184,91 @@ function syncDefaultAgreed(pivot, newWeightsByAd) {
     if (!valid.has(id)) agreedAdIds.delete(id);
   }
   for (const id of applicableIds) agreedAdIds.add(id);
+}
+
+function renderAdviceList(entries, state, newWeightsByAd) {
+  const productNameOf = Object.fromEntries((state.products || []).map((p) => [p.id, p.name]));
+  const rows = entries.map((entry) => {
+    const ad = entry.ad;
+    const newW = newWeightsByAd[ad.id] || {};
+    const applicable = isApplicableChange(entry, newWeightsByAd);
+    const checked = applicable && agreedAdIds.has(ad.id);
+    const lockState = ad.lock_full ? "full" : (ad.lock_perf_adjust ? "weight" : "free");
+    const lockIconMap = { free: "🔓", weight: "🔒", full: "🚫" };
+    const oldSum = sumWeights(entry.oldWeights);
+    const newSum = sumWeights(newW);
+    const changeText = describeWeightChange(entry.oldWeights || {}, newW, productNameOf);
+    const note = entry.suggestEliminate
+      ? `<span class="pill bad">建議淘汰</span>`
+      : entry.transferTarget
+        ? `<span class="pill warn">整桶搬 → ${esc(productNameOf[entry.transferTarget] || entry.transferTarget)}</span>`
+        : applicable
+          ? `<span class="pill ok">可套用</span>`
+          : `<span class="pill">無法套用</span>`;
+    const action = entry.suggestEliminate
+      ? `<button class="primary danger eliminate-action" data-eliminate="${esc(ad.id)}">淘汰</button>`
+      : "";
+    return `
+      <tr>
+        <td style="width:42px;text-align:center">
+          <input type="checkbox" class="agree-toggle" data-agree-adid="${esc(ad.id)}" ${checked ? "checked" : ""} ${applicable ? "" : "disabled"} />
+        </td>
+        <td style="width:42px;text-align:center">
+          <button class="lock-btn ${lockState !== "free" ? "locked" : ""}" data-lock-adid="${esc(ad.id)}" title="切換鎖定狀態">${lockIconMap[lockState]}</button>
+        </td>
+        <td class="mono" style="width:96px">${esc(ad.ad_code || "")}</td>
+        <td>
+          <strong>${esc(ad.ad_name || "")}</strong>
+          <div class="ink-3" style="font-size:11px">${esc(ad.start_date || "")} ~ ${esc(ad.end_date || "")}</div>
+        </td>
+        <td>${changeText}</td>
+        <td class="num" style="width:92px">${oldSum}% → <strong>${newSum}%</strong></td>
+        <td style="width:120px">${note} ${action}</td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <div class="table-wrap" style="padding:14px 18px 18px;max-height:620px;overflow:auto">
+      <table class="perf-adjust-list" style="font-size:12px">
+        <thead>
+          <tr>
+            <th>套用</th>
+            <th>鎖定</th>
+            <th>代碼</th>
+            <th>廣告</th>
+            <th>權重變化</th>
+            <th class="num">合計</th>
+            <th>狀態</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function sumWeights(weights) {
+  return Object.values(weights || {}).reduce((sum, v) => sum + Math.round(Number(v) || 0), 0);
+}
+
+function describeWeightChange(oldWeights, newWeights, productNameOf) {
+  const pids = new Set([...Object.keys(oldWeights || {}), ...Object.keys(newWeights || {})]);
+  const changes = [...pids]
+    .map((pid) => {
+      const oldW = Math.round(Number(oldWeights[pid]) || 0);
+      const newW = Math.round(Number(newWeights[pid]) || 0);
+      return { pid, oldW, newW, delta: newW - oldW };
+    })
+    .filter((x) => x.delta !== 0)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  if (changes.length === 0) return `<span class="ink-3">維持原權重</span>`;
+  const shown = changes.slice(0, 5).map((x) => {
+    const cls = x.delta > 0 ? "delta-up" : "delta-down";
+    const sign = x.delta > 0 ? "+" : "";
+    return `<span class="${cls}">${esc(productNameOf[x.pid] || x.pid)} ${x.oldW}% → ${x.newW}% (${sign}${x.delta}%)</span>`;
+  }).join("<br>");
+  const more = changes.length > 5 ? `<div class="ink-3" style="font-size:11px">另 ${changes.length - 5} 項變化</div>` : "";
+  return shown + more;
 }
 
 function scenarioFor(state, ym) {
