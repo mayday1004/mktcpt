@@ -249,7 +249,7 @@ function renderAdviceList(entries, state, newWeightsByAd) {
 
 function renderEditableAdviceCards(entries, state, newWeightsByAd) {
   return `
-    <div class="ad-cards">
+    <div style="display:flex;flex-direction:column;gap:12px;padding:14px 18px 18px">
       ${entries.map((entry) => renderEditableAdviceCard(entry, state, newWeightsByAd)).join("")}
     </div>
   `;
@@ -308,18 +308,18 @@ function renderEditableAdviceCard(entry, state, newWeightsByAd) {
     const rowCls = systemAdded ? "system-added-row" : (oldW === 0 && finalW === 0 ? "zero-row" : "");
     return `
       <tr class="${rowCls}">
-        <td>${esc(p.name)} <span class="pill ${p.type}" style="font-size:10px;margin-left:4px">${p.type === "app" ? "APP" : "小島"}</span></td>
-        <td class="num">${oldW}%</td>
-        <td class="num">
+        <td style="padding:9px 12px;border-bottom:1px solid #f1f3f7">${esc(p.name)} <span class="pill ${p.type}" style="font-size:10px;margin-left:4px">${p.type === "app" ? "APP" : "小島"}</span></td>
+        <td class="num" style="padding:9px 12px;border-bottom:1px solid #f1f3f7">${oldW}%</td>
+        <td class="num" style="padding:9px 12px;text-align:center;border-bottom:1px solid #f1f3f7">
           <span class="weight-input-wrap">
             <input type="number" min="0" max="100" step="1" class="w-input"
               data-adid="${esc(ad.id)}" data-pid="${esc(p.id)}"
               value="${finalW}" ${lockedAd ? "disabled" : ""} />
           </span>
         </td>
-        <td class="num"><span class="${deltaCls}">${deltaText}</span></td>
-        <td>${scoreCell}</td>
-        <td class="ink-2" style="font-size:12px">${editableReason(pp, delta, entry, p.id)}</td>
+        <td class="num" style="padding:9px 12px;text-align:right;border-bottom:1px solid #f1f3f7"><span class="${deltaCls}">${deltaText}</span></td>
+        <td style="padding:9px 12px;border-bottom:1px solid #f1f3f7">${scoreCell}</td>
+        <td class="ink-2" style="padding:9px 12px;border-bottom:1px solid #f1f3f7;font-size:12px">${editableReason(pp, delta, entry, p.id)}</td>
       </tr>
     `;
   }).join("");
@@ -340,9 +340,9 @@ function renderEditableAdviceCard(entry, state, newWeightsByAd) {
       ? `<button class="link-btn" data-toggle-expand="${esc(ad.id)}">⊕ 展開全部產品 (還有 ${hiddenCount} 個)</button>`
       : "";
   return `
-    <div class="ad-card ${checked ? "ad-card-agreed" : "ad-card-dim"}">
-      <div class="ad-card-head">
-        <span class="ad-card-pick">
+    <div style="border:1px solid ${checked ? "#b8dfc5" : "#dfe4ec"};border-radius:8px;background:${checked ? "#fbfffc" : "#fff"};overflow:hidden">
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-height:50px;padding:10px 14px;background:${checked ? "#f0faf4" : "#f8fafc"};border-bottom:1px solid #edf0f5">
+        <span style="display:inline-flex;align-items:center;justify-content:center;min-width:22px">
           <input type="checkbox" class="agree-toggle" data-agree-adid="${esc(ad.id)}" ${checked ? "checked" : ""} ${applicable ? "" : "disabled"} />
         </span>
         <button class="lock-btn ${lockState !== "free" ? "locked" : ""}" data-lock-adid="${esc(ad.id)}" title="${esc(lockTitleMap[lockState])}">${lockIconMap[lockState]}</button>
@@ -350,24 +350,34 @@ function renderEditableAdviceCard(entry, state, newWeightsByAd) {
         <strong class="ad-name">${esc(ad.ad_name || "")}</strong>
         <span class="ad-period ink-3">${esc(ad.start_date || "")} ~ ${esc(ad.end_date || "")}</span>
         ${statusTag}
-        <span class="ad-card-spacer"></span>
+        <span style="flex:1"></span>
         <span class="ink-3" style="font-size:11px">原合計 ${oldSum}%</span>
         <span class="weight-sum-badge ${sumCls}">合計 <strong>${newSum}%</strong></span>
       </div>
-      <table class="ad-products">
+      <div style="overflow:auto">
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px">
+        <colgroup>
+          <col style="width:160px">
+          <col style="width:84px">
+          <col style="width:122px">
+          <col style="width:88px">
+          <col style="width:260px">
+          <col>
+        </colgroup>
         <thead>
           <tr>
-            <th>產品</th>
-            <th class="num">原權重</th>
-            <th class="num">建議權重</th>
-            <th>變化</th>
-            <th>成效</th>
-            <th>建議結果</th>
+            <th style="padding:8px 12px;text-align:left;background:#fff;border-bottom:1px solid #eef1f6;color:var(--ink-3);font-size:11px">產品</th>
+            <th class="num" style="padding:8px 12px;background:#fff;border-bottom:1px solid #eef1f6;color:var(--ink-3);font-size:11px">原權重</th>
+            <th class="num" style="padding:8px 12px;text-align:center;background:#fff;border-bottom:1px solid #eef1f6;color:var(--ink-3);font-size:11px">建議權重</th>
+            <th style="padding:8px 12px;text-align:right;background:#fff;border-bottom:1px solid #eef1f6;color:var(--ink-3);font-size:11px">變化</th>
+            <th style="padding:8px 12px;background:#fff;border-bottom:1px solid #eef1f6;color:var(--ink-3);font-size:11px">成效</th>
+            <th style="padding:8px 12px;background:#fff;border-bottom:1px solid #eef1f6;color:var(--ink-3);font-size:11px">建議結果</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
-      ${toggleExpandBtn ? `<div class="ad-card-foot">${toggleExpandBtn}</div>` : ""}
+      </div>
+      ${toggleExpandBtn ? `<div style="padding:6px 14px;background:#fafbfc;border-top:1px solid #f0f2f6;font-size:12px">${toggleExpandBtn}</div>` : ""}
     </div>
   `;
 }
