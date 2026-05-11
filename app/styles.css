@@ -599,22 +599,54 @@ button.kpi-card:active { transform: translateY(0); }
 .quick-pid button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* ============ Expiring card ============ */
-.expiring-card .expiring-list {
-  display: flex; flex-direction: column; gap: 4px;
+.expiring-card .expiring-list,
+.expiring-list {
+  display: flex; flex-direction: column; gap: 6px;
 }
 .expiring-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 12px; border-radius: 6px;
-  font-size: 13px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px; border-radius: 4px;
+  font-size: 12.5px;
+  border-left: 3px solid transparent;
 }
-.expiring-item button { font-size: 12px; padding: 4px 12px; }
-.expiring-days {
+.expiring-item button { font-size: 11px; padding: 3px 10px; }
+.exp-row-red { background: #fdecec; border-left-color: #d04848; }
+.exp-row-blue { background: #eef3ff; border-left-color: #4a7fd0; }
+.exp-days {
   font-weight: 700; font-family: var(--mono);
-  min-width: 50px; text-align: right;
+  min-width: 36px; color: var(--ink-1);
 }
-.expiring-products {
-  display: inline-flex; flex-wrap: wrap; gap: 4px;
+.exp-end {
+  font-weight: 500; color: var(--ink-2); font-size: 11.5px;
+  min-width: 56px;
 }
+.exp-code {
+  font-size: 11px; color: var(--ink-3); min-width: 60px;
+}
+.exp-name {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  min-width: 90px;
+}
+.exp-perf-bad {
+  background: #fde3e3; color: var(--bad); font-weight: 600;
+  font-size: 11px; padding: 1px 6px;
+}
+.exp-products {
+  display: inline-flex; flex-wrap: wrap; gap: 3px; flex: 1; min-width: 0;
+}
+.exp-product-pill { font-size: 11px; padding: 1px 6px; }
+.exp-amount {
+  font-weight: 600; color: var(--ink-1); white-space: nowrap;
+  margin-left: auto;
+}
+.exp-actions { display: inline-flex; gap: 4px; }
+/* 圖例小色塊 */
+.exp-legend {
+  display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  vertical-align: middle; margin-right: 3px; margin-left: 2px;
+}
+.exp-legend.exp-red { background: #fdecec; border: 1px solid #d04848; }
+.exp-legend.exp-blue { background: #eef3ff; border: 1px solid #4a7fd0; }
 
 /* 已淘汰廣告：列表中視覺降權 */
 tr.ad-eliminated td { opacity: 0.55; }
@@ -2160,4 +2192,103 @@ pre.code {
     padding-left: 14px;
     padding-right: 14px;
   }
+}
+
+/* ============ 廣告列表:家族 group header(同家族 stXXX/stXXXt/stXXXdh) ============ */
+.family-head-row td {
+  padding: 8px 12px !important;
+  background: linear-gradient(180deg, #f0f5ff 0%, #e8efff 100%);
+  border-bottom: 2px solid #cfd9ef;
+  border-top: 2px solid #cfd9ef;
+}
+.family-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-size: 13px;
+}
+.family-emoji { font-size: 16px; }
+.family-base-name {
+  font-family: var(--mono);
+  background: #fff; padding: 2px 8px; border-radius: 4px;
+  border: 1px solid #cfd9ef;
+}
+.family-ad-name {
+  color: var(--ink-2); font-weight: 500;
+}
+.family-meta {
+  color: var(--ink-2); font-size: 12px;
+  padding: 1px 6px; background: rgba(255,255,255,0.6); border-radius: 3px;
+}
+.family-poquan-pct {
+  background: linear-gradient(90deg, #e7f0ff 0%, #ffe6f0 100%);
+  color: var(--ink-1);
+  cursor: help;
+}
+.family-roles {
+  margin-left: auto;
+  display: inline-flex; gap: 6px; flex-wrap: wrap;
+}
+.family-role-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--mono); font-size: 11px;
+  padding: 2px 8px; border-radius: 10px;
+  background: #fff; border: 1px solid #cfd9ef;
+}
+.family-role-tag {
+  font-family: var(--system); font-size: 10px; color: var(--ink-3);
+}
+.family-role-normal { border-color: #b8dfc5; }
+.family-role-poquan { border-color: #f4cc8a; background: #fff8e6; }
+.family-role-secondary { border-color: #c9c3e8; background: #f4f1ff; }
+
+/* 卡片內角色 badge(在代碼旁) */
+.seg-badge.family-role-poquan { background: #fff8e6; color: #a06b00; }
+.seg-badge.family-role-secondary { background: #f4f1ff; color: #5b4a99; }
+
+/* 家族框線:family header + 各 member row 用同色細線左右,最後一筆加底線 */
+.family-head-row td:first-child {
+  border-left: 1px solid #b8c8e8 !important;
+}
+.family-head-row td:last-child {
+  border-right: 1px solid #b8c8e8 !important;
+}
+tr.family-member > td:first-child {
+  border-left: 1px solid #b8c8e8;
+}
+tr.family-member > td:last-child {
+  border-right: 1px solid #b8c8e8;
+}
+tr.family-member.family-last > td {
+  border-bottom: 1px solid #b8c8e8;
+}
+
+/* scroll 到該卡時的高亮閃光 */
+.jump-highlight {
+  animation: jump-flash 1.5s ease-out;
+}
+@keyframes jump-flash {
+  0%, 100% { background-color: transparent; }
+  20% { background-color: #fff8d6; }
+  60% { background-color: #fff8d6; }
+}
+
+/* ============ 新增廣告:破圈分流 section ============ */
+.poquan-split-box {
+  border: 1px dashed #f4cc8a;
+  background: #fffaf0;
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+.poquan-split-toggle {
+  display: flex; align-items: center; gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.poquan-split-toggle input[type=checkbox] {
+  width: 16px; height: 16px;
+  accent-color: #c98523;
+}
+.poquan-split-box #poquan-preview {
+  border-left: 2px solid #f4cc8a;
+  padding-left: 8px;
+  line-height: 1.5;
 }

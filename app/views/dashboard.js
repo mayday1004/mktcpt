@@ -234,7 +234,7 @@ function kpiPerfStats(state, pids) {
 // 沒事時整個區塊不渲染。
 function renderActionRequired(state) {
   const today = todayStr();
-  const expiring = expiringAds(state, 10);
+  const expiring = expiringAds(state, 13);  // 14 天視窗
   const upcoming = upcomingAds(state, 10);
   // detect 用 projection state:預設「成效還行的廣告會續費」、「全爛廣告」視同預設淘汰
   const decisionState = projectedDecisionState(state);
@@ -248,12 +248,13 @@ function renderActionRequired(state) {
   for (const { ad, daysLeft, poorPerf } of expiring) {
     const key = ad.ad_name || ad.ad_code;
     if (!byName.has(key)) {
-      byName.set(key, { adName: ad.ad_name, latestAd: ad, codes: new Set(), earliestDays: daysLeft, poorPerf: null });
+      byName.set(key, { adName: ad.ad_name, latestAd: ad, codes: new Set(), earliestEnd: ad.end_date, earliestDays: daysLeft, poorPerf: null });
     }
     const g = byName.get(key);
     g.codes.add(ad.ad_code);
     if (ad.end_date < g.latestAd.end_date) {
       g.latestAd = ad;
+      g.earliestEnd = ad.end_date;
       g.earliestDays = daysLeft;
     }
     if (poorPerf) g.poorPerf = poorPerf;
@@ -263,26 +264,34 @@ function renderActionRequired(state) {
     return a.earliestDays - b.earliestDays;
   });
 
+  const WD = ["日", "一", "二", "三", "四", "五", "六"];
+  const fmtEnd = (ymd) => {
+    if (!ymd) return "";
+    const d = new Date(ymd + "T00:00:00");
+    return `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`;
+  };
+
   const expiringHtml = expGroups.length === 0 ? "" : `
     <div class="ar-block">
       <div class="ar-block-head">
         <strong>📅 即將到期 (${expGroups.length} 支)</strong>
         <a class="ar-link" href="#ads">→ 廣告頁處理</a>
       </div>
-      <ul class="ar-list">
-        ${expGroups.slice(0, 5).map((g) => {
-          const sev = g.poorPerf ? "bad" : g.earliestDays <= 3 ? "bad" : g.earliestDays <= 7 ? "warn" : "info";
-          const tag = g.poorPerf
-            ? `<span class="pill" style="background:#fde3e3;color:var(--bad);font-weight:600">🚨 成效全爛</span>`
+      <div class="expiring-list" style="margin-top:6px">
+        ${expGroups.map((g) => {
+          const tone = g.earliestDays <= 6 ? "exp-row-red" : "exp-row-blue";
+          const poorBadge = g.poorPerf
+            ? `<span class="pill exp-perf-bad" title="${escape(g.poorPerf.map((p) => `${p.productName} ${(p.ratio * 100).toFixed(0)}%`).join("、"))}">🚨 成效全爛</span>`
             : "";
-          return `<li class="ar-item ar-${sev}">
-            <span class="ar-days">${g.earliestDays} 天</span>
-            <span><strong>${escape(g.adName || "—")}</strong> <span class="ink-3 mono" style="font-size:11px">${[...g.codes].join("/")}</span></span>
-            ${tag}
-          </li>`;
+          return `<div class="expiring-item ${tone}">
+            <span class="exp-days">${g.earliestDays}天</span>
+            <span class="exp-end mono">${fmtEnd(g.earliestEnd)}</span>
+            <span class="exp-code mono">${[...g.codes].join("/")}</span>
+            <strong class="exp-name">${escape(g.adName || "—")}</strong>
+            ${poorBadge}
+          </div>`;
         }).join("")}
-        ${expGroups.length > 5 ? `<li class="ink-3" style="font-size:12px">…還有 ${expGroups.length - 5} 支</li>` : ""}
-      </ul>
+      </div>
     </div>
   `;
 

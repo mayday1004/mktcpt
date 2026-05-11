@@ -17,16 +17,40 @@ export const PERF_INPUT_HEADERS = [
   ...PERF_INPUT_METRICS,
 ];
 
-// 將外部後台代碼正規化為基本碼，讓 dh 前綴與英文字尾的變體可以對齊：
-//   st100 = dhst100 = st100H = dhst100H → "st100"
-//   st1002 / dhst1002J → "st1002"（不會等於 st100）
-// 比對時雙邊都用此函式正規化後比較（不分大小寫）。
+// 將外部後台代碼正規化為基本碼,讓「後台 noise 變體」可以對齊,但保留語意尾綴。
+//
+// 規則(per-product 等價類):
+//   1. 前綴 `dh`(大小寫不分)→ 後台 noise,砍掉。
+//   2. 尾巴整段英文字母:
+//        - 剛好等於 `dh`(大小寫不分)→ **語意尾綴「第二位」**,保留為 `dh`。
+//        - 剛好等於 `t`(大小寫不分) → **語意尾綴「破圈」**, 保留為 `t`。
+//        - 其餘任何純字母尾(`H` / `J` / `h` / `j` / `ABC` / `XY` 等)→ 後台 noise,砍掉。
+//
+// 例:
+//   st100 = dhst100 = st100H = st100h = st100J = st100j → "st100"
+//   st100dh = st100DH = dhst100dh → "st100dh"  (第二位,跟 st100 不等)
+//   st100t = st100T → "st100t"                 (破圈,跟 st100 不等)
+//   st1002 / dhst1002J → "st1002"
+//
+// 注意:
+//   - 語意尾綴必須**整段**剛好命中(避免 `st100tH` / `st100Hdh` 之類的混合
+//     歧義);未來廣告代碼命名請避免「語意尾綴 + noise 尾綴」同時出現。
+const SEMANTIC_SUFFIXES = new Set(["t", "dh"]);
+
 export function normalizeAdCode(code) {
   let s = String(code || "").trim();
   if (!s) return "";
-  s = s.replace(/^dh/i, "");      // 可選 dh 前綴
-  s = s.replace(/[a-zA-Z]+$/, ""); // 可選英文字尾（純字母，不含數字）
-  return s.toLowerCase();
+  s = s.replace(/^dh/i, "");                       // 1. 砍可選 dh 前綴
+  const m = s.match(/^(.*?)([a-zA-Z]+)$/);
+  if (!m) return s.toLowerCase();
+  const [, base, tail] = m;
+  const tLow = tail.toLowerCase();
+  if (SEMANTIC_SUFFIXES.has(tLow)) {
+    // 命中語意尾綴 — 保留(統一小寫)
+    return (base + tLow).toLowerCase();
+  }
+  // 其他純字母尾(後台 noise)→ 砍掉
+  return base.toLowerCase();
 }
 
 // Sheets cell 容錯轉 YYYY-MM 與 YYYY-MM-DD：
