@@ -92,24 +92,58 @@ export function render(root) {
     ? dateFiltered.filter((a) => matchedCodes.has(a.ad_code))
     : dateFiltered;
 
-  // Tab filter:跟日期/搜尋一樣「任一段命中即保留整個 ad_code 的所有段」
-  // 避免在 t-variant 場景中,某段沒此產品權重而被砍掉,造成 filter-aware latest 拿不到正確段
+  // Tab filter:對每個 ad_code 挑「filter 範圍內最新一段」(沒命中 filter 就 fallback 全段最新),
+  // 只在「該段對 activeTab 產品權重 > 0」時保留整個 ad_code 的所有段。
+  // 用 filter-aware latest 而不是任意段 → 反映「當前狀態」,避免:
+  //   - st287t 早期有 av9_poquan 但已全部轉給 jk_poquan → 不應再出現在「愛威奶破圈」分頁
+  //   - 保留所有段是讓 renderGroup 的 inFilterSegs 仍能正確取到時間軸全貌
+  const inFilterForTab = (s) =>
+    (!filterStart && !filterEnd) ||
+    (s.start_date && s.end_date &&
+      (!filterEnd || s.start_date < filterEnd) &&
+      (!filterStart || s.end_date > filterStart));
   const filtered = activeTab === "all"
     ? searchFiltered
     : (() => {
-      const codesWithProduct = new Set();
+      const codeSegs = new Map();
       for (const a of searchFiltered) {
-        if (Number(a.weights?.[activeTab]) > 0) codesWithProduct.add(a.ad_code);
+        if (!codeSegs.has(a.ad_code)) codeSegs.set(a.ad_code, []);
+        codeSegs.get(a.ad_code).push(a);
       }
-      return searchFiltered.filter((a) => codesWithProduct.has(a.ad_code));
+      const aliveCodes = new Set();
+      for (const [code, segs] of codeSegs) {
+        const inRange = segs.filter(inFilterForTab);
+        const pool = inRange.length > 0 ? inRange : segs;
+        const latest = pool.slice().sort((a, b) =>
+          (a.start_date || "").localeCompare(b.start_date || ""))[pool.length - 1];
+        if (latest && Number(latest.weights?.[activeTab]) > 0) aliveCodes.add(code);
+      }
+      return searchFiltered.filter((a) => aliveCodes.has(a.ad_code));
     })();
   const groups = groupByCode(filtered);
 
-  // 各 tab 的廣告數，當作 badge（套用日期 + 搜尋過濾後的數量）
+  // 各 tab 的廣告數,跟主 filter 邏輯一致(filter-aware latest 對該產品有權重才算)
   const counts = { all: groupByCode(searchFiltered).length };
-  for (const p of s.products) {
-    const adsForP = searchFiltered.filter((a) => Number(a.weights?.[p.id]) > 0);
-    counts[p.id] = groupByCode(adsForP).length;
+  {
+    const codeSegs = new Map();
+    for (const a of searchFiltered) {
+      if (!codeSegs.has(a.ad_code)) codeSegs.set(a.ad_code, []);
+      codeSegs.get(a.ad_code).push(a);
+    }
+    const latestByCode = new Map();
+    for (const [code, segs] of codeSegs) {
+      const inRange = segs.filter(inFilterForTab);
+      const pool = inRange.length > 0 ? inRange : segs;
+      latestByCode.set(code, pool.slice().sort((a, b) =>
+        (a.start_date || "").localeCompare(b.start_date || ""))[pool.length - 1]);
+    }
+    for (const p of s.products) {
+      let n = 0;
+      for (const [, latest] of latestByCode) {
+        if (latest && Number(latest.weights?.[p.id]) > 0) n++;
+      }
+      counts[p.id] = n;
+    }
   }
 
   const expiring = expiringAds(s, 13);  // 14 天視窗 (0~13 天)
