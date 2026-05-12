@@ -1,17 +1,20 @@
 import { evalFormula } from "../lib/formula.js";
-import { getMonthlyBudget, isNoBand, isNoBandPid } from "../schema.js";
+import { getMonthlyBudget, isNoBand, isNoBandPid, getReportVars } from "../schema.js";
 import { bandFor, bandsForMonth } from "./budget.js";
 import { adContributionPerMonth, dailySpendGrid } from "./spending.js";
 import { daysOfMonth, isInRange, todayTaipei } from "../lib/dates.js";
 
 // 評估一筆成效紀錄對該產品的「達標分數」：命中目標數 / 目標總數。
+// extraVars: 公式可能參考的非 metric 變數(常見:收入匯率、支出匯率),用 schema.getReportVars(state) 取。
+//   若不傳,公式裡的 收入匯率/支出匯率 會被替換成 0 → 「扣首儲收入後 CPI」這類目標系統性算錯。
 // 回傳 { metCount, totalCount, ratio, details: [{name, actual, goal, met, delta}] }
-export function scoreRecord(record, targets) {
+export function scoreRecord(record, targets, extraVars = {}) {
+  const vars = { ...record, ...extraVars };
   const details = [];
   let met = 0;
   for (const t of targets) {
     let actual = null;
-    try { actual = evalFormula(t.formula, record); } catch { actual = null; }
+    try { actual = evalFormula(t.formula, vars); } catch { actual = null; }
     if (actual == null || !Number.isFinite(actual)) {
       details.push({ name: t.name, actual: null, goal: t.goal_value, met: false, delta: null });
       continue;
@@ -39,6 +42,7 @@ export function suggestProductAdjustments(state, product, ym) {
   const adsForProduct = state.ads.filter((a) => Number(a.weights?.[product.id]) > 0);
   if (adsForProduct.length === 0) return { adjustments: [], notes: [] };
 
+  const reportVars = getReportVars(state, ym);
   const enriched = adsForProduct.map((a) => {
     // 配對成效紀錄：優先用 ad_code（同代碼跨段共用，最穩定）→ ad_id（精準到段）→ ad_name（fallback）
     // 之前單純用 ad_name 比對，遇到 perf 紀錄的 ad_name 與 active 段 ad_name 有微小差異時會配對失敗
@@ -47,7 +51,7 @@ export function suggestProductAdjustments(state, product, ym) {
         r.ad_code === a.ad_code || r.ad_id === a.id || r.ad_name === a.ad_name
       )
     );
-    const score = rec && targets.length ? scoreRecord(rec, targets) : null;
+    const score = rec && targets.length ? scoreRecord(rec, targets, reportVars) : null;
     const old = Number(a.weights[product.id]) || 0;
     // 鎖定狀態:🔒 鎖權重 OR 🚫 禁止挪動 → 都從自動「分權重」候選中排除
     const lockState = a.lock_full ? "full" : (a.lock_perf_adjust ? "weight" : "free");

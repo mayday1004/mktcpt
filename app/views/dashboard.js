@@ -2,7 +2,7 @@ import { getState } from "../state.js";
 import { bandFor, bandsForMonth, checkMonthlyTotal } from "../domain/budget.js";
 import { monthlyTotals, dailySpendGrid, adContributionPerMonth, dailySpendForAd } from "../domain/spending.js";
 import { daysOfMonth, daysInMonth, isInRange, todayTaipei } from "../lib/dates.js";
-import { getMonthlyBudget, getDailyBudget, getBudgetSource, isNoBand, isNoBandPid } from "../schema.js";
+import { getMonthlyBudget, getDailyBudget, getBudgetSource, isNoBand, isNoBandPid, getReportVars } from "../schema.js";
 import { scoreRecord } from "../domain/perf-adjust.js";
 import { expiringAds } from "../domain/alerts.js";
 import { detectFutureGaps, detectShortfalls, detectAppMonthlyUnderspend } from "../domain/gift-days.js";
@@ -235,7 +235,7 @@ function kpiPerfStats(state, pids) {
       }
       continue;
     }
-    const score = scoreRecord(aggregated, targets);
+    const score = scoreRecord(aggregated, targets, getReportVars(state));
     for (const d of score.details) {
       if (!agg.has(d.name)) agg.set(d.name, { products: [], met: 0, total: 0, missing: 0 });
       const a = agg.get(d.name);
@@ -267,7 +267,8 @@ function renderActionRequired(state) {
   const gaps = detectFutureGaps(decisionState, today);
   if (expiring.length === 0 && upcoming.length === 0 && shortfalls.length === 0 && underspends.length === 0 && gaps.length === 0) return "";
 
-  // 即將到期：成效全爛優先排前；同名廣告去重（同 ads 頁邏輯）
+  // 即將到期：按剩餘天數排序(近到遠);同名廣告去重(同 ads 頁邏輯)。
+  // 成效全爛只當作 badge 顯示,不影響排序順序。
   const byName = new Map();
   for (const { ad, daysLeft, poorPerf } of expiring) {
     const key = ad.ad_name || ad.ad_code;
@@ -283,10 +284,7 @@ function renderActionRequired(state) {
     }
     if (poorPerf) g.poorPerf = poorPerf;
   }
-  const expGroups = [...byName.values()].sort((a, b) => {
-    if (!!a.poorPerf !== !!b.poorPerf) return a.poorPerf ? -1 : 1;
-    return a.earliestDays - b.earliestDays;
-  });
+  const expGroups = [...byName.values()].sort((a, b) => a.earliestDays - b.earliestDays);
 
   const WD = ["日", "一", "二", "三", "四", "五", "六"];
   const fmtEnd = (ymd) => {
@@ -591,7 +589,7 @@ function renderDetailPanel(s, ym, pid, date) {
   // （CPC = 合計花費 / 合計事件計數，不是單一廣告的數字）
   const targets = product.performance_targets || [];
   const aggregatedRec = aggregateProductRecord(s, pid);
-  const score = aggregatedRec && targets.length ? scoreRecord(aggregatedRec, targets) : null;
+  const score = aggregatedRec && targets.length ? scoreRecord(aggregatedRec, targets, getReportVars(s)) : null;
 
   // 該日攤提到該產品的所有廣告
   const contributors = [];

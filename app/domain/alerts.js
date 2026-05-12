@@ -1,4 +1,4 @@
-import { getMonthlyBudget } from "../schema.js";
+import { getMonthlyBudget, getReportVars } from "../schema.js";
 import { bandsForMonth, checkMonthlyTotal } from "./budget.js";
 import { dailySpendGrid, monthlyTotals } from "./spending.js";
 import { daysOfMonth, addDays, todayTaipei } from "../lib/dates.js";
@@ -26,7 +26,7 @@ export function evaluatePoorPerf(state, ad) {
       r.product_id === pid && (r.ad_code === ad.ad_code || r.ad_id === ad.id)
     ).sort((a, b) => (b.period_end || "").localeCompare(a.period_end || ""));
     if (recs.length === 0) return null;  // 缺資料
-    const score = scoreRecord(recs[0], targets);
+    const score = scoreRecord(recs[0], targets, getReportVars(state));
     if (!score || score.ratio == null) return null;
     if (score.ratio >= POOR_PERF_RATIO_THRESHOLD) return null;  // 任一產品達標就不算全爛
     result.push({ productId: pid, productName: product?.name || pid, ratio: score.ratio });

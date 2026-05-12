@@ -10,7 +10,7 @@
 //        - 收入匯率、支出匯率（取當月設定）
 
 import { getState, update, uid } from "../state.js";
-import { METRICS, getExpenseRate, getIncomeRate } from "../schema.js";
+import { METRICS, getExpenseRate, getIncomeRate, getReportVars } from "../schema.js";
 import { evalFormula, validateFormula, REPORT_EXTRA_VARS } from "../lib/formula.js";
 import { bindPerfImportButtons } from "./perf-import-ui.js";
 import { scoreRecord } from "../domain/perf-adjust.js";
@@ -744,11 +744,19 @@ function renderAdView(state) {
     rows.push(buildAdRowData(state, code, rep, segs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today));
   }
 
-  const order = { eliminate: 0, "eliminate-soon": 1, expire: 2, new: 3, gap: 4, none: 5 };
-  rows.sort((a, b) =>
-    ((order[a.status.kind] ?? 5) - (order[b.status.kind] ?? 5)) ||
-    a.code.localeCompare(b.code)
-  );
+  // eliminate-soon(預計淘汰) 和 expire(到期) 同優先序 — 不再因為「成效全爛」就拉前面,
+  // 兩者共用一個「即將到期」分組,內部按 end_date 由近到遠排序。
+  const order = { eliminate: 0, "eliminate-soon": 1, expire: 1, new: 2, gap: 3, none: 4 };
+  rows.sort((a, b) => {
+    const diff = (order[a.status.kind] ?? 5) - (order[b.status.kind] ?? 5);
+    if (diff !== 0) return diff;
+    if (a.status.kind === "eliminate-soon" || a.status.kind === "expire") {
+      const ea = a.rep.end_date || "";
+      const eb = b.rep.end_date || "";
+      if (ea !== eb) return ea.localeCompare(eb);
+    }
+    return a.code.localeCompare(b.code);
+  });
 
   const colStats = computeColumnStats(rows, islandProducts);
   return renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, weekRange);
@@ -784,6 +792,7 @@ function formatUTC(dt) {
 }
 
 function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today) {
+  const reportVars = getReportVars(state);
   const adMatch = (rr) => rr.ad_code === code || rr.ad_id === rep.id || rr.ad_name === rep.ad_name;
   const thisRecs = (state.performance_data || []).filter((r) =>
     adMatch(r) && r.period_start === thisWeek.start && r.period_end === thisWeek.end
@@ -812,7 +821,7 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
       if (sp > 0 && ev > 0) islandCPCs[p.id] = sp / ev;
       const targets = p.performance_targets || [];
       if (targets.length > 0) {
-        const score = scoreRecord(r, targets);
+        const score = scoreRecord(r, targets, reportVars);
         if (score && score.ratio != null) islandRatios[p.id] = score.ratio;
       }
     }
@@ -837,7 +846,7 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
     const fo = Number(r["首儲訂單數"]) || 0;
     if (ins <= 0) continue;
     const targets = p.performance_targets || [];
-    const score = targets.length > 0 ? scoreRecord(r, targets) : null;
+    const score = targets.length > 0 ? scoreRecord(r, targets, reportVars) : null;
     const ratio = score?.ratio ?? null;
     cpis.push({ pid: p.id, name: p.name, cpi: sp / ins, ratio });
     // 首購率只在有「首儲訂單數」概念的產品上算(HYC 沒有 → 排除)
@@ -850,7 +859,7 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
   const worstCPI = cpis[0] || null;
   const worstRate = rates[0] || null;
 
-  const status = computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts);
+  const status = computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts, reportVars);
 
   return {
     code, rep,
@@ -873,7 +882,7 @@ function hasFirstPurchaseConcept(state, product) {
   );
 }
 
-function computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts) {
+function computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts, reportVars = {}) {
   const { start: ws, end: we } = weekRange;
   const endD = rep.end_date;
   const startD = rep.start_date;
@@ -882,7 +891,7 @@ function computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts) 
   if (endD && endD >= ws && endD < today && !hasLater) {
     return { kind: "eliminate", label: "🔴 本週淘汰", tooltip: `已到期未續費(${endD})` };
   }
-  const allBad = isAllBadPerf(thisRecs, appProducts, rep);
+  const allBad = isAllBadPerf(thisRecs, appProducts, rep, reportVars);
   if (endD && endD >= today && endD <= we && allBad) {
     return { kind: "eliminate-soon", label: "❗ 本週預計淘汰", tooltip: `本週到期且 APP 成效全爛(${endD})` };
   }
@@ -904,7 +913,7 @@ function computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts) 
   return { kind: "none", label: "", tooltip: "" };
 }
 
-function isAllBadPerf(thisRecs, appProducts, rep) {
+function isAllBadPerf(thisRecs, appProducts, rep, reportVars = {}) {
   const withWeight = appProducts.filter((p) => Number(rep.weights?.[p.id]) > 0);
   if (withWeight.length === 0) return false;
   for (const p of withWeight) {
@@ -912,7 +921,7 @@ function isAllBadPerf(thisRecs, appProducts, rep) {
     if (!r) return false;
     const targets = p.performance_targets || [];
     if (targets.length === 0) return false;
-    const score = scoreRecord(r, targets);
+    const score = scoreRecord(r, targets, reportVars);
     if (!score || score.ratio == null) return false;
     if (score.ratio >= 0.3) return false;
   }
@@ -1048,7 +1057,7 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
     const d = colStats[p.id].delta;
     if (d == null) return `<td class="num ink-3">—</td>`;
     const cls = d > 0 ? "bad" : d < 0 ? "ok" : "";
-    return `<td class="num"><strong class="${cls}">${fmtCPCSigned(d)}</strong></td>`;
+    return `<td class="num ${cls}"><strong>${fmtCPCSigned(d)}</strong></td>`;
   }).join("");
 
   return `

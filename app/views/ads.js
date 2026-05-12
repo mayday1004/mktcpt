@@ -327,10 +327,8 @@ function renderExpiringCard(expiring, products, allAds) {
     if (poorPerf) g.poorPerf = poorPerf;
   }
 
-  const grouped = [...byName.values()].sort((a, b) => {
-    if (!!a.poorPerf !== !!b.poorPerf) return a.poorPerf ? -1 : 1;
-    return a.earliestDays - b.earliestDays;
-  });
+  // 按剩餘天數排序(近到遠);成效全爛只當 badge 顯示,不影響順序。
+  const grouped = [...byName.values()].sort((a, b) => a.earliestDays - b.earliestDays);
 
   const WD = ["日", "一", "二", "三", "四", "五", "六"];
   const fmtEnd = (ymd) => {

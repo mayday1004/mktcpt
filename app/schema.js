@@ -236,6 +236,16 @@ export function getIncomeRate(state, ym) {
   return Number.isFinite(def) && def > 0 ? def : 4.6;
 }
 
+// 給成效目標公式用的額外變數(收入匯率、支出匯率),所有 scoreRecord 呼叫都該帶入,
+// 否則公式中參考的匯率會被當成 0,「扣首儲收入後 CPI」這類目標會系統性算錯。
+export function getReportVars(state, ym) {
+  const m = ym || state?.settings?.current_month;
+  return {
+    "收入匯率": getIncomeRate(state, m),
+    "支出匯率": getExpenseRate(state, m),
+  };
+}
+
 // 取該月 USDT→RMB 匯率：先看 settings.monthly_rates[ym].usdt_to_cny，沒有就用 settings.usdt_to_cny_rate
 export function getUsdtToCnyRate(state, ym) {
   const m = state?.settings?.monthly_rates?.[ym]?.usdt_to_cny;

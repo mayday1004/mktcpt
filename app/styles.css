@@ -299,6 +299,39 @@ dialog#modal::backdrop { background: rgba(15, 20, 30, 0.4); backdrop-filter: blu
   line-height: 1.6;
 }
 
+/* 匯入狀態指示器:進行中時放大、加強調色、加 spinner */
+.perf-import-card #perf-import-status {
+  font-size: 14px;
+  font-weight: 600;
+}
+.perf-import-card #perf-import-status:not(:empty):not(.ok):not(.bad) {
+  color: var(--accent);
+  background: #eef4ff;
+  padding: 6px 12px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: inherit;
+}
+.perf-import-card #perf-import-status:not(:empty):not(.ok):not(.bad)::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: perf-import-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+.perf-import-card #perf-import-status.ok,
+.perf-import-card #perf-import-status.bad {
+  font-size: 13px;
+}
+@keyframes perf-import-spin {
+  to { transform: rotate(360deg); }
+}
+
 .perf-summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(140px, 1fr));

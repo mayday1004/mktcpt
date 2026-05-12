@@ -129,10 +129,13 @@ export function openPerfConfirmModal(valid, errors, conflicts, setStatus) {
 
     <div class="card" style="margin-top:12px;padding:12px;background:#f7f9fc">
       <label style="display:flex;align-items:center;gap:8px;font-size:13px">
-        <input type="checkbox" id="opt-replace-all" checked />
+        <input type="checkbox" id="opt-replace-all" />
         <span>🧹 整批替換：清空現有所有成效資料，僅保留本批</span>
       </label>
-      <div class="hint" style="margin-top:4px">推薦打開（每週新匯入時）。關掉 = 只覆寫同代碼+產品的紀錄，其他保留 → 不同期間會混雜。</div>
+      <div class="hint" style="margin-top:4px">
+        <strong>預設不勾</strong> = 依 (廣告代碼+產品+期間) 自動覆寫;不同週的資料會並存,「依廣告瀏覽」才能算連續兩週的成本漲幅。<br>
+        勾起 = 清空所有舊紀錄,只保留本批(會導致上週資料丟失,僅在想完全重來時用)。
+      </div>
     </div>
 
     <div class="modal-actions">

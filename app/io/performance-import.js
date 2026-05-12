@@ -227,13 +227,14 @@ export function resolveConflicts(conflicts, chosenByRowNum) {
   return out;
 }
 
-// 依 (廣告代碼, 對應產品) 自動覆寫 — 同 key 只保留最新一筆（本次匯入為準）。
+// 依 (廣告代碼, 對應產品, 期間起, 期間迄) 自動覆寫 — 同 key 只保留最新一筆（本次匯入為準）。
+// 期間是 key 的一部分:不同週的資料會並存(「依廣告瀏覽」需要連續兩週才能算成本漲幅)。
 // 選項：
-//   replaceAll: true  — 清空 performance_data 後再匯入本批（避免歷史週期殘留）
+//   replaceAll: true  — 清空 performance_data 後再匯入本批（避免歷史週期殘留)
 //   clearOlderThan: "YYYY-MM-DD" — 在 merge 前刪除 period_end < 此日 的舊紀錄
 export function mergeIntoState(validRecs, options = {}) {
   const { replaceAll = false, clearOlderThan = null } = options;
-  const key = (r) => `${r.ad_code || r.ad_id}|${r.product_id}`;
+  const key = (r) => `${r.ad_code || r.ad_id}|${r.product_id}|${r.period_start || ""}|${r.period_end || ""}`;
   let kept = 0, replaced = 0, dropped = 0;
   update((st) => {
     let existing = st.performance_data || [];
