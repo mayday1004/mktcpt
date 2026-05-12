@@ -92,37 +92,50 @@ export function render(root) {
     ? dateFiltered.filter((a) => matchedCodes.has(a.ad_code))
     : dateFiltered;
 
-  // Tab filter:對每個 ad_code 挑「filter 範圍內最新一段」(沒命中 filter 就 fallback 全段最新),
-  // 只在「該段對 activeTab 產品權重 > 0」時保留整個 ad_code 的所有段。
-  // 用 filter-aware latest 而不是任意段 → 反映「當前狀態」,避免:
-  //   - st287t 早期有 av9_poquan 但已全部轉給 jk_poquan → 不應再出現在「愛威奶破圈」分頁
-  //   - 保留所有段是讓 renderGroup 的 inFilterSegs 仍能正確取到時間軸全貌
+  // Tab filter 邏輯:
+  //   1. 對每個 ad_code,先過濾出 filter 範圍內的段(沒命中則 fallback 全段)
+  //   2. 在這個池裡挑「start_date 最新的一段」當「當前最新段」
+  //   3. 把所有跟「當前最新段」日期 overlap 的段都拿出來(包含兄弟段:同代碼但獨立採買不同產品的 ad)
+  //   4. 這群裡有任一段對 tab 產品權重 > 0 → 保留 ad_code 的所有段
+  //
+  // 為什麼要看「兄弟們」而不只看單一最新段:
+  //   - 兄弟廣告(例 st100 一份 AV9 100%、一份 HYC 100%、一份 ZFB 100%,同日期)
+  //     是 3 支獨立採買,各自存在於不同產品分頁中。
+  //     只看單一段會誤判(挑到 HYC 那份 → 愛威奶分頁就少了 st100)。
+  //   - 但純時間軸 t-variant(st287t 早期 av9 → 後期 jk)的不同段彼此不 overlap,
+  //     檢查 overlap 就只會挑到真正的「當前段」,所以已轉 jk 的 t-variant 不會誤入愛威奶分頁。
   const inFilterForTab = (s) =>
     (!filterStart && !filterEnd) ||
     (s.start_date && s.end_date &&
       (!filterEnd || s.start_date < filterEnd) &&
       (!filterStart || s.end_date > filterStart));
-  const filtered = activeTab === "all"
-    ? searchFiltered
-    : (() => {
-      const codeSegs = new Map();
-      for (const a of searchFiltered) {
-        if (!codeSegs.has(a.ad_code)) codeSegs.set(a.ad_code, []);
-        codeSegs.get(a.ad_code).push(a);
-      }
-      const aliveCodes = new Set();
-      for (const [code, segs] of codeSegs) {
-        const inRange = segs.filter(inFilterForTab);
-        const pool = inRange.length > 0 ? inRange : segs;
-        const latest = pool.slice().sort((a, b) =>
-          (a.start_date || "").localeCompare(b.start_date || ""))[pool.length - 1];
-        if (latest && Number(latest.weights?.[activeTab]) > 0) aliveCodes.add(code);
-      }
-      return searchFiltered.filter((a) => aliveCodes.has(a.ad_code));
-    })();
+  const tabAliveCodes = (() => {
+    if (activeTab === "all") return null;
+    const codeSegs = new Map();
+    for (const a of searchFiltered) {
+      if (!codeSegs.has(a.ad_code)) codeSegs.set(a.ad_code, []);
+      codeSegs.get(a.ad_code).push(a);
+    }
+    const alive = new Set();
+    for (const [code, segs] of codeSegs) {
+      const inRange = segs.filter(inFilterForTab);
+      const pool = inRange.length > 0 ? inRange : segs;
+      const latest = pool.slice().sort((a, b) =>
+        (b.start_date || "").localeCompare(a.start_date || ""))[0];
+      if (!latest) continue;
+      const overlapping = pool.filter((s) =>
+        s.start_date < latest.end_date && s.end_date > latest.start_date
+      );
+      if (overlapping.some((s) => Number(s.weights?.[activeTab]) > 0)) alive.add(code);
+    }
+    return alive;
+  })();
+  const filtered = tabAliveCodes
+    ? searchFiltered.filter((a) => tabAliveCodes.has(a.ad_code))
+    : searchFiltered;
   const groups = groupByCode(filtered);
 
-  // 各 tab 的廣告數,跟主 filter 邏輯一致(filter-aware latest 對該產品有權重才算)
+  // 各 tab badge 數字,跟主 filter 邏輯一致(filter-aware latest + 兄弟 overlap)
   const counts = { all: groupByCode(searchFiltered).length };
   {
     const codeSegs = new Map();
@@ -130,17 +143,22 @@ export function render(root) {
       if (!codeSegs.has(a.ad_code)) codeSegs.set(a.ad_code, []);
       codeSegs.get(a.ad_code).push(a);
     }
-    const latestByCode = new Map();
+    // 對每個 code 預算「跟 filter-aware latest 段 overlap 的兄弟群」
+    const overlappingByCode = new Map();
     for (const [code, segs] of codeSegs) {
       const inRange = segs.filter(inFilterForTab);
       const pool = inRange.length > 0 ? inRange : segs;
-      latestByCode.set(code, pool.slice().sort((a, b) =>
-        (a.start_date || "").localeCompare(b.start_date || ""))[pool.length - 1]);
+      const latest = pool.slice().sort((a, b) =>
+        (b.start_date || "").localeCompare(a.start_date || ""))[0];
+      if (!latest) continue;
+      overlappingByCode.set(code, pool.filter((s) =>
+        s.start_date < latest.end_date && s.end_date > latest.start_date
+      ));
     }
     for (const p of s.products) {
       let n = 0;
-      for (const [, latest] of latestByCode) {
-        if (latest && Number(latest.weights?.[p.id]) > 0) n++;
+      for (const [, overlapping] of overlappingByCode) {
+        if (overlapping.some((s) => Number(s.weights?.[p.id]) > 0)) n++;
       }
       counts[p.id] = n;
     }
