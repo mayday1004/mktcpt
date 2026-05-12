@@ -1,163 +1,260 @@
-# 廣告投放管理
+# 廣告投放管理後台
 
-按產品、按廣告、按日攤提的單頁網站應用（SPA）。完整業務規格見 [CLAUDE.md](CLAUDE.md)。
+按產品、按廣告、按日攤提的單頁網站(SPA)。資料存在瀏覽器,可雙向同步到 Google Sheets。
 
-- **前端**：Vanilla JS（ES modules）+ localStorage，無框架
-- **後端**：Google Sheets + Apps Script Web App（共享資料來源）
-- **部署**：Docker（esbuild 打包 → JS 混淆 → Caddy 靜態伺服器），可一鍵部署到 Railway 等平台
+完整業務規格(預算規則、匯率、權重邏輯)請看 [CLAUDE.md](CLAUDE.md)。
 
 ---
 
-## 檔案結構
+## 5 分鐘上手
 
-```
-buyads/
-├── CLAUDE.md              # 業務規格（所有產品/預算/匯率/權重規則）
-├── README.md
-├── index.html             # 入口 HTML
-├── app/                   # 前端原始碼（未混淆，工程師看這裡）
-│   ├── main.js            # router / 啟動 / 全域 toast / modal / 復原
-│   ├── state.js           # localStorage + pub/sub + undo stack
-│   ├── schema.js          # 預設產品、14 個成效變數、月度匯率/預算解析
-│   ├── styles.css
-│   ├── lib/
-│   │   ├── dates.js       # 台北時區日期、跨月切段
-│   │   ├── csv.js         # CSV 編解碼、下載、挑檔
-│   │   ├── formula.js     # 安全公式計算（成效目標）
-│   │   ├── deploy-config.js   # 讀 build 期注入的 Sheets URL/Token
-│   │   └── sync-banner.js     # 同步進度條 UI
-│   ├── domain/
-│   │   ├── budget.js      # 帶寬（APP ±30%、小島 ±0.5%）+ 月結容差
-│   │   ├── spending.js    # 每日花費聚合、跨月切段
-│   │   ├── lifecycle.js   # 廣告生命週期（續費/權重調整/送天數/轉移）
-│   │   ├── alerts.js      # 即將到期、預算警示
-│   │   ├── suggest.js     # 權重自動建議
-│   │   ├── reverse.js     # 反向建議（先選日期再找廣告）
-│   │   └── perf-adjust.js # 成效驅動調權
-│   ├── io/
-│   │   ├── sheets.js              # Apps Script Web App client
-│   │   ├── sheets-schema.js       # 正規化分頁 schema + 模糊比對
-│   │   └── performance-import.js  # 每週成效匯入流程
-│   └── views/
-│       ├── dashboard.js    # 概覽 + 每日攤提表
-│       ├── products.js     # 產品 CRUD + 成效目標
-│       ├── ads.js          # 廣告 CRUD + 權重 + CSV
-│       ├── perf-adjust.js  # 成效驅動權重調整
-│       ├── perf-report.js  # 成效報表
-│       ├── perf-import-ui.js
-│       ├── reverse.js      # 採買建議
-│       ├── todos.js
-│       └── settings.js     # 匯率、月份、Sheets 同步、匯出入
-├── apps-script/           # Google Apps Script 後端（部署到 Sheets）
-│   ├── Code.gs            # 通用 ping / writeTable / readTable
-│   ├── appsscript.json
-│   └── README.md          # 部署步驟
-├── build.js               # 打包腳本（esbuild + 混淆）
-├── package.json
-├── Dockerfile             # 兩階段：node build → caddy serve
-└── Caddyfile              # 靜態伺服器設定
-```
+第一次打開系統,**順序很重要**:
 
-> `node_modules/` 與 `dist/` 是 `npm install` / `npm run build` 自動產生的，已在 `.gitignore`。
+1. **設定** 分頁 → 填當月 / 支出匯率(預設 4.7-4.8)/ 收入匯率(預設 4.5-4.6)→ 儲存
+2. **產品** 分頁 → 新增產品,填月預算 + 成效目標(例:CPI ≤ 25,公式 `花費/不重複安裝數`,方向 = 越低越好)
+   - 破圈產品要勾「**這是破圈產品**」並選**母產品**(例:愛威奶破圈 → 母產品 = AV9)
+3. **廣告** 分頁 → 新增廣告,填代碼 / RMB / 匯率 / 起迄日 / 攤提天數 → 分配權重
+4. **概覽** 分頁 → 看每月攤提達成、即將到期、需要決策的事項
+5. **設定 → 同步** → ☁️ 推到 Sheets / ⬇️ 從 Sheets 拉回(資料備份)
 
 ---
 
-## 本機開發
+## 常見操作場景
 
-ES modules 在 `file://` 無法載入，需要靜態伺服器：
+### 場景 1:新增一支共購廣告
+
+「st290 阻力破解」總價 20,000 RMB,4/1-5/1 跑 30 天,要分給破解吧 / 萬精游 / 磨欲爽 三個小島產品。
+
+1. **廣告 → ＋ 新增廣告**
+2. 代碼 `st290`、名稱 `阻力破解`、RMB `20000`、匯率 `4.7`、起 `2026-04-01`、迄 `2026-05-01`、攤提天數 `30`
+3. 權重區點「🤖 依剩餘預算自動建議」讓系統依各產品剩餘預算自動分,或手動填(加總 = 100%)
+4. 儲存 → 系統會自動建一筆待辦提醒你「去後台調整連結分流」
+
+### 場景 2:新增廣告 + 拆出破圈分流
+
+「st291 蜜桃 2.0」總價 30,000 RMB,一般佔 90% (AV9 / 破解吧...)、破圈佔 10% (給愛威奶破圈)。
+
+1. 同場景 1 填基本資料
+2. 上方權重只填「**一般**」部分,加總 100%(系統會自動隱藏破圈產品,避免雙重計算)
+3. 勾「**＋ 拆出破圈分流**」→ 占比填 `10`、目標選「愛威奶破圈」
+4. 預覽會顯示「st291 一般 90% · 27,000 RMB / st291t 破圈 10% · 3,000 RMB」
+5. 儲存後系統會建**兩支廣告**:
+   - `st291`:27,000 RMB,跑一般產品
+   - `st291t`:3,000 RMB,跑愛威奶破圈 100%
+   - 兩支廣告以「**配對 ID**」綁定,系統知道它們是同一筆合約
+
+### 場景 3:廣告中途調整權重(破圈權重歸回一般)
+
+st287t 跑到 5/10 後,破圈不需要繼續了,想把 1,800 RMB 改成全部走一般。
+
+1. 找到 **st287t**,按「**權重**」(在 ⋯ 選單裡)
+2. 生效日填 `2026-05-10`,把愛威奶破圈降到 0%、改填一般產品(例:愛威奶 100%)
+3. 儲存
+
+**這時候系統會自動連動兩件事**(因為兩支廣告配對綁定):
+
+- 開一段新的 st287:`amount_cny` 從 28,200 → **30,000**(吃進 st287t 的 1,800)、權重重新混合
+- 把 st287t 那段結束(`amount_cny = 0`)
+
+> ⚠️ 如果你看到 st287 的 #4 段還是 28,200 不是 30,000,代表還在用舊版本的資料(沒做過配對綁定)。手動再點一次「權重」按鈕,生效日填當天,權重照舊填(不改),按儲存 → 會強制觸發重平衡。
+
+### 場景 4:每週成效匯入(更新後台的成效數字)
+
+每週貼平台匯出的廣告成效到系統,讓系統能算出「哪些廣告該調權重 / 淘汰」。
+
+1. **設定 → 🗂️ 建立成效輸入分頁** → Sheets 會多一個「成效輸入」分頁
+2. 把廣告平台匯出的 CSV 直接貼進去(系統會用模糊比對找回廣告代碼,大小寫 / `dh` 前綴都認得)
+3. 回後台 **設定 → 📥 附加本週成效** → 預覽 → 看驗證錯誤(找不到的代碼會列出來)→ 確認匯入
+4. **成效報表** 分頁就能看資料了
+
+### 場景 5:成效報表看「廣告 × 小島 CPC」對照
+
+切到 **成效報表** → 上方 chip 切「**依廣告瀏覽**」:
+
+- 每列 = 一支廣告
+- 中段欄位 = 各小島產品的 CPC(花費/事件計數),色階自動標出「未達該產品目標的」紅底
+- 右側 = APP 對照 CPI(用 `花費/不重複安裝數`,從 weight > 0 的 APP 產品取最爛)+ 首購率
+- 最下兩行 = 平均 CPC(加權)+ 成本漲幅(vs 上週)
+
+### 場景 6:廣告調整建議(系統發現要補日花費)
+
+當系統偵測到下面任一情況,概覽會出現「需要決策」卡:
+
+- 某產品某日的有效日花費 < 帶寬下限(APP -30%、小島 -0.5%)
+- APP 產品本月預估月攤提 < 月預算 - 6 萬
+- 未來有「未採買空檔」(同代碼兩段中間有 gap)
+
+按「→ 一鍵調整」會打開**廣告調整建議**彈窗,把每筆建議列出來。你可以勾選要套用的 → 系統幫你開「權重調整」新段並建一筆待辦提醒。
+
+### 場景 7:鎖定廣告(不讓系統自動動權重)
+
+某些廣告你不希望系統自動調整(例:固定價、固定產品的網頁類):
+
+進廣告詳情頁 → **⋯ 更多動作** → 三選一:
+
+| 圖示 | 狀態 | 行為 |
+|---|---|---|
+| 🔓 | 自由 | 預設,系統可任意分權重 |
+| 🔒 | 鎖權重 | 自動不分權重,但仍可被建議「整桶搬到別產品」(單一 100% 場景) |
+| 🚫 | 禁止挪動 | 完全不納入自動建議,成效爛只顯示「建議淘汰」 |
+
+**手動編輯永遠放行**,鎖定只影響「自動建議」邏輯。
+
+### 場景 8:撤回一個自動套用的建議
+
+如果剛剛套用了系統的成效調整或缺口補滿建議,後悔了:
+
+**概覽 → 待辦清單** → 找對應的 todo → 按「↩ 撤回」→ 確認
+
+系統會把那個動作改動到的廣告**還原成快照**,並刪掉這筆待辦。**只有會異動 ads 的 todo 才能撤回**;手動加的待辦顯示「刪」只刪提醒不還原資料。
+
+---
+
+## Google Sheets 同步
+
+整套系統可以**完全離線跑**(資料存瀏覽器 localStorage),但建議搭配 Google Sheets 同步:
+
+- **備份** — Sheets 是 source of truth,瀏覽器壞掉資料還在
+- **多人共用** — 同一份 Sheets 多裝置 / 多瀏覽器同步
+- **歷史軌跡** — Sheets 自動保留改動歷史
+
+設定方式:
+
+1. 依 [apps-script/README.md](apps-script/README.md) 把 `Code.gs` 部署成 Web App
+2. 把 Web App URL + SECRET 填進**設定 → Google Sheets 整合**
+3. 第一次按 **☁️ 同步到 Google 試算表** → Sheets 會自動建出所有需要的分頁
+4. 之後想跨裝置 → 在新瀏覽器填同一組 URL/Token → 按 **⬇️ 從試算表拉下來**
+
+> ⚠️ **拉之前會自動下載目前本機 JSON 備份**,即使誤覆蓋也救得回來。
+
+---
+
+## 重要概念
+
+### 廣告生命週期(段式紀錄)
+
+廣告任何變動(續費 / 改 RMB / 改匯率 / 改權重)**都不改舊資料**,而是「**關掉舊段、開新段**」,新段 `renewal_of` 欄位指回上一段的 ID,形成時間軸。
+
+例:一支 30 天合約,第 15 天權重調整 → 切成兩段:
+- 第一段:day 1-14
+- 第二段:day 15-30,`renewal_of` = 第一段 id,`renewal_reason` = "權重調整"
+
+歷史已扣的金額永遠不會回頭重算。
+
+### 拆出破圈分流的「配對」
+
+「拆出破圈分流」會建**兩支獨立廣告**(例:st287 + st287t),但兩支共用一個 `split_pair_id`,系統知道它們是同一筆合約。
+
+當任一支「權重調整」時,系統會**自動連動另一支**重平衡 amount + weights — 保證:
+
+- parent (st287) 永遠只承載一般產品
+- t-variant (st287t) 永遠只承載破圈產品
+- 兩支金額加總 = 合約總額(會跟著當下權重變動)
+
+### 帶寬(每日花費合理範圍)
+
+- **APP 產品**:每天可花 = 月預算/天數 × ±30%。例 AV9 月預算 50 萬 ÷ 30 天 = 16,666 → 範圍 11,666~21,666
+- **小島型**:同公式但容差 ±0.5%(很嚴)
+- **混合共購**:兩邊各自獨立檢核,任一邊破了範圍就違規
+- **不檢查每日帶寬**:破圈系列等極端花費產品可在產品頁勾選,跳過此檢查
+
+### 月結容差
+
+| 類型 | 少花最多 | 超花最多 |
+|---|---|---|
+| APP | 6 萬台幣 | 2 萬台幣 |
+| 小島型 | 2 萬台幣 | 1 萬台幣 |
+
+超過視為違規,系統會在概覽提示。
+
+---
+
+## 工程師區(本機開發 / 部署)
+
+### 本機跑
+
+ES Modules 在 `file://` 不能載入,要 HTTP server:
 
 ```bash
-# 任一皆可
 python -m http.server 8080
+# 或
 npx serve .
-# 或 VSCode 裝 Live Server 右鍵 index.html → Open with Live Server
+# 或 VSCode Live Server 套件右鍵 index.html
 ```
 
-開啟 <http://localhost:8080/>。本機開發**不需要** `npm install`，直接讀 `app/` 原始碼。
+本機不需 `npm install`,直接讀 `app/` 原始碼。
 
----
-
-## 打包與部署
-
-### Build 流程（`npm run build`）
-
-[build.js](build.js) 依序做：
-
-1. `esbuild` 把 `app/main.js` 與所有 import 模組打成單一 IIFE（ES2020、minified）
-2. `javascript-obfuscator` 混淆變數名稱、字串 base64 編碼，產出 `dist/app.js`
-3. 把 `app/styles.css`、`apps-script/Code.gs` 複製到 `dist/`
-4. 產出 `dist/index.html`，把 `<script type="module" src="app/main.js">` 改寫為 `<script src="app.js" defer>`
-5. 把 build 期環境變數 `SHEETS_WEBAPP_URL` / `SHEETS_TOKEN` 編譯進 bundle（[lib/deploy-config.js](app/lib/deploy-config.js)）
+### 打包 + 部署(Docker / Railway)
 
 ```bash
-# 純打包
 SHEETS_WEBAPP_URL="https://script.google.com/macros/s/.../exec" \
 SHEETS_TOKEN="your-secret" \
 npm run build
-
-# 打包 + 本機預覽
-npm run preview
 ```
 
-### Docker / Railway 部署
+[build.js](build.js) 會把 `app/main.js` 與所有 import 模組打成單一 IIFE(esbuild + javascript-obfuscator 混淆),產 `dist/`。
 
-[Dockerfile](Dockerfile) 為兩階段：
+Docker 兩階段(Node build → Caddy serve),Railway / Fly 等平台一鍵部署,環境變數注入 Sheets URL/Token。
 
-- **Stage 1（build）**：`node:20-alpine`，安裝相依、跑 `npm run build`，產 `dist/`
-- **Stage 2（runtime）**：`caddy:2-alpine`，把 `dist/` 複製進去後丟掉 Node
+### 檔案結構
 
-Railway 上設定環境變數 `SHEETS_WEBAPP_URL` / `SHEETS_TOKEN`，push 即自動 build & deploy。所有訪客自動共用同一份 Sheets。
+```
+buyads/
+├── CLAUDE.md              # 業務規格(此份是 source of truth)
+├── README.md              # 本文件
+├── index.html             # SPA 入口
+├── app/                   # 前端原始碼
+│   ├── main.js            # router / 啟動
+│   ├── state.js           # localStorage + undo
+│   ├── schema.js          # 預設值、共用 helpers
+│   ├── lib/               # 通用工具(日期、公式、CSV、deploy config)
+│   ├── domain/            # 業務邏輯
+│   │   ├── budget.js         # 帶寬檢核
+│   │   ├── lifecycle.js      # 段式紀錄(續費/權重調整)
+│   │   ├── split-pair.js     # 破圈分流配對重平衡
+│   │   ├── spending.js       # 每日花費聚合
+│   │   ├── perf-adjust.js    # 成效驅動調權
+│   │   └── alerts.js         # 即將到期 / 警示
+│   ├── io/                # 外部 IO
+│   │   ├── sheets.js         # Apps Script Web App client
+│   │   └── sheets-schema.js  # 分頁 schema + 模糊比對
+│   └── views/             # UI 渲染
+│       ├── dashboard.js, products.js, ads.js
+│       ├── perf-adjust.js, perf-report.js
+│       ├── reverse.js, todos.js, settings.js
+│       └── ...
+├── apps-script/           # Google Apps Script 後端
+├── scripts/               # 一次性資料轉換工具(看 scripts/README.md)
+├── samples/               # (gitignore) 歷史資料/匯入腳本工作區
+├── build.js               # esbuild + obfuscator
+├── package.json
+├── Dockerfile, Caddyfile  # 部署設定
+└── docker-entrypoint.sh
+```
 
 ---
 
-## Google Sheets 後端
+## 已實作功能清單
 
-`app/io/sheets.js` 透過 multipart/form-data POST 呼叫 Apps Script Web App：
-
-- `ping` — 測試連線
-- `writeTable { sheetName, headers, rows }` — 清掉並覆寫指定分頁
-- `readTable { sheetName }` — 讀回 `{headers, rows}`
-
-每次請求都帶 `token`，後端比對 `Code.gs` 內硬寫的 `SECRET` 常數。
-
-正規化分頁清單見 [CLAUDE.md §7.3](CLAUDE.md)；前端遍歷 schema 推 / 拉。
-
-部署步驟見 [apps-script/README.md](apps-script/README.md)。
-
----
-
-## 使用流程
-
-1. **設定** → 填當月、支出匯率、收入匯率 → 儲存
-2. **產品** → 各產品月預算 + 成效目標（名稱／公式／目標值／方向）
-3. **廣告** → 新增廣告（人民幣 × 當下匯率 → 台幣自動換算；攤提天數手動填），分配權重
-4. **概覽** → 即時看每產品當月攤提、帶寬狀態、每日攤提分布
-5. **設定 → Google Sheets 同步** → ⬇️ 從 Sheets 拉資料 / ☁️ 推回 Sheets
-6. **設定 → 成效輸入分頁** → 每週貼平台匯出資料 → 📥 附加本週成效 → 驗證預覽 → 合併
-
----
-
-## 目前狀態
-
-**已實作**
-
-- 產品 / 廣告 CRUD（共購 + 獨立採買）
-- 廣告生命週期：續費 / 權重調整 / 送天數 / 轉移 / 結束（關舊段、開新段、`renewal_of` 鏈）
-- 每日攤提 + 帶寬檢核（APP ±30%、小島 ±0.5%、混合共購雙邊獨立檢核）
-- 跨月攤提自動切段、月結容差（少花 ≤ 2 萬、超花 ≤ 1 萬）
-- 自動權重建議（依剩餘預算 + 帶寬剩餘空間）
-- 反向建議（給日期 → 建議買多少／怎麼分）
-- 成效驅動調權預覽
-- CSV 匯出 / 匯入、JSON 匯出 / 匯入、復原（Ctrl+Z）
-- Google Sheets 雙向同步（通用 writeTable / readTable + SECRET）
-- 每週成效匯入（Sheets「成效輸入」暫存分頁 → 驗證 → 預覽 → 合併去重）
-- 即將到期 Todo、儲存廣告自動建 Todo（提醒改連結分流）
+- 產品 / 廣告 CRUD(共購 + 獨立採買)
+- 廣告生命週期(續費 / 權重調整 / 結束、`renewal_of` 鏈)
+- 拆出破圈分流(parent + t-variant 配對,權重調整時自動重平衡金額)
+- 鎖定狀態三段(🔓 自由 / 🔒 鎖權重 / 🚫 禁止挪動)
+- 每日攤提 + 帶寬檢核、月結容差、跨月切段
+- 自動權重建議(剩餘預算 + 帶寬剩餘空間)
+- 反向建議(給日期 → 該買多少 / 怎麼分)
+- 成效驅動調權預覽 + 套用 + 撤回
+- 廣告調整建議(補日花費缺口、APP 月攤提補滿)
+- 成效報表雙視圖(依產品瀏覽 / 依廣告瀏覽 CPC 對照表)
+- CSV / JSON 匯入匯出 + Ctrl+Z 復原
+- Google Sheets 雙向同步 + 每週成效匯入流程
+- 待辦清單 + 撤回(支援多種 action_type)
 - 多月份月度匯率 / 月度預算覆寫
-- 部署模式（Railway 變數注入 URL/Token，全使用者共用同一份資料）
 
-**未實作 / 規劃中**
+---
 
-- 廣告詳情頁的時間軸視圖（多段一覽）
-- 到期前自動產 Todo（目前是被動顯示，尚未自動建立）
-- 報表單向推送（月度 / 每日花費 / 分組 / 攤提）
-- 按產品分頁的 CSV 匯出（目前是扁平 round-trip 格式）
+## 找不到答案?
+
+- 業務規則細節 → [CLAUDE.md](CLAUDE.md)(很長但很完整)
+- Sheets 部署 → [apps-script/README.md](apps-script/README.md)
+- 資料轉換腳本 → [scripts/README.md](scripts/README.md)

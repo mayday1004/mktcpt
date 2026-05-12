@@ -331,6 +331,12 @@ dialog#modal::backdrop { background: rgba(15, 20, 30, 0.4); backdrop-filter: blu
 .perf-summary-table tbody tr:hover td {
   background: #fafcff;
 }
+/* 依廣告瀏覽:列高更窄,避免水平 scroll 時還要垂直 scroll */
+.perf-ad-table th,
+.perf-ad-table td {
+  padding: 6px 10px;
+  line-height: 1.25;
+}
 .perf-mini-metrics {
   display: flex;
   align-items: center;

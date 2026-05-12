@@ -1,20 +1,32 @@
-# Raw data sources & generators (only static site is deployed)
+# ============ 不進 git 的東西 ============
+# 規則:只 commit「網站運行 + 一次性轉換工具」的程式碼,
+#       使用者實際資料 / 歷史試算表 / 中間檔案都不進。
+
+# 歷史試算表 / 原始來源(都很大,不需要進 git)
 *.xlsx
+
+# 歷史資料 / 匯入腳本的工作區(samples/allocator.py 等)
+# 注意:scripts/ 是會 commit 的(一次性轉換腳本),不在這裡
 samples/
 
-# Claude harness local config
+# Claude harness local config / IDE
 .claude/
-
-# OS / editor
-.DS_Store
-Thumbs.db
 .vscode/
 .idea/
 
-# Logs / temp
+# OS 雜物
+.DS_Store
+Thumbs.db
+
+# 暫存 / log
 *.log
 *.tmp
+*.local.*
 
-# Build output
+# 使用者自己備份的 JSON(buyads_*_backup_*.json 等)
+buyads_*backup*.json
+buyads_*fixed*.json
+
+# 打包輸出
 node_modules/
 dist/

@@ -33,6 +33,9 @@ function spawnFrom(source, patch) {
     lock_perf_adjust: !!source.lock_perf_adjust,
     lock_full: !!source.lock_full,
     eliminated: !!source.eliminated,
+    // 破圈分流配對(若源段有 split_pair_id 一併傳承,否則 undefined)
+    split_pair_id: source.split_pair_id || undefined,
+    split_role: source.split_role || undefined,
     renewal_of: source.id,
     renewal_reason: "續費",
     ...patch,

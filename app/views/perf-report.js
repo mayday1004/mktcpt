@@ -13,10 +13,13 @@ import { getState, update, uid } from "../state.js";
 import { METRICS, getExpenseRate, getIncomeRate } from "../schema.js";
 import { evalFormula, validateFormula, REPORT_EXTRA_VARS } from "../lib/formula.js";
 import { bindPerfImportButtons } from "./perf-import-ui.js";
+import { scoreRecord } from "../domain/perf-adjust.js";
+import { todayTaipei } from "../lib/dates.js";
 
 let selectedProductId = null;
 let reportFilter = "all";
 let expandedRows = new Set();
+let reportView = "by-product";  // "by-product" | "by-ad"
 
 // 預設設定:依產品 id 給出合理的初始 hidden_metrics + custom_metrics。
 // 使用者按「設定欄位」儲存後就以儲存值為準,即使是空陣列也不會 fallback。
@@ -36,12 +39,12 @@ function defaultConfigForProduct(product) {
   const APP_INSTALL_PIDS = new Set(["AV9", "av9_poquan", "JK", "jk_poquan"]);
 
   const presetA = () => ({
-    hidden_metrics: hiddenExcept(["不重複安裝數", "所有渠道不重複安裝數"]),
+    hidden_metrics: hiddenExcept(["不重複安裝數", "不重複活躍用戶數"]),
     custom_metrics: [
-      { id: uid("cm"), name: "首存ROI", formula: "首儲購買金額*收入匯率/花費", show_as_percent: false },
       { id: uid("cm"), name: "活躍率", formula: "不重複活躍用戶數/不重複安裝數", show_as_percent: true },
       { id: uid("cm"), name: "排重安裝率", formula: "所有渠道不重複安裝數/不重複安裝數", show_as_percent: true },
       { id: uid("cm"), name: "首購率", formula: "首儲訂單數/不重複安裝數", show_as_percent: true },
+      { id: uid("cm"), name: "首存ROI", formula: "首儲購買金額*收入匯率/花費", show_as_percent: false },
     ],
   });
   const presetB = () => ({
@@ -106,8 +109,14 @@ export function render(root) {
     ${products.length === 0 ? `
       <div class="card"><p class="ink-2">請先建立產品。</p></div>
     ` : `
-      ${renderProductPicker(s, selectedProductId)}
-      ${product ? renderProductReport(s, product) : ""}
+      <div class="filter-row" style="margin-bottom:12px">
+        <span class="ink-3" style="font-size:12px">瀏覽方式：</span>
+        <button class="filter-chip ${reportView === "by-product" ? "active" : ""}" data-report-view="by-product">依產品瀏覽</button>
+        <button class="filter-chip ${reportView === "by-ad" ? "active" : ""}" data-report-view="by-ad">依廣告瀏覽</button>
+      </div>
+      ${reportView === "by-ad"
+        ? renderAdView(s)
+        : `${renderProductPicker(s, selectedProductId)}${product ? renderProductReport(s, product) : ""}`}
     `}
   `;
 
@@ -143,6 +152,12 @@ export function render(root) {
       const key = el.dataset.reportExpand;
       if (expandedRows.has(key)) expandedRows.delete(key);
       else expandedRows.add(key);
+      render(root);
+    };
+  });
+  root.querySelectorAll("[data-report-view]").forEach((el) => {
+    el.onclick = () => {
+      reportView = el.dataset.reportView;
       render(root);
     };
   });
@@ -688,4 +703,390 @@ function fmtMetric(n, asPercent) {
 
 function esc(v) {
   return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ── 依廣告瀏覽（廣告 × 小島 CPC 對照表）─────────────────────────────
+
+function renderAdView(state) {
+  const periods = listUniquePeriods(state);
+  if (periods.length === 0) {
+    return `<div class="card"><p class="ink-3">尚無成效資料。請先匯入。</p></div>`;
+  }
+  const thisWeek = periods[0];
+  const lastWeek = periods[1] || null;
+
+  const islandProducts = (state.products || []).filter((p) => p.type === "island");
+  const appProducts = (state.products || []).filter((p) => p.type === "app");
+  if (islandProducts.length === 0) {
+    return `<div class="card"><p class="ink-3">尚無小島型產品。</p></div>`;
+  }
+
+  const codesMap = new Map();
+  for (const ad of (state.ads || [])) {
+    if (!ad.ad_code) continue;
+    if (!codesMap.has(ad.ad_code)) codesMap.set(ad.ad_code, []);
+    codesMap.get(ad.ad_code).push(ad);
+  }
+
+  const today = todayTaipei();
+  const weekRange = naturalWeekRange(today);
+
+  const rows = [];
+  for (const [code, segs] of codesMap) {
+    const overlapping = segs.filter((a) =>
+      a.start_date && a.end_date &&
+      a.start_date <= thisWeek.end && a.end_date > thisWeek.start
+    );
+    if (overlapping.length === 0) continue;
+    const rep = overlapping.slice().sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""))[0];
+    const hasIsland = islandProducts.some((p) => Number(rep.weights?.[p.id]) > 0);
+    if (!hasIsland) continue;
+    rows.push(buildAdRowData(state, code, rep, segs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today));
+  }
+
+  const order = { eliminate: 0, "eliminate-soon": 1, expire: 2, new: 3, gap: 4, none: 5 };
+  rows.sort((a, b) =>
+    ((order[a.status.kind] ?? 5) - (order[b.status.kind] ?? 5)) ||
+    a.code.localeCompare(b.code)
+  );
+
+  const colStats = computeColumnStats(rows, islandProducts);
+  return renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, weekRange);
+}
+
+function listUniquePeriods(state) {
+  const seen = new Set();
+  const out = [];
+  for (const r of (state.performance_data || [])) {
+    if (!r.period_start || !r.period_end) continue;
+    const key = `${r.period_start}~${r.period_end}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ start: r.period_start, end: r.period_end });
+  }
+  out.sort((a, b) => b.end.localeCompare(a.end));
+  return out;
+}
+
+function naturalWeekRange(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  const dow = dt.getUTCDay();
+  dt.setUTCDate(dt.getUTCDate() - dow);
+  const start = formatUTC(dt);
+  dt.setUTCDate(dt.getUTCDate() + 6);
+  const end = formatUTC(dt);
+  return { start, end };
+}
+
+function formatUTC(dt) {
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+}
+
+function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today) {
+  const adMatch = (rr) => rr.ad_code === code || rr.ad_id === rep.id || rr.ad_name === rep.ad_name;
+  const thisRecs = (state.performance_data || []).filter((r) =>
+    adMatch(r) && r.period_start === thisWeek.start && r.period_end === thisWeek.end
+  );
+  const lastRecs = lastWeek
+    ? (state.performance_data || []).filter((r) =>
+        adMatch(r) && r.period_start === lastWeek.start && r.period_end === lastWeek.end
+      )
+    : [];
+
+  const islandCPCs = {};
+  const islandCPCsLast = {};
+  const islandSpend = {};
+  const islandEvents = {};
+  const islandSpendLast = {};
+  const islandEventsLast = {};
+  const islandRatios = {};  // 該產品在該行的 scoreRecord ratio(< 1 = 未達標)
+
+  for (const p of islandProducts) {
+    const r = thisRecs.find((x) => x.product_id === p.id);
+    if (r) {
+      const sp = Number(r["花費"]) || 0;
+      const ev = Number(r["事件計數"]) || 0;
+      islandSpend[p.id] = sp;
+      islandEvents[p.id] = ev;
+      if (sp > 0 && ev > 0) islandCPCs[p.id] = sp / ev;
+      const targets = p.performance_targets || [];
+      if (targets.length > 0) {
+        const score = scoreRecord(r, targets);
+        if (score && score.ratio != null) islandRatios[p.id] = score.ratio;
+      }
+    }
+    const r2 = lastRecs.find((x) => x.product_id === p.id);
+    if (r2) {
+      const sp = Number(r2["花費"]) || 0;
+      const ev = Number(r2["事件計數"]) || 0;
+      islandSpendLast[p.id] = sp;
+      islandEventsLast[p.id] = ev;
+      if (sp > 0 && ev > 0) islandCPCsLast[p.id] = sp / ev;
+    }
+  }
+
+  const cpis = [];
+  const rates = [];
+  for (const p of appProducts) {
+    if (!Number(rep.weights?.[p.id])) continue;
+    const r = thisRecs.find((x) => x.product_id === p.id);
+    if (!r) continue;
+    const sp = Number(r["花費"]) || 0;
+    const ins = Number(r["不重複安裝數"]) || 0;
+    const fo = Number(r["首儲訂單數"]) || 0;
+    if (ins <= 0) continue;
+    const targets = p.performance_targets || [];
+    const score = targets.length > 0 ? scoreRecord(r, targets) : null;
+    const ratio = score?.ratio ?? null;
+    cpis.push({ pid: p.id, name: p.name, cpi: sp / ins, ratio });
+    // 首購率只在有「首儲訂單數」概念的產品上算(HYC 沒有 → 排除)
+    if (hasFirstPurchaseConcept(state, p)) {
+      rates.push({ pid: p.id, name: p.name, rate: fo / ins, ratio });
+    }
+  }
+  cpis.sort((a, b) => b.cpi - a.cpi);
+  rates.sort((a, b) => a.rate - b.rate);
+  const worstCPI = cpis[0] || null;
+  const worstRate = rates[0] || null;
+
+  const status = computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts);
+
+  return {
+    code, rep,
+    islandCPCs, islandCPCsLast,
+    islandSpend, islandEvents, islandSpendLast, islandEventsLast,
+    islandRatios,
+    worstCPI, worstRate,
+    cpiRatio: worstCPI?.ratio ?? null,
+    rateRatio: worstRate?.ratio ?? null,
+    status,
+  };
+}
+
+function hasFirstPurchaseConcept(state, product) {
+  const targets = product.performance_targets || [];
+  const customs = state.report_config?.[product.id]?.custom_metrics || [];
+  return [...targets, ...customs].some((t) =>
+    String(t.formula || "").includes("首儲") ||
+    String(t.name || "").includes("首購")
+  );
+}
+
+function computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts) {
+  const { start: ws, end: we } = weekRange;
+  const endD = rep.end_date;
+  const startD = rep.start_date;
+  const hasLater = allSegs.some((a) => a.id !== rep.id && a.start_date && a.start_date >= endD);
+
+  if (endD && endD >= ws && endD < today && !hasLater) {
+    return { kind: "eliminate", label: "🔴 本週淘汰", tooltip: `已到期未續費(${endD})` };
+  }
+  const allBad = isAllBadPerf(thisRecs, appProducts, rep);
+  if (endD && endD >= today && endD <= we && allBad) {
+    return { kind: "eliminate-soon", label: "❗ 本週預計淘汰", tooltip: `本週到期且 APP 成效全爛(${endD})` };
+  }
+  if (endD && endD >= today && endD <= we) {
+    return { kind: "expire", label: "🏆 本週到期", tooltip: `到期日 ${endD}` };
+  }
+  if (startD && startD >= ws && startD <= we) {
+    return { kind: "new", label: "➕ 新上", tooltip: `起始日 ${startD}` };
+  }
+  const sorted = allSegs.filter((a) => a.start_date && a.end_date)
+    .slice().sort((a, b) => a.start_date.localeCompare(b.start_date));
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const gapStart = sorted[i].end_date;
+    const gapEnd = sorted[i + 1].start_date;
+    if (gapStart < gapEnd && gapStart <= we && gapEnd > ws) {
+      return { kind: "gap", label: "⚠ 未採買空檔", tooltip: `空檔 ${gapStart} ~ ${gapEnd}` };
+    }
+  }
+  return { kind: "none", label: "", tooltip: "" };
+}
+
+function isAllBadPerf(thisRecs, appProducts, rep) {
+  const withWeight = appProducts.filter((p) => Number(rep.weights?.[p.id]) > 0);
+  if (withWeight.length === 0) return false;
+  for (const p of withWeight) {
+    const r = thisRecs.find((x) => x.product_id === p.id);
+    if (!r) return false;
+    const targets = p.performance_targets || [];
+    if (targets.length === 0) return false;
+    const score = scoreRecord(r, targets);
+    if (!score || score.ratio == null) return false;
+    if (score.ratio >= 0.3) return false;
+  }
+  return true;
+}
+
+function computeColumnStats(rows, islandProducts) {
+  // 「未達標」(ratio < 1)的值範圍 → 在這範圍內漸變;達標(ratio >= 1 或無 ratio)的格直接白底
+  const stats = {};
+  for (const p of islandProducts) {
+    const unmet = rows
+      .filter((r) => {
+        const v = r.islandCPCs[p.id];
+        const ratio = r.islandRatios?.[p.id];
+        return v != null && ratio != null && ratio < 1;
+      })
+      .map((r) => r.islandCPCs[p.id]);
+    const sumSp = rows.reduce((s, r) => s + (r.islandSpend?.[p.id] || 0), 0);
+    const sumEv = rows.reduce((s, r) => s + (r.islandEvents?.[p.id] || 0), 0);
+    const sumSpL = rows.reduce((s, r) => s + (r.islandSpendLast?.[p.id] || 0), 0);
+    const sumEvL = rows.reduce((s, r) => s + (r.islandEventsLast?.[p.id] || 0), 0);
+    const avgCpc = sumEv > 0 ? sumSp / sumEv : null;
+    const avgCpcLast = sumEvL > 0 ? sumSpL / sumEvL : null;
+    const delta = (avgCpc != null && avgCpcLast != null) ? avgCpc - avgCpcLast : null;
+    stats[p.id] = {
+      unmetMin: unmet.length > 0 ? Math.min(...unmet) : 0,
+      unmetMax: unmet.length > 0 ? Math.max(...unmet) : 0,
+      avgCpc, avgCpcLast, delta,
+    };
+  }
+  const cpiUnmet = rows.filter((r) => r.worstCPI && r.cpiRatio != null && r.cpiRatio < 1).map((r) => r.worstCPI.cpi);
+  stats.__cpi = {
+    unmetMin: cpiUnmet.length > 0 ? Math.min(...cpiUnmet) : 0,
+    unmetMax: cpiUnmet.length > 0 ? Math.max(...cpiUnmet) : 0,
+  };
+  const rateUnmet = rows.filter((r) => r.worstRate && r.rateRatio != null && r.rateRatio < 1).map((r) => r.worstRate.rate);
+  stats.__rate = {
+    unmetMin: rateUnmet.length > 0 ? Math.min(...rateUnmet) : 0,
+    unmetMax: rateUnmet.length > 0 ? Math.max(...rateUnmet) : 0,
+  };
+  return stats;
+}
+
+function bgRed(t) {
+  const tt = Math.max(0, Math.min(1, t));
+  const g = Math.round(255 - tt * 130);
+  const b = Math.round(255 - tt * 130);
+  return `background:rgb(255,${g},${b})`;
+}
+
+function cpcCellStyle(v, ratio, min, max) {
+  if (v == null) return "";
+  if (ratio == null || ratio >= 1) return "";  // 達標白底
+  if (max === min) return bgRed(0.6);
+  return bgRed((v - min) / (max - min));
+}
+
+function rateCellStyle(v, ratio, min, max) {
+  if (v == null) return "";
+  if (ratio == null || ratio >= 1) return "";  // 達標白底
+  if (max === min) return bgRed(0.6);
+  // 首購率越低越紅
+  return bgRed(1 - (v - min) / (max - min));
+}
+
+function fmtCPC(v) {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return (Math.round(v * 100) / 100).toLocaleString();
+}
+
+function fmtCPCSigned(v) {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${(Math.round(v * 100) / 100).toLocaleString()}`;
+}
+
+function fmtRate(v) {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return `${(Math.round(v * 10000) / 100).toLocaleString()}%`;
+}
+
+function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, weekRange) {
+  if (rows.length === 0) {
+    return `<div class="card"><p class="ink-3">資料期間 ${thisWeek.start}~${thisWeek.end} 內沒有任何含小島權重的廣告。</p></div>`;
+  }
+  const lastNote = lastWeek
+    ? `vs 上週 ${lastWeek.start}~${lastWeek.end}`
+    : `上週無資料`;
+
+  const islandHeaders = islandProducts.map((p) =>
+    `<th class="num" title="${esc(p.name)} CPC = 花費/事件計數">${esc(p.name)}<br><span class="ink-3 mono" style="font-size:10px;font-weight:normal">${esc(p.id)}</span></th>`
+  ).join("");
+
+  const dataRows = rows.map((row) => {
+    const islandCells = islandProducts.map((p) => {
+      const v = row.islandCPCs[p.id];
+      if (v == null) return `<td class="num"></td>`;
+      const stat = colStats[p.id];
+      const ratio = row.islandRatios?.[p.id];
+      return `<td class="num" style="${cpcCellStyle(v, ratio, stat.unmetMin, stat.unmetMax)}">${fmtCPC(v)}</td>`;
+    }).join("");
+
+    const cpiCell = row.worstCPI
+      ? `<td class="num" title="來源產品:${esc(row.worstCPI.name)}">${fmtCPC(row.worstCPI.cpi)} <span class="ink-3" style="font-size:10px">(${esc(row.worstCPI.pid)})</span></td>`
+      : `<td class="num ink-3">—</td>`;
+
+    const rateCell = row.worstRate
+      ? `<td class="num" title="來源產品:${esc(row.worstRate.name)}">${fmtRate(row.worstRate.rate)} <span class="ink-3" style="font-size:10px">(${esc(row.worstRate.pid)})</span></td>`
+      : `<td class="num ink-3">—</td>`;
+
+    const statusCell = row.status.label
+      ? `<td title="${esc(row.status.tooltip || "")}">${row.status.label}</td>`
+      : `<td></td>`;
+
+    return `
+      <tr>
+        <td><strong>${esc(row.rep.ad_name || "")}</strong></td>
+        <td class="mono">${esc(row.code)}</td>
+        ${islandCells}
+        ${cpiCell}
+        ${rateCell}
+        ${statusCell}
+      </tr>
+    `;
+  }).join("");
+
+  const avgCells = islandProducts.map((p) => {
+    const v = colStats[p.id].avgCpc;
+    return `<td class="num"><strong>${v != null ? fmtCPC(v) : "—"}</strong></td>`;
+  }).join("");
+
+  const deltaCells = islandProducts.map((p) => {
+    const d = colStats[p.id].delta;
+    if (d == null) return `<td class="num ink-3">—</td>`;
+    const cls = d > 0 ? "bad" : d < 0 ? "ok" : "";
+    return `<td class="num"><strong class="${cls}">${fmtCPCSigned(d)}</strong></td>`;
+  }).join("");
+
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h2>依廣告瀏覽 <span class="ink-3" style="font-size:12px;font-weight:normal">廣告 × 小島 CPC 對照表</span></h2>
+        <div class="ink-3" style="font-size:12px">
+          資料期間 <strong>${thisWeek.start}~${thisWeek.end}</strong> · ${lastNote}<br>
+          本週(自然週 Sun~Sat) <strong>${weekRange.start}~${weekRange.end}</strong>
+        </div>
+      </div>
+      <div class="table-wrap" style="max-height:640px">
+        <table class="perf-summary-table perf-ad-table" style="font-size:12px">
+          <thead>
+            <tr>
+              <th style="width:160px">渠道名稱</th>
+              <th style="width:90px">代碼</th>
+              ${islandHeaders}
+              <th class="num" style="width:130px">APP CPI<br><span class="ink-3" style="font-size:10px;font-weight:normal">花費/不重複安裝數</span></th>
+              <th class="num" style="width:120px">首購率<br><span class="ink-3" style="font-size:10px;font-weight:normal">首儲訂單/裝機</span></th>
+              <th style="width:130px">到期狀況</th>
+            </tr>
+          </thead>
+          <tbody>${dataRows}</tbody>
+          <tfoot>
+            <tr style="background:#f7f9fc">
+              <td colspan="2"><strong>平均 CPC（加權）</strong></td>
+              ${avgCells}
+              <td colspan="3" class="ink-3"></td>
+            </tr>
+            <tr style="background:#f7f9fc">
+              <td colspan="2"><strong>成本漲幅（vs 上週，絕對差）</strong></td>
+              ${deltaCells}
+              <td colspan="3" class="ink-3"></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  `;
 }

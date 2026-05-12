@@ -95,8 +95,15 @@ export function toYmd(v) {
 export const TABLES = [
   {
     name: "產品",
-    headers: ["id", "名稱", "類型"],
-    toRows: (s) => s.products.map((p) => [p.id, p.name, p.type]),
+    headers: ["id", "名稱", "類型", "不檢查每日帶寬", "是否破圈", "母產品ID"],
+    toRows: (s) => s.products.map((p) => [
+      p.id,
+      p.name,
+      p.type,
+      p.no_band ? "Y" : "",
+      p.is_poquan ? "Y" : "",
+      p.parent_product_id || "",
+    ]),
   },
   {
     // 每產品每月獨立預算，產品分頁移除單一月預算欄位，改用此分頁管理
@@ -178,6 +185,7 @@ export const TABLES = [
       "人民幣金額", "匯率", "台幣金額",
       "開始日期", "結束日期", "攤提天數", "每日攤提(台幣)",
       "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動", "備註",
+      "破圈分流配對ID", "破圈分流角色",
     ],
     toRows: (s) => s.ads.map((a) => [
       a.id, a.ad_code, a.ad_name, a.group || "",
@@ -193,6 +201,8 @@ export const TABLES = [
       a.lock_perf_adjust ? "Y" : "",
       a.lock_full ? "Y" : "",
       a.notes || "",
+      a.split_pair_id || "",
+      a.split_role || "",
     ]),
   },
   {
@@ -276,14 +286,24 @@ export function assembleFromTables(raw) {
   const toObj = (headers, row) => Object.fromEntries(headers.map((h, i) => [h, row[i]]));
 
   const prodT = pick("產品");
+  // 只在 Sheets 真的有該欄位時才覆寫對應 flag,否則留給 migrate() 補(避免新欄位
+  // 還沒推上 Sheets 之前先 PULL,把 av9_poquan / jk_poquan 的 is_poquan 洗成 false)
+  const hasNoBandCol = prodT.headers.includes("不檢查每日帶寬");
+  const hasPoqCol = prodT.headers.includes("是否破圈");
+  const hasParentCol = prodT.headers.includes("母產品ID");
+  const yes = (v) => String(v || "").trim().toUpperCase() === "Y";
   const products = prodT.rows.map((r) => {
     const o = toObj(prodT.headers, r);
-    return {
+    const obj = {
       id: String(o.id || ""),
       name: String(o["名稱"] || ""),
       type: o["類型"] === "island" ? "island" : "app",
       performance_targets: [],
     };
+    if (hasNoBandCol) obj.no_band = yes(o["不檢查每日帶寬"]);
+    if (hasPoqCol) obj.is_poquan = yes(o["是否破圈"]);
+    if (hasParentCol) obj.parent_product_id = String(o["母產品ID"] || "");
+    return obj;
   });
 
   const budT = pick("產品月預算");
@@ -379,6 +399,10 @@ export function assembleFromTables(raw) {
       lock_perf_adjust: String(o["鎖定不調整"] || "").trim().toUpperCase() === "Y",
       lock_full: String(o["禁止挪動"] || "").trim().toUpperCase() === "Y",
       notes: String(o["備註"] || ""),
+      ...(adT.headers.includes("破圈分流配對ID") && o["破圈分流配對ID"]
+        ? { split_pair_id: String(o["破圈分流配對ID"]) } : {}),
+      ...(adT.headers.includes("破圈分流角色") && o["破圈分流角色"]
+        ? { split_role: String(o["破圈分流角色"]) } : {}),
     };
   });
 

@@ -282,6 +282,23 @@ function openEditor(id, ym) {
         <span class="ink-3" style="font-size:11px">(破圈系列等極端花費產品勾選;成效調整、儀表板都跳過 ±範圍警示)</span>
       </label>
     </div>
+    <div class="field" style="margin-top:4px">
+      <label style="display:flex;align-items:center;gap:6px;font-weight:normal">
+        <input type="checkbox" id="f-is-poquan" ${p.is_poquan ? "checked" : ""} style="width:auto" />
+        <span>這是破圈產品</span>
+        <span class="ink-3" style="font-size:11px">(新增廣告時可被選為「拆出破圈分流」目標;儀表板會歸到母產品家族卡片)</span>
+      </label>
+    </div>
+    <div class="field" id="parent-product-row" style="margin-top:4px;display:${p.is_poquan ? "block" : "none"}">
+      <label>母產品</label>
+      <select id="f-parent-pid">
+        <option value="">(無)</option>
+        ${s.products.filter((x) => x.id !== id && !x.is_poquan && x.type === "app").map((x) =>
+          `<option value="${escape(x.id)}" ${p.parent_product_id === x.id ? "selected" : ""}>${escape(x.name)} (${escape(x.id)})</option>`
+        ).join("")}
+      </select>
+      <div class="hint">破圈會在儀表板歸入此母產品的家族卡片;權重邏輯仍完全獨立</div>
+    </div>
 
     <h3 class="mt-16">${ym} 預算（台幣）</h3>
     <div id="budget-section"></div>
@@ -351,6 +368,15 @@ function openEditor(id, ym) {
   renderBudgetSection();
   dlg.querySelector("#f-type").onchange = renderBudgetSection;
 
+  // 「這是破圈產品」勾選時才顯示母產品下拉
+  const poqToggle = dlg.querySelector("#f-is-poquan");
+  const parentRow = dlg.querySelector("#parent-product-row");
+  if (poqToggle && parentRow) {
+    poqToggle.onchange = () => {
+      parentRow.style.display = poqToggle.checked ? "block" : "none";
+    };
+  }
+
   const renderTargets = () => {
     const host = dlg.querySelector("#targets");
     host.innerHTML = p.performance_targets.map((t, i) => targetRow(t, i)).join("") ||
@@ -378,10 +404,13 @@ function openEditor(id, ym) {
 
   dlg.querySelector("#cancel").onclick = () => modal.close();
   dlg.querySelector("#save").onclick = () => {
+    const isPoq = !!dlg.querySelector("#f-is-poquan")?.checked;
     const patch = {
       name: dlg.querySelector("#f-name").value.trim(),
       type: dlg.querySelector("#f-type").value,
       no_band: !!dlg.querySelector("#f-no-band")?.checked,
+      is_poquan: isPoq,
+      parent_product_id: isPoq ? (dlg.querySelector("#f-parent-pid")?.value || "") : "",
       performance_targets: p.performance_targets.filter((t) => t.name),
     };
     if (!patch.name) { toast("請輸入名稱", "bad"); return; }
@@ -473,6 +502,7 @@ function targetRow(t, i) {
 function blank() {
   return {
     name: "", type: "app", no_band: false,
+    is_poquan: false, parent_product_id: "",
     performance_targets: [],
   };
 }

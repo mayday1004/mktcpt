@@ -68,6 +68,16 @@ function migrate(st) {
       if (typeof p?.no_band !== "boolean") {
         p.no_band = (p?.id === "av9_poquan" || p?.id === "jk_poquan");
       }
+      // is_poquan / parent_product_id:既有 av9_poquan / jk_poquan 自動歸位,
+      // 未來新增的破圈(例:HYC_poquan)在產品編輯彈窗勾選即可,不再寫死。
+      if (typeof p?.is_poquan !== "boolean") {
+        p.is_poquan = (p?.id === "av9_poquan" || p?.id === "jk_poquan");
+      }
+      if (typeof p?.parent_product_id !== "string") {
+        if (p?.id === "av9_poquan") p.parent_product_id = "AV9";
+        else if (p?.id === "jk_poquan") p.parent_product_id = "JK";
+        else p.parent_product_id = "";
+      }
     });
   }
   // Ads: ensure renewal_reason + purchase_mode + lock_perf_adjust + eliminated defaults
@@ -91,6 +101,27 @@ function migrate(st) {
         a.notes = "";
       }
     });
+
+    // 自動配對:既有的 st287 + st287t 樣式廣告。判定:
+    //   - t-variant 代碼結尾為 't' (case-insensitive,參考 CLAUDE.md §5.3.5 命名約定)
+    //   - 去掉結尾的 't' 後存在另一支廣告(parent)
+    //   - 兩邊都還沒寫過 split_pair_id
+    //   - 排除 'dh' 結尾(第二位)等其他語意尾綴
+    const codeSet = new Set();
+    for (const a of st.ads) if (a.ad_code) codeSet.add(a.ad_code);
+    const codeArr = [...codeSet];
+    for (const code of codeArr) {
+      const lower = code.toLowerCase();
+      if (!lower.endsWith("t") || lower.endsWith("dh")) continue;
+      const parentCode = code.slice(0, -1);
+      if (!codeSet.has(parentCode)) continue;
+      const tAds = st.ads.filter((a) => a.ad_code === code);
+      const pAds = st.ads.filter((a) => a.ad_code === parentCode);
+      if (tAds.some((a) => a.split_pair_id) || pAds.some((a) => a.split_pair_id)) continue;
+      const pairId = `pair_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}_${code}`;
+      for (const a of pAds) { a.split_pair_id = pairId; a.split_role = "parent"; }
+      for (const a of tAds) { a.split_pair_id = pairId; a.split_role = "t_variant"; }
+    }
   }
   st.version = VERSION;
   return st;

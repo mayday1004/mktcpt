@@ -9,13 +9,37 @@ import { detectFutureGaps, detectShortfalls, detectAppMonthlyUnderspend } from "
 import { projectAdsWithRenewals, projectedDecisionState } from "../domain/renewal-projection.js";
 import { openGiftDayFixModal } from "./gift-day-fix-modal.js";
 
-// 概覽 KPI 群組（依使用者要求合併）
-const KPI_GROUPS = [
-  { id: "av9",     label: "AV9（含破圈）", pids: ["AV9", "av9_poquan"] },
-  { id: "jk",      label: "JK（含破圈）",  pids: ["JK", "jk_poquan"] },
-  { id: "hyc",     label: "黃油圈",        pids: ["HYC"] },
-  { id: "islands", label: "小島（6 產品）", pids: ["PJ8", "ZFB", "OJI", "MYS", "XRK", "BS"] },
-];
+// 概覽 KPI 群組:依 state.products 自動計算,不再 hardcode。規則:
+//   - 非破圈的 APP 產品各自成一卡;若有 is_poquan=true 且 parent_product_id 指向它的破圈
+//     子產品,顯示為「(含破圈)」並把子產品 pids 合進來
+//   - 找不到母產品的破圈(parent_product_id 為空或指向不存在的產品)→ 單獨成卡
+//   - 所有小島型產品集合為一張「小島(N 產品)」卡
+function buildKpiGroups(state) {
+  const products = state.products || [];
+  const groups = [];
+  const appParents = products.filter((p) => p.type === "app" && !p.is_poquan);
+  for (const parent of appParents) {
+    const children = products.filter((p) => p.is_poquan && p.parent_product_id === parent.id);
+    const pids = [parent.id, ...children.map((c) => c.id)];
+    const label = children.length > 0 ? `${parent.name}（含破圈）` : parent.name;
+    groups.push({ id: parent.id, label, pids });
+  }
+  const orphanPoquan = products.filter((p) =>
+    p.is_poquan && !appParents.find((ap) => ap.id === p.parent_product_id)
+  );
+  for (const orphan of orphanPoquan) {
+    groups.push({ id: orphan.id, label: orphan.name, pids: [orphan.id] });
+  }
+  const islands = products.filter((p) => p.type === "island");
+  if (islands.length > 0) {
+    groups.push({
+      id: "islands",
+      label: `小島（${islands.length} 產品）`,
+      pids: islands.map((p) => p.id),
+    });
+  }
+  return groups;
+}
 
 // 模組級狀態：使用者選的概覽月份 + 詳細檢視選的產品 + 日期
 let viewYm = null;
@@ -482,9 +506,10 @@ function upcomingAds(state, days = 10) {
 
 function renderKpiGroups(state, ym, totals) {
   const dim = daysInMonth(ym);
+  const groups = buildKpiGroups(state);
   return `
     <div class="kpi-hero kpi-groups">
-      ${KPI_GROUPS.map((g) => {
+      ${groups.map((g) => {
         const spent = g.pids.reduce((sum, pid) => sum + (totals[pid] || 0), 0);
         const budget = g.pids.reduce((sum, pid) => sum + (getMonthlyBudget(state, pid, ym) || 0), 0);
         const dailySum = g.pids.reduce((sum, pid) => sum + (getDailyBudget(state, pid, ym) || 0), 0);

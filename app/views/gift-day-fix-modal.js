@@ -11,6 +11,7 @@ import {
   planAdjustments, detectFutureGaps, detectShortfalls, detectAppMonthlyUnderspend,
 } from "../domain/gift-days.js";
 import { buildWeightAdjust } from "../domain/lifecycle.js";
+import { rebalanceSplitPair } from "../domain/split-pair.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 import { projectedDecisionState } from "../domain/renewal-projection.js";
 import { todayTaipei, nowTaipeiStamp } from "../lib/dates.js";
@@ -238,6 +239,12 @@ export function openGiftDayFixModal(onApplied) {
             if (i >= 0) st.ads[i] = r.closed;
             st.ads.push(...r.segments);
             added_ad_ids.push(...r.segments.map((s) => s.id));
+            // 若屬破圈分流配對,連動 linked 廣告做重平衡
+            for (const newSeg of r.segments) {
+              const inAds = st.ads.find((a) => a.id === newSeg.id);
+              const rebal = inAds ? rebalanceSplitPair(st, inAds) : null;
+              if (rebal?.newLinkedSegId) added_ad_ids.push(rebal.newLinkedSegId);
+            }
           }
           okCount++;
           successDescs.push(`${seg.ad_code} ${seg.ad_name}｜${p.effective} ${nameOfP[p.sourcePid] || p.sourcePid}↔${nameOfP[p.targetPid] || p.targetPid} ${p.deltaW}%`);

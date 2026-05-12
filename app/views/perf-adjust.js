@@ -2,6 +2,7 @@ import { getState, update, uid } from "../state.js";
 import { isNoBand, getMonthlyBudget } from "../schema.js";
 import { buildAdPivot, previewImpact, computeProductBudgetStatus } from "../domain/perf-adjust.js";
 import { buildWeightAdjust } from "../domain/lifecycle.js";
+import { rebalanceSplitPair } from "../domain/split-pair.js";
 import { todayTaipei, nowTaipeiStamp, daysOfMonth } from "../lib/dates.js";
 import { detectFutureGaps, detectShortfalls, detectAppMonthlyUnderspend } from "../domain/gift-days.js";
 import { openGiftDayFixModal } from "./gift-day-fix-modal.js";
@@ -1226,6 +1227,12 @@ async function applyAll(pivot, newWeightsByAd, root) {
           if (i >= 0) st.ads[i] = r.closed;
           st.ads.push(...r.segments);
           added_ad_ids.push(...r.segments.map((s) => s.id));
+          // 若屬破圈分流配對,連動 linked 廣告做重平衡
+          for (const newSeg of r.segments) {
+            const inAds = st.ads.find((a) => a.id === newSeg.id);
+            const rebal = inAds ? rebalanceSplitPair(st, inAds) : null;
+            if (rebal?.newLinkedSegId) added_ad_ids.push(rebal.newLinkedSegId);
+          }
           okCount++;
           successDetails.push(`${seg.ad_code} ${seg.ad_name}｜${oldStr} → ${newStr}`);
         }

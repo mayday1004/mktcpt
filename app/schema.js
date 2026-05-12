@@ -46,6 +46,13 @@ export function isNoBandPid(state, pid) {
   return state?.products?.find((p) => p.id === pid)?.no_band === true;
 }
 
+// 破圈產品標記。原本寫死的 av9_poquan / jk_poquan 在 migrate() 中自動補上
+// is_poquan=true + parent_product_id=AV9/JK。未來新增破圈(例:HYC_poquan)時,
+// 在產品編輯彈窗勾選「這是破圈產品」+ 選母產品即可,所有依賴此邏輯的地方都會自動套用。
+export function isPoquan(product) {
+  return product?.is_poquan === true;
+}
+
 // 廣告鎖定三段(影響「自動建議」是否可動權重;手動編輯永遠放行)
 //   free   = 完全自由,自動可分權重也可整桶搬
 //   weight = 鎖權重比例,只能整桶搬(100% → 100%);自動分權重不可

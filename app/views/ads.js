@@ -6,6 +6,7 @@ import { expiringAds } from "../domain/alerts.js";
 import { renderGiftDayInfo } from "./dashboard.js";
 import { todayTaipei, nowTaipeiStamp, addDays } from "../lib/dates.js";
 import { buildWeightAdjust } from "../domain/lifecycle.js";
+import { rebalanceSplitPair } from "../domain/split-pair.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 
@@ -91,9 +92,17 @@ export function render(root) {
     ? dateFiltered.filter((a) => matchedCodes.has(a.ad_code))
     : dateFiltered;
 
+  // Tab filter:跟日期/搜尋一樣「任一段命中即保留整個 ad_code 的所有段」
+  // 避免在 t-variant 場景中,某段沒此產品權重而被砍掉,造成 filter-aware latest 拿不到正確段
   const filtered = activeTab === "all"
     ? searchFiltered
-    : searchFiltered.filter((a) => Number(a.weights?.[activeTab]) > 0);
+    : (() => {
+      const codesWithProduct = new Set();
+      for (const a of searchFiltered) {
+        if (Number(a.weights?.[activeTab]) > 0) codesWithProduct.add(a.ad_code);
+      }
+      return searchFiltered.filter((a) => codesWithProduct.has(a.ad_code));
+    })();
   const groups = groupByCode(filtered);
 
   // 各 tab 的廣告數，當作 badge（套用日期 + 搜尋過濾後的數量）
@@ -185,17 +194,37 @@ export function render(root) {
 //   - 共購家族(含破圈成員)→ carve-out:取每個 code 的 latest seg 加總(= 一般 + 破圈 = 合約總額)
 //   - 兄弟廣告(無破圈)→ sum 所有 ads,skip「接收前段」(renewal_of + 權重調整)
 // 與 renderFamily 內的合計算法一致,確保家族卡頭 vs expiring 顯示同一個數字。
-function computeFamilyTotal(allAds, familyBase) {
+function computeFamilyTotal(allAds, familyBase, filterRange) {
+  // filterRange = { start, end }(可選)— 若給,優先選 parent 在此期間內 active 的最後段
   const familyAds = allAds.filter((a) => familyBaseOf(a.ad_code) === familyBase);
   if (familyAds.length === 0) return 0;
   const hasPoquan = familyAds.some((a) => familyRoleOf(a.ad_code) === "破圈");
   if (hasPoquan) {
+    // 規則:
+    //   - parent 最後段(若有 filterRange,先選跟它 overlap 的最後段,否則 fallback 取全段最新)
+    //   - 其他 code 只有最後段跟 parent 最後段 overlap 時才算進總額
+    //   - 不 overlap = 已停運/已回流到 parent,parent 最後段金額已涵蓋整個合約
+    const inFilter = (a) =>
+      !filterRange ||
+      (a.start_date && a.end_date && a.start_date < filterRange.end && a.end_date > filterRange.start);
+    const parentAdsAll = familyAds.filter((a) =>
+      familyRoleOf(a.ad_code) === "一般" && a.start_date && a.end_date
+    );
+    if (parentAdsAll.length === 0) return 0;
+    const parentInFilter = parentAdsAll.filter(inFilter);
+    const parentPool = parentInFilter.length > 0 ? parentInFilter : parentAdsAll;
+    const parentLast = parentPool.slice().sort((a, b) =>
+      (b.end_date || "").localeCompare(a.end_date || ""))[0];
+    let total = Number(parentLast.amount_cny) || 0;
     const byCode = new Map();
     for (const a of familyAds) {
+      if (a.ad_code === parentLast.ad_code) continue;
+      if (!a.start_date || !a.end_date) continue;
+      const overlap = a.start_date < parentLast.end_date && a.end_date > parentLast.start_date;
+      if (!overlap) continue;
       const cur = byCode.get(a.ad_code);
-      if (!cur || a.end_date > cur.end_date) byCode.set(a.ad_code, a);
+      if (!cur || (a.end_date || "") > (cur.end_date || "")) byCode.set(a.ad_code, a);
     }
-    let total = 0;
     for (const a of byCode.values()) total += Number(a.amount_cny) || 0;
     return total;
   }
@@ -395,14 +424,47 @@ function renderFamily(fam, products) {
   let poquanRmb = 0;
   let generalRmb = 0;
   if (hasPoquan) {
-    // carve-out:每 code 取 last seg 一份(各段同 amount,不要重複加)
-    for (const g of members) {
-      const last = g.segs[g.segs.length - 1];
-      const amt = Number(last.amount_cny) || 0;
-      totalContractRmb += amt;
-      const role = familyRoleOf(g.code);
-      if (role === "破圈") poquanRmb += amt;
-      else if (role === "一般") generalRmb += amt;
+    // carve-out:以 parent 最後一段(優先在 filter 範圍內)當「當前合約期間」參考。
+    // t-variant 只在最後段跟 parent 最後段 overlap 時才加入,否則視為已停運/已回流到 parent。
+    const inFilter = (s) =>
+      (!filterStart && !filterEnd) ||
+      (s.start_date && s.end_date &&
+        (!filterEnd || s.start_date < filterEnd) &&
+        (!filterStart || s.end_date > filterStart));
+    const pickLatest = (segs) => {
+      const allValid = segs.filter((s) => s.start_date && s.end_date);
+      if (allValid.length === 0) return null;
+      const inRange = allValid.filter(inFilter);
+      const pool = inRange.length > 0 ? inRange : allValid;
+      return pool.slice().sort((a, b) => (b.end_date || "").localeCompare(a.end_date || ""))[0];
+    };
+    const parentMember = members.find((g) => familyRoleOf(g.code) === "一般");
+    const parentLast = parentMember ? pickLatest(parentMember.segs) : null;
+    if (parentLast) {
+      generalRmb = Number(parentLast.amount_cny) || 0;
+      totalContractRmb = generalRmb;
+      for (const g of members) {
+        if (g === parentMember) continue;
+        const myLast = pickLatest(g.segs);
+        if (!myLast) continue;
+        const overlap = myLast.start_date < parentLast.end_date && myLast.end_date > parentLast.start_date;
+        if (!overlap) continue;
+        const amt = Number(myLast.amount_cny) || 0;
+        totalContractRmb += amt;
+        const role = familyRoleOf(g.code);
+        if (role === "破圈") poquanRmb += amt;
+        else generalRmb += amt;
+      }
+    } else {
+      // 沒 parent member(理論上不會發生),fallback to 原本邏輯
+      for (const g of members) {
+        const last = g.segs[g.segs.length - 1];
+        const amt = Number(last.amount_cny) || 0;
+        totalContractRmb += amt;
+        const role = familyRoleOf(g.code);
+        if (role === "破圈") poquanRmb += amt;
+        else if (role === "一般") generalRmb += amt;
+      }
     }
   } else {
     // 兄弟廣告:sum 各「初始」採購,跳過「接收前段」(權重調整轉移)— 那是同位置續費,不算新採購
@@ -456,7 +518,35 @@ function renderFamily(fam, products) {
 
 function renderGroup(group, products, opts = {}) {
   const { code, segs } = group;
-  const latest = segs[segs.length - 1];
+  // 「最新一段」優先選 filter 內 active 的最新段(以 start_date 排序),
+  // filter 內沒有 active 段才 fallback 取全段最新
+  const inFilterForRender = (s) =>
+    (!filterStart && !filterEnd) ||
+    (s.start_date && s.end_date &&
+      (!filterEnd || s.start_date < filterEnd) &&
+      (!filterStart || s.end_date > filterStart));
+  const inFilterSegs = segs.filter(inFilterForRender);
+  const latest = inFilterSegs.length > 0
+    ? inFilterSegs[inFilterSegs.length - 1]
+    : segs[segs.length - 1];
+  // 不在 family 渲染情境(opts.familyScale 沒給)時,若 ad 是 t-variant,自動算「占整體合約 %」
+  // 讓使用者切到「愛威奶破圈」等產品分頁時,看到的權重就是占整體合約的比例,而不是 ad 自身 100%
+  if (opts.familyScale == null && latest.split_pair_id && latest.split_role === "t_variant") {
+    const allAdsForScale = getState().ads || [];
+    const parentOverlap = allAdsForScale
+      .filter((a) =>
+        a.split_pair_id === latest.split_pair_id && a.split_role === "parent" &&
+        a.start_date && a.end_date &&
+        a.start_date < latest.end_date && a.end_date > latest.start_date
+      )
+      .sort((a, b) => (b.end_date || "").localeCompare(a.end_date || ""))[0];
+    if (parentOverlap) {
+      const ownAmt = Number(latest.amount_cny) || 0;
+      const parentAmt = Number(parentOverlap.amount_cny) || 0;
+      const tot = ownAmt + parentAmt;
+      if (tot > 0) opts = { ...opts, familyScale: ownAmt / tot };
+    }
+  }
   let latestRmb = Number(latest.amount_cny) || 0;
   // 共購家族:如果 latest seg 期間家族其他 code 都不 overlap(例:st287t 已結束,5/10~5/22 只剩 st287),
   // 則此段一般部分等於整個合約金額,顯示家族總額而非 ad 自身 carve-out
@@ -477,7 +567,30 @@ function renderGroup(group, products, opts = {}) {
   const isMulti = segs.length > 1;
   const eliminated = segs.some((s) => s.eliminated);
   const role = familyRoleOf(code);
-  const roleBadge = role !== "一般" ? `<span class="seg-badge family-role-${role === "破圈" ? "poquan" : "secondary"}">${role}</span>` : "";
+  // 破圈/第二位 badge,t-variant 多顯示「← parent_code」幫使用者認出是從哪支廣告拆出
+  let parentHint = "";
+  if (latest.split_pair_id && latest.split_role === "t_variant") {
+    const allAdsForParent = getState().ads || [];
+    const parentAd = allAdsForParent.find((a) =>
+      a.split_pair_id === latest.split_pair_id && a.split_role === "parent"
+    );
+    if (parentAd?.ad_code) {
+      // 算當前段對「父+本身」的金額占比,讓使用者一眼看出占整體幾%
+      const parentLatest = allAdsForParent
+        .filter((a) => a.split_pair_id === latest.split_pair_id && a.split_role === "parent" &&
+          a.start_date && a.end_date && a.start_date < latest.end_date && a.end_date > latest.start_date)
+        .sort((a, b) => (b.end_date || "").localeCompare(a.end_date || ""))[0];
+      const tAmt = Number(latest.amount_cny) || 0;
+      const pAmt = Number(parentLatest?.amount_cny) || 0;
+      const total = tAmt + pAmt;
+      const pct = total > 0 ? Math.round(tAmt / total * 100) : 0;
+      const pctText = pct > 0 ? `(整體 ${pct}%)` : "";
+      parentHint = `<span class="ink-3" style="margin-left:4px;font-size:11px" title="由 ${esc(parentAd.ad_code)} 拆出破圈分流${pctText}">← ${esc(parentAd.ad_code)} ${pctText}</span>`;
+    }
+  }
+  const roleBadge = role !== "一般"
+    ? `<span class="seg-badge family-role-${role === "破圈" ? "poquan" : "secondary"}">${role}</span>${parentHint}`
+    : "";
   // 家族成員加 class,用 CSS 畫外框
   const familyMemberClass = opts.familyBase ? `family-member family-${esc(opts.familyBase)}` : "";
   const familyPosClass = opts.familyPos || "";  // family-first / family-mid / family-last
@@ -525,7 +638,15 @@ function renderWeightDetailRow(seg, products, opts = {}) {
     : productWeightEntries(seg, products);
   if (rawEntries.length <= 3) return "";
   const scale = opts.familyScale && opts.familyScale > 0 && opts.familyScale < 1 ? opts.familyScale : null;
-  const entries = scale ? scaleWithLargestRemainder(rawEntries, scale) : rawEntries;
+  const scaled = scale ? scaleWithLargestRemainder(rawEntries, scale) : rawEntries;
+  // 「完整權重產品」面板的顯示順序依 state.products 陣列(= Sheets「產品」分頁列順序),
+  // 不依權重大小排序;未列在 products 的 pid(不該發生)排到最後。
+  const orderMap = new Map((products || []).map((p, i) => [p.id, i]));
+  const entries = scaled.slice().sort((a, b) => {
+    const ai = orderMap.has(a.pid) ? orderMap.get(a.pid) : 999;
+    const bi = orderMap.has(b.pid) ? orderMap.get(b.pid) : 999;
+    return ai - bi || String(a.pid).localeCompare(String(b.pid));
+  });
   return `
     <tr class="weight-detail-row">
       <td></td>
@@ -1045,7 +1166,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
     <div id="weights"></div>
     <div class="weight-sum" id="weight-sum">合計：<span id="wsum-val">0</span>%</div>
 
-    ${!id && !renewFrom ? `
+    ${!id && !renewFrom && s.products.some((p) => p.is_poquan) ? `
     <div class="poquan-split-box mt-16">
       <label class="poquan-split-toggle">
         <input type="checkbox" id="f-poquan-split" />
@@ -1061,8 +1182,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
           <div class="field" style="flex:0 0 200px">
             <label>破圈分配給</label>
             <select id="f-poquan-target">
-              <option value="av9_poquan">愛威奶破圈</option>
-              <option value="jk_poquan">健康破圈</option>
+              ${s.products.filter((p) => p.is_poquan).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}
             </select>
           </div>
           <div class="field" style="flex:1">
@@ -1119,13 +1239,15 @@ function openEditor(id, renewFrom = null, prefill = null) {
   // 破圈分流 toggle + 預覽 (Note: 變數宣告 hoisted, 但其他 input handler 之後才寫的 updatePoquanPreview() 呼叫須等到下方定義後才會生效)
   const poquanSplit = q("#f-poquan-split");
   const poquanDetail = q("#poquan-split-detail");
+  const poquanProducts = s.products.filter((p) => p.is_poquan);
+  const poquanNameOf = (pid) => s.products.find((x) => x.id === pid)?.name || pid;
   const updatePoquanPreview = () => {
     if (!poquanSplit || !poquanSplit.checked) return;
     const cny = Number(q("#f-cny").value) || 0;
     const pct = Number(q("#f-poquan-pct").value) || 0;
     const targetSel = q("#f-poquan-target");
-    const target = targetSel ? targetSel.value : "av9_poquan";
-    const targetName = target === "jk_poquan" ? "健康破圈" : "愛威奶破圈";
+    const target = targetSel ? targetSel.value : (poquanProducts[0]?.id || "");
+    const targetName = poquanNameOf(target);
     const codeBase = q("#f-code").value.trim();
     const normalCny = Math.round(cny * (100 - pct) / 100);
     const poquanCny = Math.round(cny * pct / 100);
@@ -1168,8 +1290,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
     poquanSplit.onchange = () => {
       poquanDetail.style.display = poquanSplit.checked ? "block" : "none";
       if (poquanSplit.checked) {
-        delete weights.av9_poquan;
-        delete weights.jk_poquan;
+        for (const pp of poquanProducts) delete weights[pp.id];
       }
       renderWeights();
       updatePoquanPreview();
@@ -1230,7 +1351,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const host = q("#weights");
     const splitOn = isSplitOn();
     const productsToShow = splitOn
-      ? s.products.filter((p) => p.id !== "av9_poquan" && p.id !== "jk_poquan")
+      ? s.products.filter((p) => !p.is_poquan)
       : s.products;
     host.innerHTML = productsToShow.map((p) => `
       <div class="weight-grid">
@@ -1412,11 +1533,17 @@ function openEditor(id, renewFrom = null, prefill = null) {
       const ad_snapshots = id ? captureUndoSnapshot(st, [id]) : [];
       const added_ad_ids = [];
       const newAdId = uid("ad");
+      // 破圈分流配對 id(只在新建 + 勾選 split 時生成,parent + t-variant 共用)
+      const pairId = poquanSplitChecked ? `pair_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}` : null;
       if (id) {
         const idx = st.ads.findIndex((x) => x.id === id);
         st.ads[idx] = { ...st.ads[idx], ...patch };
       } else {
-        st.ads.push({ id: newAdId, ...patch });
+        st.ads.push({
+          id: newAdId,
+          ...patch,
+          ...(pairId ? { split_pair_id: pairId, split_role: "parent" } : {}),
+        });
         added_ad_ids.push(newAdId);
       }
       // 同時建立破圈分流的 stXXXt 廣告
@@ -1445,6 +1572,8 @@ function openEditor(id, renewFrom = null, prefill = null) {
           lock_perf_adjust: false,
           lock_full: false,
           eliminated: false,
+          split_pair_id: pairId,
+          split_role: "t_variant",
         });
         added_ad_ids.push(poquanAdId);
       }
@@ -1454,7 +1583,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
           created_at: nowTaipeiStamp(),
           action_type: id ? "手動改權重" : "新增廣告",
           description: buildTodoDesc(patch, weights, st.products, id ? origWeights : null)
-            + (poquanSplitChecked ? `\n\n含破圈分流:${code}t / 占比 ${poquanSplitPct}% / ${poquanCny.toLocaleString()} RMB / ${poquanTarget === "jk_poquan" ? "健康破圈" : "愛威奶破圈"} 100%` : ""),
+            + (poquanSplitChecked ? `\n\n含破圈分流:${code}t / 占比 ${poquanSplitPct}% / ${poquanCny.toLocaleString()} RMB / ${(st.products.find((p) => p.id === poquanTarget)?.name || poquanTarget)} 100%` : ""),
           status: "pending",
           undo_payload: { ad_snapshots, added_ad_ids },
         });
@@ -1639,6 +1768,12 @@ function openWeightAdjust(seg) {
       if (i >= 0) st.ads[i] = result.closed;
       st.ads.push(...result.segments);
       const added_ad_ids = result.segments.map((s) => s.id);
+      // 若屬破圈分流配對,自動對 linked 廣告同步重平衡(parent ↔ t-variant 金額)
+      for (const newSeg of result.segments) {
+        const inAds = st.ads.find((a) => a.id === newSeg.id);
+        const rebal = inAds ? rebalanceSplitPair(st, inAds) : null;
+        if (rebal?.newLinkedSegId) added_ad_ids.push(rebal.newLinkedSegId);
+      }
       st.todos.push({
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
