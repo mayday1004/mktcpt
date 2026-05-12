@@ -1167,6 +1167,11 @@ function openEditor(id, renewFrom = null, prefill = null) {
   if (poquanSplit && poquanDetail) {
     poquanSplit.onchange = () => {
       poquanDetail.style.display = poquanSplit.checked ? "block" : "none";
+      if (poquanSplit.checked) {
+        delete weights.av9_poquan;
+        delete weights.jk_poquan;
+      }
+      renderWeights();
       updatePoquanPreview();
     };
     const pctInput = q("#f-poquan-pct");
@@ -1220,9 +1225,14 @@ function openEditor(id, renewFrom = null, prefill = null) {
   };
 
   const weights = { ...(a.weights || {}) };
+  const isSplitOn = () => !!(poquanSplit && poquanSplit.checked);
   const renderWeights = () => {
     const host = q("#weights");
-    host.innerHTML = s.products.map((p) => `
+    const splitOn = isSplitOn();
+    const productsToShow = splitOn
+      ? s.products.filter((p) => p.id !== "av9_poquan" && p.id !== "jk_poquan")
+      : s.products;
+    host.innerHTML = productsToShow.map((p) => `
       <div class="weight-grid">
         <div>${esc(p.name)} <span class="ink-3 mono" style="font-size:11px">${esc(p.id)}</span></div>
         <input type="number" min="0" max="100" step="1" data-pid="${esc(p.id)}" value="${weights[p.id] ?? ""}" placeholder="0" />
@@ -1242,15 +1252,17 @@ function openEditor(id, renewFrom = null, prefill = null) {
   const recalcSum = () => {
     const sum = Object.values(weights).reduce((x, y) => x + Number(y || 0), 0);
     const sumEl = q("#weight-sum");
+    const splitOn = isSplitOn();
     sumEl.classList.toggle("ok", sum === 100);
     sumEl.classList.toggle("bad", sum > 100);
     sumEl.classList.toggle("warn", sum > 0 && sum < 100);
     let hint;
     if (sum === 0) hint = "（尚未填）";
-    else if (sum === 100) hint = "✓ 共購 100%";
+    else if (sum === 100) hint = splitOn ? "✓ 一般部分 100%" : "✓ 共購 100%";
     else if (sum < 100) hint = `還需 ${100 - sum}% 才到 100`;
     else hint = `已超過 100%（${sum - 100}%）`;
-    sumEl.innerHTML = `合計：<strong>${sum}%</strong> <span class="ink-3">${hint}</span>`;
+    const label = splitOn ? "一般部分合計" : "合計";
+    sumEl.innerHTML = `${label}：<strong>${sum}%</strong> <span class="ink-3">${hint}</span>`;
   };
 
   ["f-cny","f-rate","f-days","f-start","f-end","f-amount-orig","f-cny-rate"].forEach((id2) => {
