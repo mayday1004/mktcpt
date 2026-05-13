@@ -1842,56 +1842,96 @@ function openWeightAdjust(seg) {
   };
 }
 
-// 事後拆出破圈分流:把現有單支廣告(stXXX)在生效日後拆成
-//   parent (stXXX, 維持原權重 × (100−pct)%) + t-variant (stXXXt, 100% 破圈產品 × pct%)
+// 事後拆出破圈/一般分流配對(雙向):
+//   - source 為一般 100% → parent 保留原 weights,新建 t-variant = {破圈目標: 100}(forward)
+//   - source 為破圈 100% → parent = {一般目標: 100},新建 t-variant 沿用 source 原權重(reverse)
+//   - source 混合 → 不支援,提示用「權重調整」
 // 兩支共用 split_pair_id,日後修改任一支會自動連動另一支重平衡。
 function openPoquanSplit(seg) {
   const s = getState();
+  const isPoquanProd = (pid) => !!(s.products || []).find((p) => p.id === pid)?.is_poquan;
   const poquanProducts = (s.products || []).filter((p) => p.is_poquan);
-  if (poquanProducts.length === 0) {
-    toast("尚未建立任何破圈產品", "bad");
+  const normalProducts = (s.products || []).filter((p) => !p.is_poquan);
+
+  // 偵測 source 方向
+  const sourceWeights = seg.weights || {};
+  const sourceKeys = Object.keys(sourceWeights).filter((k) => Number(sourceWeights[k]) > 0);
+  if (sourceKeys.length === 0) {
+    toast("此廣告權重為空,無法拆分", "bad");
     return;
   }
+  const allPoquan = sourceKeys.every((pid) => isPoquanProd(pid));
+  const allNormal = sourceKeys.every((pid) => !isPoquanProd(pid));
+  if (!allPoquan && !allNormal) {
+    toast("此廣告已混合一般/破圈,請改用「權重調整」", "bad");
+    return;
+  }
+  const direction = allNormal ? "forward" : "reverse";
+  const targetSide = direction === "forward" ? "破圈" : "一般";
+  const oppositeSide = direction === "forward" ? "一般" : "破圈";
+  const targetProducts = direction === "forward" ? poquanProducts : normalProducts;
+  if (targetProducts.length === 0) {
+    toast(direction === "forward" ? "尚未建立任何破圈產品" : "沒有可選的一般產品", "bad");
+    return;
+  }
+
   const today = todayTaipei();
-  // 預設生效日:今天若落在原段內就用今天,否則用 start_date 隔天
   const defEff = (today > seg.start_date && today < seg.end_date)
     ? today
     : addDays(seg.start_date, 1);
 
-  // 預設選跟 ad 內現有產品同源的破圈(例如 ad 有 AV9 → 預設 av9_poquan)
-  const currentPids = new Set(Object.keys(seg.weights || {}));
-  let defaultPoquanId = poquanProducts[0].id;
-  for (const pq of poquanProducts) {
-    if (pq.poquan_of && currentPids.has(pq.poquan_of)) {
-      defaultPoquanId = pq.id;
-      break;
+  // 預設目標:用 parent_product_id 找對應產品
+  //   forward: source 有 AV9 → 預設選 av9_poquan(parent_product_id === AV9)
+  //   reverse: source 有 av9_poquan → 預設選 AV9(= source pid 的 parent_product_id)
+  const currentPids = new Set(sourceKeys);
+  let defaultTargetId = targetProducts[0].id;
+  if (direction === "forward") {
+    for (const pq of poquanProducts) {
+      if (pq.parent_product_id && currentPids.has(pq.parent_product_id)) {
+        defaultTargetId = pq.id;
+        break;
+      }
+    }
+  } else {
+    for (const sourcePid of sourceKeys) {
+      const sourceProd = s.products.find((p) => p.id === sourcePid);
+      if (sourceProd?.parent_product_id) {
+        const np = normalProducts.find((p) => p.id === sourceProd.parent_product_id);
+        if (np) { defaultTargetId = np.id; break; }
+      }
     }
   }
 
   const html = `
-    <h2>＋ 拆出破圈分流：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
+    <h2>＋ 拆出${targetSide}分流：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
     <p class="ink-2" style="font-size:13px">
-      系統會把這段在生效日後切成兩支:<br>
-      ・<strong>${esc(seg.ad_code)}</strong> 維持原權重、金額 = 原 × (100 − 占比)%<br>
-      ・<strong>${esc(seg.ad_code)}t</strong>(新建)目標破圈產品 100%、金額 = 原 × 占比%<br>
+      偵測到此廣告目前是「<strong>${oppositeSide} 100%</strong>」,系統會在生效日後拆成兩支:<br>
+      ${direction === "forward" ? `
+        ・<strong>${esc(seg.ad_code)}</strong>(一般 parent)保留原權重、金額 = 原 × (100 − 占比)%<br>
+        ・<strong>${esc(seg.ad_code)}t</strong>(破圈 t-variant,新建)目標破圈 100%、金額 = 原 × 占比%
+      ` : `
+        ・<strong>${esc(seg.ad_code)}</strong>(一般 parent)權重改為目標一般 100%、金額 = 原 × (100 − 占比)%<br>
+        ・<strong>${esc(seg.ad_code)}t</strong>(破圈 t-variant,新建)沿用原權重、金額 = 原 × 占比%
+      `}<br>
       兩支共用 split_pair_id,日後改一支系統會自動重平衡另一支。
     </p>
     <div class="field"><label>生效日(新段起日)</label><input id="eff" type="date" value="${defEff}" min="${seg.start_date}" max="${seg.end_date}" /></div>
     <div class="field-row" style="margin-top:8px">
-      <div class="field" style="flex:0 0 130px">
-        <label>破圈占比 (%)</label>
-        <input id="pct" type="number" min="1" max="99" step="1" value="10" />
+      <div class="field" style="flex:0 0 140px">
+        <label>${targetSide}占比 (%)</label>
+        <input id="pct" type="number" min="1" max="99" step="1" value="${direction === "forward" ? 10 : 50}" />
+        <div class="hint" style="font-size:11px">${direction === "forward" ? "破圈側拿幾%(剩下給一般)" : "一般側拿幾%(剩下給破圈)"}</div>
       </div>
       <div class="field" style="flex:1">
-        <label>破圈分配給</label>
+        <label>${targetSide}分配給</label>
         <select id="target">
-          ${poquanProducts.map((p) => `<option value="${esc(p.id)}" ${p.id === defaultPoquanId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+          ${targetProducts.map((p) => `<option value="${esc(p.id)}" ${p.id === defaultTargetId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
         </select>
       </div>
     </div>
     <div class="field mt-16">
       <label>備註(選填)</label>
-      <textarea id="notes" rows="2" style="width:100%;resize:vertical" placeholder="例:5/15 起加 10% 破圈分流"></textarea>
+      <textarea id="notes" rows="2" style="width:100%;resize:vertical" placeholder="例:5/15 起新增 10% ${targetSide}分流"></textarea>
     </div>
     <div class="modal-actions">
       <button id="cancel">取消</button>
@@ -1908,9 +1948,23 @@ function openPoquanSplit(seg) {
     const target = q("#target").value;
     const notes = q("#notes").value.trim();
     if (!eff) { toast("請選生效日", "bad"); return; }
+
+    let parentWeights, tVariantWeights, tVariantPct;
+    if (direction === "forward") {
+      // source = normal: parent 保留 source.weights,t-variant = {破圈: 100}
+      parentWeights = { ...sourceWeights };
+      tVariantWeights = { [target]: 100 };
+      tVariantPct = pct;
+    } else {
+      // source = poquan: parent = {一般: 100},t-variant 沿用 source.weights
+      parentWeights = { [target]: 100 };
+      tVariantWeights = { ...sourceWeights };
+      tVariantPct = 100 - pct;  // 使用者填的是「一般占比」,t-variant 拿 100 − 一般
+    }
+
     let result;
     try {
-      result = buildPoquanSplit(seg, eff, pct, target, notes);
+      result = buildPoquanSplit(seg, eff, { tVariantPct, parentWeights, tVariantWeights, notes });
     } catch (e) {
       toast(e.message, "bad");
       return;
@@ -1926,11 +1980,11 @@ function openPoquanSplit(seg) {
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
         action_type: "手動改權重",
-        description: `${seg.ad_code} 事後拆出破圈分流:${eff} 起拆 ${pct}% 給 ${targetName}(新建 ${seg.ad_code}t)`,
+        description: `${seg.ad_code} 事後拆出${targetSide}分流:${eff} 起拆 ${pct}% 給 ${targetName}(新建 ${seg.ad_code}t)`,
         status: "pending",
         undo_payload: { ad_snapshots, added_ad_ids },
       });
-    }, `事後拆出破圈分流: ${seg.ad_code} → +${seg.ad_code}t`);
+    }, `事後拆出${targetSide}分流: ${seg.ad_code} → +${seg.ad_code}t`);
     modal.close();
     toast(`已拆分:${seg.ad_code} + ${seg.ad_code}t,已建立待辦`, "ok");
   };
@@ -1949,20 +2003,35 @@ function openMoreMenu(seg) {
   // 只支援「單一產品 100%」的 ad 做轉移(常見場景)
   const wKeys = Object.keys(seg.weights || {});
   const isSingle100 = wKeys.length === 1 && Number(seg.weights[wKeys[0]]) === 100;
-  // 事後拆出破圈分流:不是已配對 ad + 有破圈產品可選
+  // 事後拆出破圈/一般分流配對(雙向):偵測 source 方向決定按鈕 label
+  const isPoquanProd = (pid) => !!(s.products || []).find((p) => p.id === pid)?.is_poquan;
+  const wKeysPos = wKeys.filter((k) => Number(seg.weights[k]) > 0);
+  const allPoquan = wKeysPos.length > 0 && wKeysPos.every(isPoquanProd);
+  const allNormal = wKeysPos.length > 0 && wKeysPos.every((k) => !isPoquanProd(k));
   const hasPoquanProducts = (s.products || []).some((p) => p.is_poquan);
-  const canPoquanSplit = !seg.split_pair_id && hasPoquanProducts;
-  const alreadyPaired = !!seg.split_pair_id;
-  const poquanSplitTitle = alreadyPaired
-    ? "此廣告已是破圈分流配對,不需再拆"
-    : (!hasPoquanProducts ? "尚未在「產品」頁建立任何破圈產品" : "");
+  const hasNormalProducts = (s.products || []).some((p) => !p.is_poquan);
+  let canPoquanSplit = false;
+  let poquanSplitLabel = "＋ 拆出破圈分流";
+  let poquanSplitTitle = "";
+  if (seg.split_pair_id) {
+    poquanSplitTitle = "此廣告已是破圈分流配對,不需再拆";
+  } else if (!allPoquan && !allNormal) {
+    poquanSplitTitle = wKeysPos.length === 0 ? "權重為空" : "已混合一般/破圈,請用「權重調整」處理";
+  } else if (allNormal && !hasPoquanProducts) {
+    poquanSplitTitle = "尚未在「產品」頁建立任何破圈產品";
+  } else if (allPoquan && !hasNormalProducts) {
+    poquanSplitTitle = "沒有可選的一般產品";
+  } else {
+    canPoquanSplit = true;
+    poquanSplitLabel = allPoquan ? "＋ 拆出一般分流" : "＋ 拆出破圈分流";
+  }
   const html = `
     <h2>更多動作：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
     <p class="ink-2" style="font-size:13px">選擇要對此段執行的動作。</p>
     <div class="more-actions">
       <button data-pick="weight">權重調整</button>
       <button data-pick="transfer" ${isSingle100 ? "" : 'disabled title="只有「單一產品 100%」的廣告能轉移"'}>↪ 轉移到新代碼</button>
-      <button data-pick="poquan-split" ${canPoquanSplit ? "" : `disabled title="${esc(poquanSplitTitle)}"`}>＋ 拆出破圈分流</button>
+      <button data-pick="poquan-split" ${canPoquanSplit ? "" : `disabled title="${esc(poquanSplitTitle)}"`}>${poquanSplitLabel}</button>
     </div>
     <h3 style="margin-top:16px;font-size:13px">自動建議調整的鎖定設定</h3>
     <p class="ink-3" style="font-size:11px;margin:0 0 8px">手動編輯權重永遠可用,這個設定只影響系統自動建議。</p>
