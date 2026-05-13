@@ -31,6 +31,11 @@ let expandedAds = new Set();
 let spendScenario = "renewal";
 let autoAgreedSignature = "";
 
+// 「以哪一天為基準」— 整頁演算法把這天當作「今天」。null = 用真實今天。
+// 用途:提前模擬未來日的補缺口 / 權重調整建議。離開頁面後不持久化。
+let basisDate = null;
+function getBasisDate() { return basisDate || todayTaipei(); }
+
 export function render(root) {
   const s = getState();
   const ym = s.settings.current_month;
@@ -101,8 +106,8 @@ export function render(root) {
 
   // 廣告調整入口(CLAUDE.md §5.8 v2):當有 shortfall 或 APP 月攤提少花 > 6 萬時顯示一鍵入口
   // 用 scenario.state(已套用續費 projection)— 跟 pivot baseline 對齊,只剩真實缺口才會出現
-  const shortfalls = detectShortfalls(scenario.state, todayTaipei());
-  const underspends = detectAppMonthlyUnderspend(scenario.state, todayTaipei());
+  const shortfalls = detectShortfalls(scenario.state, getBasisDate());
+  const underspends = detectAppMonthlyUnderspend(scenario.state, getBasisDate());
   const totalIssues = shortfalls.length + underspends.length;
   const giftDayBanner = totalIssues > 0 ? `
     <div class="card" style="border-left:3px solid var(--warn);background:#fffbf0;margin-bottom:12px">
@@ -121,6 +126,11 @@ export function render(root) {
       <div>
         <h1>權重調整</h1>
         <div class="desc">以廣告為主：左欄原權重、右欄系統建議；可手動覆寫或鎖定整支廣告不調。<br>建議有兩道安全限制:未來日花費高峰 ≤ 建議日花費上限(破圈產品跳過) + 月攤提合計 ≤ 月預算(破圈/小島/APP 一律強制)。月攤提 = 過去實際攤提 + 未來依權重計算的金額。</div>
+      </div>
+      <div class="field" style="min-width:180px;margin-left:auto">
+        <label style="font-size:11px;color:var(--ink-3)">以哪一天為基準計算${basisDate ? ` <span class="pill warn" style="font-size:9px;margin-left:6px">模擬中</span>` : ""}</label>
+        <input id="pa-basis-date" type="date" value="${getBasisDate()}" />
+        <div class="hint" style="font-size:11px">${basisDate ? `<button class="link-btn" id="pa-basis-reset">→ 回到今天</button>` : "預設今天;改成未來日可模擬到時的調整建議"}</div>
       </div>
     </div>
 
@@ -165,7 +175,7 @@ export function render(root) {
 }
 
 function isApplicableChange(entry, newWeightsByAd) {
-  const today = todayTaipei();
+  const today = getBasisDate();
   if (!entry?.ad) return false;
   if (entry.ad.lock_perf_adjust && !entry.transferTarget) return false;
   if (!entry.ad.end_date || entry.ad.end_date <= today) return false;
@@ -436,7 +446,7 @@ function scenarioFor(state, ym) {
   if (spendScenario !== "renewal") {
     return { state, virtualRenewals: [], excludedPoorPerf: [] };
   }
-  const projection = projectAdsWithRenewals(state, ym, { fromDate: todayTaipei(), excludePoorPerf: true });
+  const projection = projectAdsWithRenewals(state, ym, { fromDate: getBasisDate(), excludePoorPerf: true });
   return {
     state: { ...state, ads: projection.ads },
     virtualRenewals: projection.virtualRenewals,
@@ -573,7 +583,7 @@ function renderImpactSummary(impacts) {
 // 紅底 = 該日超出建議花費上限;橘底 = 低於下限。
 function renderImpactDailyGrid(state, ym, effectiveWeightsByAd, scenario = null) {
   if (!state || !ym) return "";
-  const today = todayTaipei();
+  const today = getBasisDate();
 
   // 把 ads 的 weights 換成 effective(只 patch 有勾選的)
   // ★ 權重變更只影響今日及未來 — 對 active 段在 today 切兩半:過去用原 weights、未來用新 weights
@@ -722,7 +732,7 @@ function renderImpactDailyGrid(state, ym, effectiveWeightsByAd, scenario = null)
 // 計算「會被批量送出」的廣告筆數：使用者勾選同意 + 沒過期 + 不是淘汰建議 + 權重真有變動
 // 🔒 鎖權重的 single-product 100% 廣告可套用「整桶搬」建議。
 function countAgreedChanges(pivot, newWeightsByAd) {
-  const today = todayTaipei();
+  const today = getBasisDate();
   let n = 0;
   for (const e of pivot) {
     if (!agreedAdIds.has(e.ad.id)) continue;
@@ -750,7 +760,7 @@ function renderAdCard(entry, state, newWeightsByAd, productStatus) {
   const lockBtn = `<button class="lock-btn ${locked ? "locked" : ""}" data-lock-adid="${esc(ad.id)}" title="${esc(lockTitleMap[lockState])}">${lockIconMap[lockState]}</button>`;
 
   // 套用勾選框邏輯
-  const today = todayTaipei();
+  const today = getBasisDate();
   const isPast = !ad.end_date || ad.end_date <= today;
   const noChange = sameWeights(oldWeights || {}, (newWeightsByAd && newWeightsByAd[ad.id]) || {});
   const canApplyLockedTransfer = !!transferTarget && lockState === "weight";
@@ -1024,6 +1034,20 @@ function bindHandlers(root, pivot, newWeightsByAd) {
   const gdBtn = root.querySelector("#pa-gd-fix-open");
   if (gdBtn) gdBtn.onclick = () => openGiftDayFixModal(() => render(root));
 
+  // 基準日期切換器:改 input → 改 basisDate → re-render;basisDate = todayTaipei() 時當作回到今天
+  const basisInput = root.querySelector("#pa-basis-date");
+  if (basisInput) {
+    basisInput.onchange = () => {
+      const v = basisInput.value;
+      basisDate = (v && v !== todayTaipei()) ? v : null;
+      render(root);
+    };
+  }
+  const basisReset = root.querySelector("#pa-basis-reset");
+  if (basisReset) {
+    basisReset.onclick = () => { basisDate = null; render(root); };
+  }
+
   root.querySelectorAll("[data-filter]").forEach((el) => {
     el.onclick = () => { filterMode = el.dataset.filter; render(root); };
   });
@@ -1095,7 +1119,7 @@ function bindHandlers(root, pivot, newWeightsByAd) {
   // 全選有變動 / 全不選
   const agreeAll = root.querySelector("#btn-agree-all-changed");
   if (agreeAll) agreeAll.onclick = () => {
-    const today = todayTaipei();
+    const today = getBasisDate();
     for (const e of pivot) {
       if (e.ad.lock_perf_adjust && !e.transferTarget) continue;
       if (!e.ad.end_date || e.ad.end_date <= today) continue;
@@ -1158,7 +1182,7 @@ async function eliminateAd(adId, root) {
 }
 
 async function applyAll(pivot, newWeightsByAd, root) {
-  const today = todayTaipei();
+  const today = getBasisDate();
   const changes = [];
   const eliminateCount = pivot.filter((e) => e.suggestEliminate).length;
   for (const e of pivot) {

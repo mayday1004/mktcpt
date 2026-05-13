@@ -82,6 +82,47 @@ body {
 .undo-btn:hover:not(:disabled) { background: #353a44; color: #fff; }
 .undo-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* ============ Sidebar collapse toggle ============ */
+.sidebar-toggle {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: #2a2e38;
+  border: 1px solid #3a3e48;
+  border-radius: 5px;
+  color: #c8cdd7;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.sidebar-toggle:hover { background: #353a44; color: #fff; }
+
+.sidebar.collapsed { width: 56px; }
+.sidebar.collapsed .brand-title,
+.sidebar.collapsed .brand-sub,
+.sidebar.collapsed .nav-label,
+.sidebar.collapsed .nav-badge,
+.sidebar.collapsed .sidebar-footer,
+.sidebar.collapsed .sidebar-toggle { /* keep toggle visible — override below */ }
+.sidebar.collapsed .brand-title,
+.sidebar.collapsed .brand-sub,
+.sidebar.collapsed .nav-label,
+.sidebar.collapsed .nav-badge,
+.sidebar.collapsed .sidebar-footer {
+  display: none;
+}
+.sidebar.collapsed .brand { padding: 0; border-bottom: none; height: 50px; }
+.sidebar.collapsed nav { padding: 12px 6px; }
+.sidebar.collapsed nav a {
+  justify-content: center;
+  padding: 10px 6px;
+}
+.sidebar.collapsed .sidebar-toggle { right: 14px; }
+body:has(.sidebar.collapsed) main { margin-left: 56px; }
+
 /* ============ Main ============ */
 main {
   padding: 28px 32px 80px;

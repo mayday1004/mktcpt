@@ -9,6 +9,7 @@ import * as PerfReport from "./views/perf-report.js";
 import * as Reverse from "./views/reverse.js";
 import * as Todos from "./views/todos.js";
 import * as Settings from "./views/settings.js";
+import * as ShortUrls from "./views/short-urls.js";
 
 const views = {
   dashboard: Dashboard,
@@ -17,6 +18,7 @@ const views = {
   "perf-adjust": PerfAdjust,
   "perf-report": PerfReport,
   reverse: Reverse,
+  "short-urls": ShortUrls,
   todos: Todos,
   settings: Settings,
 };
@@ -89,6 +91,7 @@ window.addEventListener("DOMContentLoaded", () => {
   route();
   bindUndoBtn();
   bindKeyboard();
+  bindSidebarToggle();
   // 啟動 row-level LWW 同步：載入時跑一次、state 變動 debounce 5 秒、每 30 秒背景 poll
   initSyncOrchestrator();
 });
@@ -107,6 +110,18 @@ function bindUndoBtn() {
     } else {
       window.toast("沒有可復原的操作", "");
     }
+  };
+}
+
+const SIDEBAR_KEY = "buyads_sidebar_collapsed";
+function bindSidebarToggle() {
+  const aside = document.querySelector(".sidebar");
+  const btn = document.getElementById("sidebar-toggle");
+  if (!aside || !btn) return;
+  if (localStorage.getItem(SIDEBAR_KEY) === "1") aside.classList.add("collapsed");
+  btn.onclick = () => {
+    aside.classList.toggle("collapsed");
+    localStorage.setItem(SIDEBAR_KEY, aside.classList.contains("collapsed") ? "1" : "0");
   };
 }
 

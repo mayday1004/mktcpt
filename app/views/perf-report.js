@@ -204,8 +204,13 @@ function renderProductPicker(s, sel) {
 }
 
 function countByProduct(s) {
+  // 同 (ad_code, product_id) 多週只算一次 — 避免一次匯入兩週導致數量翻倍
+  const seen = new Set();
   const out = {};
   for (const r of s.performance_data || []) {
+    const key = `${r.product_id || ""}|${r.ad_code || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out[r.product_id] = (out[r.product_id] || 0) + 1;
   }
   return out;
@@ -217,13 +222,21 @@ function renderProductReport(s, product) {
   const customMetrics = cfg.custom_metrics;
   const targets = product.performance_targets || [];
 
-  const perfData = (s.performance_data || [])
-    .filter((r) => r.product_id === product.id)
-    .sort((a, b) => {
-      const k1 = (a.period_end || "") + (a.ad_code || "");
-      const k2 = (b.period_end || "") + (b.ad_code || "");
-      return k1 < k2 ? 1 : k1 > k2 ? -1 : 0;  // 最新在上
-    });
+  // 同 (ad_code) 多週時只保留 period_end 最大那筆 — 避免一次匯入多週導致同產品列出兩倍
+  const allForProduct = (s.performance_data || []).filter((r) => r.product_id === product.id);
+  const latestByCode = new Map();
+  for (const r of allForProduct) {
+    const code = r.ad_code || "";
+    const cur = latestByCode.get(code);
+    if (!cur || (r.period_end || "") > (cur.period_end || "")) {
+      latestByCode.set(code, r);
+    }
+  }
+  const perfData = [...latestByCode.values()].sort((a, b) => {
+    const k1 = (a.period_end || "") + (a.ad_code || "");
+    const k2 = (b.period_end || "") + (b.ad_code || "");
+    return k1 < k2 ? 1 : k1 > k2 ? -1 : 0;  // 最新在上
+  });
 
   // 報表額外變數：當月支出/收入匯率
   const ym = s.settings.current_month;
