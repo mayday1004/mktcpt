@@ -1424,16 +1424,20 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const sum = Object.values(weights).reduce((x, y) => x + Number(y || 0), 0);
     const sumEl = q("#weight-sum");
     const splitOn = isSplitOn();
-    sumEl.classList.toggle("ok", sum === 100);
-    sumEl.classList.toggle("bad", sum > 100);
-    sumEl.classList.toggle("warn", sum > 0 && sum < 100);
+    // 2 位小數的權重(由「依日期反向建議多選」帶入)可能因 IEEE 754 造成 99.999... / 100.000001
+    // 用 0.01 容差判定 = 100
+    const isExactly100 = Math.abs(sum - 100) < 0.01;
+    sumEl.classList.toggle("ok", isExactly100);
+    sumEl.classList.toggle("bad", sum - 100 > 0.01);
+    sumEl.classList.toggle("warn", sum > 0 && 100 - sum > 0.01);
+    const fmt = (n) => (Math.abs(n - Math.round(n)) < 0.005 ? String(Math.round(n)) : n.toFixed(2));
     let hint;
     if (sum === 0) hint = "（尚未填）";
-    else if (sum === 100) hint = splitOn ? "✓ 一般部分 100%" : "✓ 共購 100%";
-    else if (sum < 100) hint = `還需 ${100 - sum}% 才到 100`;
-    else hint = `已超過 100%（${sum - 100}%）`;
+    else if (isExactly100) hint = splitOn ? "✓ 一般部分 100%" : "✓ 共購 100%";
+    else if (sum < 100) hint = `還需 ${fmt(100 - sum)}% 才到 100`;
+    else hint = `已超過 100%（${fmt(sum - 100)}%）`;
     const label = splitOn ? "一般部分合計" : "合計";
-    sumEl.innerHTML = `${label}：<strong>${sum}%</strong> <span class="ink-3">${hint}</span>`;
+    sumEl.innerHTML = `${label}：<strong>${fmt(sum)}%</strong> <span class="ink-3">${hint}</span>`;
   };
 
   ["f-cny","f-rate","f-days","f-start","f-end","f-amount-orig","f-cny-rate"].forEach((id2) => {
@@ -1525,10 +1529,10 @@ function openEditor(id, renewFrom = null, prefill = null) {
       if (weights[poquanTarget]) {
         toast("破圈分配目標已在權重中,請從上方權重移除", "bad"); return;
       }
-      // 確保 weights 加總 = 100(一般部分)
+      // 確保 weights 加總 = 100(一般部分);2 位小數權重允許 0.01 容差
       const wSum = Object.values(weights).reduce((sum, v) => sum + (Number(v) || 0), 0);
-      if (wSum !== 100) {
-        toast(`一般部分權重合計 ${wSum}% 不是 100%`, "bad"); return;
+      if (Math.abs(wSum - 100) > 0.01) {
+        toast(`一般部分權重合計 ${wSum.toFixed(2)}% 不是 100%`, "bad"); return;
       }
     }
 

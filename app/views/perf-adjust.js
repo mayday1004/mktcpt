@@ -490,11 +490,11 @@ function renderImpactSummary(impacts) {
       evalCell = `<span class="pill" style="background:#eef1f6;color:var(--ink-3);font-size:11px">不檢查(破圈)</span>`;
     } else if (band.upper <= 0 || budget == null) {
       evalCell = `<span class="pill" style="background:#eef1f6;color:var(--ink-3);font-size:11px">未設預算</span>`;
-    } else if (newDailyPeak > band.upper) {
+    } else if (Math.round(newDailyPeak) > Math.round(band.upper)) {
       const over = newDailyPeak - band.upper;
       evalCell = `<span class="pill bad" style="font-size:11px">✗ 超出上限 +${Math.round(over).toLocaleString()}</span>
         <div class="ink-3" style="font-size:10px;margin-top:3px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;
-    } else if (newDailyPeak < band.lower && newDailyPeak > 0) {
+    } else if (Math.round(newDailyPeak) < Math.round(band.lower) && newDailyPeak > 0) {
       const under = band.lower - newDailyPeak;
       evalCell = `<span class="pill warn" style="font-size:11px">⚠ 低於下限 -${Math.round(under).toLocaleString()}</span>
         <div class="ink-3" style="font-size:10px;margin-top:3px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;

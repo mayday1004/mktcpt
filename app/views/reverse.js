@@ -1,5 +1,5 @@
 import { getState } from "../state.js";
-import { suggestForDate } from "../domain/reverse.js";
+import { suggestForDate, computeOverflowRangesForProduct } from "../domain/reverse.js";
 import { suggestWeights } from "../domain/suggest.js";
 import { dailySpendGrid, dailySpendForAd } from "../domain/spending.js";
 import { addDays, monthOf, monthEnd, daysOfMonth, todayTaipei } from "../lib/dates.js";
@@ -158,7 +158,7 @@ function renderDateMode(s, ym) {
   } else if (selected.length === 1) {
     cardHtml = renderDateCardLarge(selected[0], amortizeDays, rate);
   } else {
-    cardHtml = renderDateCombinedCard(selected, amortizeDays, rate);
+    cardHtml = renderDateCombinedCard(selected, amortizeDays, rate, scenario.state);
   }
 
   return `
@@ -194,7 +194,7 @@ function renderDateMode(s, ym) {
 
 // 多選產品：合計可加空間 + 自動分權重（依 suggestTwd 比例）
 // 「已補到位」(kind != ok 或 suggestTwd <= 0) 的產品自動排除分配，但仍列出原因。
-function renderDateCombinedCard(cards, days, rate) {
+function renderDateCombinedCard(cards, days, rate, state) {
   const usable = cards.filter((c) => c.kind === "ok" && c.suggestTwd > 0);
   const skipped = cards.filter((c) => !(c.kind === "ok" && c.suggestTwd > 0));
 
@@ -218,15 +218,34 @@ function renderDateCombinedCard(cards, days, rate) {
   const totalDailyTwd = usable.reduce((s, c) => s + c.suggestTwd, 0);
   const totalTwd = totalDailyTwd * days;
   const totalCny = rate > 0 ? Math.round(totalTwd / rate) : 0;
-  const weights = computeIntegerWeights(usable.map((c) => ({ id: c.product.id, value: c.suggestTwd })));
+  // 用 2 位小數權重避免「APP uncapped 大、小島 capped 小」混選時整數四捨五入
+  // 把小島權重向上推、dailyShare 因而超過小島自己的 suggestTwd / upper
+  const weights = computeIntegerWeights(usable.map((c) => ({ id: c.product.id, value: c.suggestTwd })), 2);
 
   // 偵測:被分配權重後仍補不到下限的產品(可能是 period binding 卡到 baseline 突增日)
+  // APP / no_band 不檢查日帶寬,跳過此偵測
   const cantFillCards = usable.filter((c) => {
-    if (!!c.product.no_band || !c.band || c.band.lower <= 0) return false;
+    if (!!c.skipBand || !c.band || c.band.lower <= 0) return false;
     const w = weights[c.product.id] || 0;
     const dailyShare = totalDailyTwd * (w / 100);
     return (c.todaySpent || 0) + dailyShare < c.band.lower;
   });
+
+  // 偵測:APP / no_band 加完 dailyShare 後攤提期內哪些天會超過 upper
+  // 用 dailyShare 重算(suggestTwd 是「該產品 100% 採買」的值,跟多選分權後不一樣)
+  const overflowItems = state
+    ? usable
+        .filter((c) => !!c.skipBand)
+        .map((c) => {
+          const w = weights[c.product.id] || 0;
+          const dailyShare = totalDailyTwd * (w / 100);
+          return {
+            product: c.product,
+            ranges: computeOverflowRangesForProduct(state, c.product, pickedDate, days, dailyShare),
+          };
+        })
+        .filter((it) => it.ranges.length > 0)
+    : [];
 
   return `
     <div class="card">
@@ -244,10 +263,15 @@ function renderDateCombinedCard(cards, days, rate) {
           ${usable.map((c) => {
             const w = weights[c.product.id] || 0;
             const dailyShare = totalDailyTwd * (w / 100);
-            return `<div><strong>${esc(c.product.name)} ${w}%</strong> — ${Math.round(dailyShare).toLocaleString()} TWD/日 <span class="ink-3" style="font-size:11px">(最緊 ${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span></div>`;
+            const hint = c.skipBand
+              ? `<span class="ink-3" style="font-size:11px">(不檢查日帶寬)</span>`
+              : `<span class="ink-3" style="font-size:11px">(最緊 ${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span>`;
+            return `<div><strong>${esc(c.product.name)} ${w}%</strong> — ${Math.round(dailyShare).toLocaleString()} TWD/日 ${hint}</div>`;
           }).join("")}
         </div>
       </div>
+
+      ${renderOverflowCallout(overflowItems)}
 
       ${cantFillCards.length > 0 ? `
         <div class="rev-callout-perf-adjust">
@@ -284,7 +308,10 @@ function renderDateCombinedCard(cards, days, rate) {
                   <span class="pill" style="font-size:14px;margin-left:auto">${w}%</span>
                 </h3>
                 <div class="rev-row"><span class="label">月剩餘 / ${c.daysToMonthEnd} 天</span><span class="val">${Math.round(c.monthRemainPerDay || 0).toLocaleString()}/日</span></div>
-                <div class="rev-row"><span class="label">攤提區間最緊</span><span class="val">${Math.round(c.minHeadroomInPeriod || 0).toLocaleString()}<span class="ink-3" style="font-size:11px"> (${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span></span></div>
+                ${c.skipBand
+                  ? `<div class="rev-row"><span class="label">攤提區間最緊</span><span class="val ink-3" style="font-size:11px">不檢查日帶寬</span></div>`
+                  : `<div class="rev-row"><span class="label">攤提區間最緊</span><span class="val">${Math.round(c.minHeadroomInPeriod || 0).toLocaleString()}<span class="ink-3" style="font-size:11px"> (${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span></span></div>`
+                }
                 <div class="rev-row"><span class="label">分到 daily</span><span class="val"><strong>${Math.round(dailyShare).toLocaleString()}</strong></span></div>
               </div>
             `;
@@ -305,6 +332,37 @@ function renderDateCombinedCard(cards, days, rate) {
   `;
 }
 
+// APP / no_band 因不檢查日帶寬,suggest 可能造成攤提期某些天超過 upper。
+// 列出超過區間,讓使用者決定要不要改採買日(提早 / 延後)避開。
+// items: [{ product, ranges: [{ start, end, days, minDaily, maxDaily, upper }, ...] }, ...]
+function renderOverflowCallout(items) {
+  const filtered = items.filter((it) => it.ranges && it.ranges.length > 0);
+  if (filtered.length === 0) return "";
+  const showProductName = filtered.length > 1;
+  const lines = filtered.flatMap((it) => it.ranges.map((r) => {
+    const prefix = showProductName ? `<strong>${esc(it.product.name)}</strong>:` : "";
+    const dateRange = r.start === r.end ? r.start.slice(5) : `${r.start.slice(5)} ~ ${r.end.slice(5)}`;
+    const amountRange = r.minDaily === r.maxDaily
+      ? `約 ${Math.round(r.minDaily).toLocaleString()} TWD/日`
+      : `約 ${Math.round(r.minDaily).toLocaleString()} ~ ${Math.round(r.maxDaily).toLocaleString()} TWD/日`;
+    return `<div>• ${prefix}${dateRange}(${r.days} 天)${amountRange}(上限 ${Math.round(r.upper).toLocaleString()})</div>`;
+  })).join("");
+  return `
+    <div class="rev-callout-perf-adjust">
+      <div style="font-weight:600;color:var(--warn)">⚠️ 預估會超過建議日花費上限</div>
+      <div class="ink-2" style="font-size:13px;margin-top:6px;line-height:1.7">
+        ${lines}
+        <br>
+        <strong>想避開的話可以:</strong>
+        <ul style="margin:4px 0 0;padding-left:20px">
+          <li>提早幾天買 → 攤提期更早結束,跨月那段變短</li>
+          <li>延後到下月初再買 → 攤提整個落在下月</li>
+        </ul>
+      </div>
+    </div>
+  `;
+}
+
 function renderSkippedList(skipped) {
   if (!skipped || skipped.length === 0) return "";
   const items = skipped.map((c) => {
@@ -319,17 +377,21 @@ function renderSkippedList(skipped) {
   `;
 }
 
-// 依 value 比例算整數權重，最後一筆收尾補到 100
-function computeIntegerWeights(items) {
+// 依 value 比例算權重，最後一筆收尾補到 100。
+// decimals=0 → 整數%(舊行為);decimals=2 → 2 位小數,避免「APP 大、小島小」混選時整數
+// 四捨五入讓小島 weight 略高於真實比例,造成 dailyShare 超過 upper。
+function computeIntegerWeights(items, decimals = 0) {
   const total = items.reduce((s, x) => s + (Number(x.value) || 0), 0);
   const out = {};
   if (total <= 0 || items.length === 0) return out;
+  const factor = Math.pow(10, decimals);
+  const roundTo = (v) => Math.round(v * factor) / factor;
   let acc = 0;
   for (let i = 0; i < items.length - 1; i++) {
-    out[items[i].id] = Math.round((Number(items[i].value) || 0) / total * 100);
+    out[items[i].id] = roundTo((Number(items[i].value) || 0) / total * 100);
     acc += out[items[i].id];
   }
-  out[items[items.length - 1].id] = 100 - acc;
+  out[items[items.length - 1].id] = roundTo(100 - acc);
   return out;
 }
 
@@ -372,16 +434,17 @@ function renderDateCardLarge(c, days, rate) {
   const usable = c.kind === "ok" && c.suggestTwd > 0;
   const totalTwd = c.suggestTwd * days;
   const totalCny = rate > 0 ? Math.round(totalTwd / rate) : 0;
-  // 哪個是 binding constraint：月剩餘÷剩餘天數 vs 攤提區間最緊
+  // APP / no_band 不檢查日帶寬,只剩「月剩餘÷剩餘天數」一個 binding,不顯示較緊標籤
+  const skipBand = !!c.skipBand;
+  // 哪個是 binding constraint：月剩餘÷剩餘天數 vs 攤提區間最緊(只有小島才有意義)
   const monthBindingFirst = (c.monthRemainPerDay ?? Infinity) <= (c.minHeadroomInPeriod ?? Infinity);
-  const monthBindingTag = monthBindingFirst ? `<span class="pill warn" style="font-size:10px;margin-left:4px">較緊</span>` : "";
-  const periodBindingTag = !monthBindingFirst ? `<span class="pill warn" style="font-size:10px;margin-left:4px">較緊</span>` : "";
+  const monthBindingTag = (!skipBand && monthBindingFirst) ? `<span class="pill warn" style="font-size:10px;margin-left:4px">較緊</span>` : "";
+  const periodBindingTag = (!skipBand && !monthBindingFirst) ? `<span class="pill warn" style="font-size:10px;margin-left:4px">較緊</span>` : "";
 
   // 偵測「採買建議仍補不到下限」(加完建議值後當日仍 < lower)
-  // 破圈/no_band 產品不檢查日帶寬,跳過此提示
-  const isNoBandProd = !!c.product.no_band;
+  // APP / no_band 不檢查日帶寬,跳過此提示
   const newDailyAfter = (c.todaySpent || 0) + (c.suggestTwd || 0);
-  const cantFillToLower = usable && !isNoBandProd && c.band && c.band.lower > 0 && newDailyAfter < c.band.lower;
+  const cantFillToLower = usable && !skipBand && c.band && c.band.lower > 0 && newDailyAfter < c.band.lower;
   const shortfallToLower = cantFillToLower ? Math.round(c.band.lower - newDailyAfter) : 0;
   const calloutPeriodBinding = cantFillToLower && !monthBindingFirst;
   // 有短攤提方案可一鍵套用(避開 baseline 突增日)
@@ -404,7 +467,10 @@ function renderDateCardLarge(c, days, rate) {
           </div>
           <div class="rev-hero-limits">
             <div>月剩餘 ÷ 剩餘 ${c.daysToMonthEnd} 天 = <strong>${Math.round(c.monthRemainPerDay || 0).toLocaleString()}</strong>/日${monthBindingTag}</div>
-            <div>攤提區間 ${c.amortizeDaysUsed} 天最緊 = <strong>${Math.round(c.minHeadroomInPeriod || 0).toLocaleString()}</strong>/日 <span class="ink-3">(${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span>${periodBindingTag}</div>
+            ${skipBand
+              ? `<div class="ink-3" style="font-size:11px">${c.product.type === "app" ? "APP" : "破圈"} 不檢查日帶寬,只看月預算</div>`
+              : `<div>攤提區間 ${c.amortizeDaysUsed} 天最緊 = <strong>${Math.round(c.minHeadroomInPeriod || 0).toLocaleString()}</strong>/日 <span class="ink-3">(${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span>${periodBindingTag}</div>`
+            }
           </div>
         </div>
       ` : `
@@ -440,6 +506,8 @@ function renderDateCardLarge(c, days, rate) {
           </div>
         </div>
       ` : ""}
+
+      ${(usable && skipBand && c.overflowRanges && c.overflowRanges.length > 0) ? renderOverflowCallout([{ product: c.product, ranges: c.overflowRanges }]) : ""}
 
       <details class="rev-details">
         <summary>細節（月度／當日／建議花費值）</summary>
@@ -516,8 +584,10 @@ function renderSimulatedMonthGrid(fakeAdInput, scenario = null) {
       const b = dayBandsByPid[p.id]?.[d];
       const isFuture = d >= today;
       const checkBand = isFuture && b && b.budget_set && !isNoBand(p) && amt > 0;
-      const isUnder = checkBand && amt < b.lower;
-      const isOver = checkBand && amt > b.upper;
+      // 比較用四捨五入後的整數,跟格子顯示對齊。否則 5025.0000001 > 5025 會把顯示「5025」標紅,讓使用者以為超過
+      const amtRounded = Math.round(amt);
+      const isUnder = checkBand && amtRounded < Math.round(b.lower);
+      const isOver = checkBand && amtRounded > Math.round(b.upper);
       const newAmt = newContrib[p.id] || 0;
       const cls = `num ${isUnder ? "dg-under-band" : ""} ${isOver ? "dg-over-band" : ""} ${d < today ? "dg-past" : ""} ${newAmt > 0 ? "dg-new-contrib" : ""}`;
       const deltaBadge = newAmt > 0
@@ -951,7 +1021,7 @@ function createFromDateMultiMode() {
     return;
   }
   const totalDailyTwd = usable.reduce((s, c) => s + c.suggestTwd, 0);
-  const weights = computeIntegerWeights(usable.map((c) => ({ id: c.product.id, value: c.suggestTwd })));
+  const weights = computeIntegerWeights(usable.map((c) => ({ id: c.product.id, value: c.suggestTwd })), 2);
   const totalTwd = totalDailyTwd * amortizeDays;
   const cny = rate > 0 ? Math.round(totalTwd / rate) : 0;
   const startDate = pickedDate;

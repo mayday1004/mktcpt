@@ -583,7 +583,9 @@ function renderDetailPanel(s, ym, pid, date) {
   const checkBand = !isNoBand(product);
   const today = todayStr();
   const isPast = date < today;
-  const peakOut = checkBand && !isPast && dayProductSpent > 0 && (dayProductSpent < band.lower || dayProductSpent > band.upper);
+  // 用四捨五入後比較,避免 IEEE 754 微差讓「剛好頂到 upper」被誤判為超過
+  const dpsRounded = Math.round(dayProductSpent);
+  const peakOut = checkBand && !isPast && dayProductSpent > 0 && (dpsRounded < Math.round(band.lower) || dpsRounded > Math.round(band.upper));
 
   // 成效目標達成：把該產品「每支廣告最新一筆」加總後對 targets 跑分
   // （CPC = 合計花費 / 合計事件計數，不是單一廣告的數字）
@@ -1046,8 +1048,10 @@ function renderDailyGrid(s, ym) {
       // 只在「當日及未來」標色 — 過去日已花掉，無法調整，標色只會徒增噪音
       const isFuture = d >= today;
       const checkBand = isFuture && b && b.budget_set && !isNoBand(p) && amt > 0;
-      const isUnder = checkBand && amt < b.lower;
-      const isOver = checkBand && amt > b.upper;
+      // 比較用四捨五入後的整數,跟格子顯示對齊。否則 5025.0000001 > 5025 會把顯示「5025」標紅
+      const amtRounded = Math.round(amt);
+      const isUnder = checkBand && amtRounded < Math.round(b.lower);
+      const isOver = checkBand && amtRounded > Math.round(b.upper);
       const isSegStart = segChangeDays[p.id].has(d);
       const cls = `num ${isUnder ? "dg-under-band" : ""} ${isOver ? "dg-over-band" : ""} ${isSegStart ? "dg-seg-start" : ""} ${d < today ? "dg-past" : ""}`;
       const title = b && b.budget_set
