@@ -187,6 +187,7 @@ export const TABLES = [
       "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動", "備註",
       "破圈分流配對ID", "破圈分流角色",
       "廣告文案", "站長聯繫", "縮網址類型", "縮網址參數",
+      "縮網址舊網域覆寫", "縮網址新網域覆寫",
     ],
     toRows: (s) => s.ads.map((a) => [
       a.id, a.ad_code, a.ad_name, a.group || "",
@@ -208,6 +209,8 @@ export const TABLES = [
       a.contact_info || "",
       a.short_url_type || "",
       a.short_url_param || "",
+      a.short_url_old_override || "",
+      a.short_url_new_override || "",
     ]),
   },
   {
@@ -254,6 +257,8 @@ export const TABLES = [
       ["income_rate", s.settings.income_rate ?? 4.6],
       ["usdt_to_cny_rate", s.settings.usdt_to_cny_rate ?? 7],
       ["usd_to_twd_rate", s.settings.usd_to_twd_rate ?? 32],
+      ["short_url_new_domain", s.settings.short_url_new_domain || ""],
+      ["short_url_old_domain", s.settings.short_url_old_domain || ""],
     ],
   },
   {
@@ -416,6 +421,10 @@ export function assembleFromTables(raw) {
         ? { short_url_type: String(o["縮網址類型"] || "") } : {}),
       ...(adT.headers.includes("縮網址參數")
         ? { short_url_param: String(o["縮網址參數"] || "") } : {}),
+      ...(adT.headers.includes("縮網址舊網域覆寫")
+        ? { short_url_old_override: String(o["縮網址舊網域覆寫"] || "") } : {}),
+      ...(adT.headers.includes("縮網址新網域覆寫")
+        ? { short_url_new_override: String(o["縮網址新網域覆寫"] || "") } : {}),
     };
   });
 
@@ -489,6 +498,8 @@ export function assembleFromTables(raw) {
     monthly_rates: {},
     sheets_webapp_url: "",
     sheets_token: "",
+    short_url_new_domain: "",
+    short_url_old_domain: "",
   };
   const setT = pick("設定");
   setT.rows.forEach((r) => {
@@ -499,6 +510,8 @@ export function assembleFromTables(raw) {
     else if (o.key === "income_rate") settings.income_rate = Number(v) || 4.6;
     else if (o.key === "usdt_to_cny_rate") settings.usdt_to_cny_rate = Number(v) || 7;
     else if (o.key === "usd_to_twd_rate") settings.usd_to_twd_rate = Number(v) || 32;
+    else if (o.key === "short_url_new_domain") settings.short_url_new_domain = String(v || "");
+    else if (o.key === "short_url_old_domain") settings.short_url_old_domain = String(v || "");
   });
 
   // 報表自訂欄位（公式跨裝置共享；hidden_metrics 是裝置端設定，不在這裡）

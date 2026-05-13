@@ -42,6 +42,24 @@ export const PRODUCT_TYPES = {
 export function isNoBand(product) {
   return product?.no_band === true;
 }
+
+// 產品顯示順序(各 UI 一致,APP 家族先 + 各自破圈,小島照常見順序排)。
+// 不在此清單中的產品(未來新增 / 非標準)會排到最後,並以 id 字母序處理。
+export const PRODUCT_DISPLAY_ORDER = [
+  "AV9", "av9_poquan",
+  "JK", "jk_poquan",
+  "HYC",
+  "PJ8", "ZFB", "OJI", "MYS", "XRK", "BS",
+];
+const _PRODUCT_ORDER_INDEX = Object.fromEntries(
+  PRODUCT_DISPLAY_ORDER.map((id, i) => [id, i])
+);
+export function compareProductOrder(a, b) {
+  const ai = _PRODUCT_ORDER_INDEX[a?.id] ?? 9999;
+  const bi = _PRODUCT_ORDER_INDEX[b?.id] ?? 9999;
+  if (ai !== bi) return ai - bi;
+  return String(a?.id || "").localeCompare(String(b?.id || ""));
+}
 export function isNoBandPid(state, pid) {
   return state?.products?.find((p) => p.id === pid)?.no_band === true;
 }

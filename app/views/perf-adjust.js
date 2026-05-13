@@ -1,5 +1,5 @@
 import { getState, update, uid } from "../state.js";
-import { isNoBand, getMonthlyBudget } from "../schema.js";
+import { isNoBand, getMonthlyBudget, compareProductOrder } from "../schema.js";
 import { buildAdPivot, previewImpact, computeProductBudgetStatus } from "../domain/perf-adjust.js";
 import { buildWeightAdjust } from "../domain/lifecycle.js";
 import { rebalanceSplitPair } from "../domain/split-pair.js";
@@ -815,13 +815,8 @@ function renderAdCard(entry, state, newWeightsByAd, productStatus) {
   }
   const hiddenCount = state.products.length - displayProducts.length;
 
-  // 排序:按原權重從大到小,0% 排最後
-  displayProducts = [...displayProducts].sort((a, b) => {
-    const wa = Number(oldWeights[a.id]) || 0;
-    const wb = Number(oldWeights[b.id]) || 0;
-    if (wa !== wb) return wb - wa;
-    return a.name.localeCompare(b.name);
-  });
+  // 排序:依固定產品順序(APP 家族先 + 各自破圈,小島依常見順序),見 schema.js PRODUCT_DISPLAY_ORDER
+  displayProducts = [...displayProducts].sort(compareProductOrder);
 
   // 計算新權重合計
   let newSum = 0;

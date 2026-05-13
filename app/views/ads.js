@@ -1259,12 +1259,6 @@ function openEditor(id, renewFrom = null, prefill = null) {
             <label>破圈占比 (%)</label>
             <input id="f-poquan-pct" type="number" min="0" max="100" step="1" value="10" />
           </div>
-          <div class="field" style="flex:0 0 200px">
-            <label>破圈分配給</label>
-            <select id="f-poquan-target">
-              ${s.products.filter((p) => p.is_poquan).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}
-            </select>
-          </div>
           <div class="field" style="flex:1">
             <label>預覽</label>
             <div id="poquan-preview" class="ink-2" style="font-size:12px;padding:8px 0">
@@ -1272,8 +1266,24 @@ function openEditor(id, renewFrom = null, prefill = null) {
             </div>
           </div>
         </div>
+        <div style="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:6px;background:rgba(0,0,0,0.02)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <strong style="font-size:13px">破圈側權重分配 <span class="ink-3" style="font-size:11px;font-weight:400">(加總須 = 100%)</span></strong>
+            <button id="btn-poquan-even" style="font-size:11px;padding:3px 8px">平均分配</button>
+          </div>
+          <div id="poquan-targets">
+            ${s.products.filter((p) => p.is_poquan).map((p, i) => `
+              <div class="field-row" style="align-items:center;gap:8px;padding:3px 0">
+                <div style="flex:1;font-size:13px">${esc(p.name)} <span class="ink-3" style="font-size:11px">(${esc(p.id)})</span></div>
+                <input type="number" min="0" max="100" step="1" class="f-poquan-w" data-pid="${esc(p.id)}" value="${i === 0 ? 100 : 0}" style="width:80px" />
+                <span style="width:14px">%</span>
+              </div>
+            `).join("")}
+          </div>
+          <div style="font-size:11px;text-align:right;padding:4px 0">合計:<span id="f-poquan-sum">0</span>%</div>
+        </div>
         <div class="hint" style="margin-top:4px">
-          開啟後上方權重分配是「一般」部分(加總應 = 100%);系統會額外建 stXXXt 廣告承擔破圈的 ${" "}<span id="poquan-pct-label">10</span>% 比例。兩支廣告共享起迄日 / 攤提天數 / 匯率, 加總 = 你填的 RMB 金額。
+          開啟後上方權重分配是「一般」部分(加總應 = 100%);系統會額外建 stXXXt 廣告承擔破圈的 <span id="poquan-pct-label">10</span>% 比例,依下方破圈側權重分配。兩支廣告共享起迄日 / 攤提天數 / 匯率, 加總 = 你填的 RMB 金額。
         </div>
       </div>
     </div>
@@ -1363,13 +1373,29 @@ function openEditor(id, renewFrom = null, prefill = null) {
   const poquanDetail = q("#poquan-split-detail");
   const poquanProducts = s.products.filter((p) => p.is_poquan);
   const poquanNameOf = (pid) => s.products.find((x) => x.id === pid)?.name || pid;
+  // 讀取破圈側權重分配輸入(只有有開破圈分流才會有這些 input)
+  const readPoquanTargetWeights = () => {
+    const out = {};
+    dlg.querySelectorAll(".f-poquan-w").forEach((el) => {
+      const v = Number(el.value) || 0;
+      if (v > 0) out[el.dataset.pid] = v;
+    });
+    return out;
+  };
+  const refreshPoquanSum = () => {
+    const sum = [...dlg.querySelectorAll(".f-poquan-w")].reduce((s, el) => s + (Number(el.value) || 0), 0);
+    const el = q("#f-poquan-sum");
+    if (el) {
+      el.textContent = String(sum);
+      el.style.color = sum === 100 ? "var(--ok, #2a9d3c)" : "var(--bad, #c0392b)";
+    }
+  };
   const updatePoquanPreview = () => {
     if (!poquanSplit || !poquanSplit.checked) return;
+    refreshPoquanSum();
     const cny = Number(q("#f-cny").value) || 0;
     const pct = Number(q("#f-poquan-pct").value) || 0;
-    const targetSel = q("#f-poquan-target");
-    const target = targetSel ? targetSel.value : (poquanProducts[0]?.id || "");
-    const targetName = poquanNameOf(target);
+    const tgtWeights = readPoquanTargetWeights();
     const codeBase = q("#f-code").value.trim();
     const normalCny = Math.round(cny * (100 - pct) / 100);
     const poquanCny = Math.round(cny * pct / 100);
@@ -1385,24 +1411,36 @@ function openEditor(id, renewFrom = null, prefill = null) {
     });
     const sumNormal = Object.values(liveWeights).reduce((a, b) => a + b, 0);
     const normalFactor = (100 - pct) / 100;  // 一般部分占整體 (1 - pct/100)
+    const poquanFactor = pct / 100;
     const generalLines = Object.entries(liveWeights).map(([pid, w]) => {
       const p = s.products.find((x) => x.id === pid);
       const pname = p ? p.name : pid;
-      const overall = (w * normalFactor).toFixed(1);  // 該產品占整體百分比
+      const overall = (w * normalFactor).toFixed(1);
       return `<div style="margin-left:14px;font-size:11px;color:var(--ink-2)">└ ${esc(pname)}: ${w}%(整體 ${overall}%)</div>`;
     }).join("");
-    const sumWarn = sumNormal !== 100 ? `<span style="color:var(--warn)">(目前加總 ${sumNormal}%,請調為 100%)</span>` : "";
-    // 整體分配 = 一般權重 × normalFactor + 破圈 pct%
-    const overallEntries = Object.entries(liveWeights).map(([pid, w]) => {
+    const poquanLines = Object.entries(tgtWeights).map(([pid, w]) => {
+      const pname = poquanNameOf(pid);
+      const overall = (w * poquanFactor).toFixed(1);
+      return `<div style="margin-left:14px;font-size:11px;color:var(--ink-2)">└ ${esc(pname)}: ${w}%(整體 ${overall}%)</div>`;
+    }).join("");
+    const sumWarn = sumNormal !== 100 ? `<span style="color:var(--warn)">(一般加總 ${sumNormal}%,請調為 100%)</span>` : "";
+    const sumTgt = Object.values(tgtWeights).reduce((a, b) => a + b, 0);
+    const sumPoqWarn = sumTgt !== 100 ? `<span style="color:var(--warn)">(破圈加總 ${sumTgt}%,請調為 100%)</span>` : "";
+    // 整體分配 = 一般權重 × normalFactor + 破圈權重 × poquanFactor
+    const overallEntries = [];
+    Object.entries(liveWeights).forEach(([pid, w]) => {
       const p = s.products.find((x) => x.id === pid);
-      return `${(p ? p.name : pid)} ${(w * normalFactor).toFixed(1)}%`;
+      overallEntries.push(`${(p ? p.name : pid)} ${(w * normalFactor).toFixed(1)}%`);
     });
-    overallEntries.push(`${targetName} ${pct}%`);
-    const overallTotal = Object.values(liveWeights).reduce((a, b) => a + b, 0) * normalFactor + pct;
+    Object.entries(tgtWeights).forEach(([pid, w]) => {
+      overallEntries.push(`${poquanNameOf(pid)} ${(w * poquanFactor).toFixed(1)}%`);
+    });
+    const overallTotal = sumNormal * normalFactor + sumTgt * poquanFactor;
     preview.innerHTML = `
       <div><strong>${esc(codeBase || "stXXX")}</strong> 一般 ${(100 - pct)}% · ${normalCny.toLocaleString()} RMB ${sumWarn}</div>
       ${generalLines || `<div style="margin-left:14px;font-size:11px;color:var(--ink-3)">└ (上方還沒填權重)</div>`}
-      <div><strong>${esc(codeBase || "stXXX")}t</strong> 破圈 ${pct}% · ${poquanCny.toLocaleString()} RMB → ${esc(targetName)} 100%</div>
+      <div><strong>${esc(codeBase || "stXXX")}t</strong> 破圈 ${pct}% · ${poquanCny.toLocaleString()} RMB ${sumPoqWarn}</div>
+      ${poquanLines || `<div style="margin-left:14px;font-size:11px;color:var(--ink-3)">└ (還沒分配破圈權重)</div>`}
       <div style="margin-top:6px;padding-top:6px;border-top:1px dashed #d4d4d4;font-size:11px;color:var(--ink-2)">
         整體分配:${overallEntries.join(" / ")} = <strong>${overallTotal.toFixed(1)}%</strong>
       </div>
@@ -1419,8 +1457,16 @@ function openEditor(id, renewFrom = null, prefill = null) {
     };
     const pctInput = q("#f-poquan-pct");
     if (pctInput) pctInput.oninput = updatePoquanPreview;
-    const targetSel = q("#f-poquan-target");
-    if (targetSel) targetSel.onchange = updatePoquanPreview;
+    const evenBtn = q("#btn-poquan-even");
+    if (evenBtn) evenBtn.onclick = () => {
+      const inputs = [...dlg.querySelectorAll(".f-poquan-w")];
+      const share = Math.floor(100 / inputs.length);
+      inputs.forEach((el, i) => {
+        el.value = i === 0 ? 100 - share * (inputs.length - 1) : share;
+      });
+      updatePoquanPreview();
+    };
+    dlg.querySelectorAll(".f-poquan-w").forEach((el) => { el.oninput = updatePoquanPreview; });
     const cnyInput = q("#f-cny");
     if (cnyInput) cnyInput.addEventListener("input", updatePoquanPreview);
   }
@@ -1591,20 +1637,31 @@ function openEditor(id, renewFrom = null, prefill = null) {
     // 破圈分流:檢查並準備拆分(只在新增時有此選項)
     const poquanSplitChecked = !id && !renewFrom && poquanSplit && poquanSplit.checked;
     let poquanSplitPct = 0;
-    let poquanTarget = "";
+    let poquanTargetWeights = {};
     if (poquanSplitChecked) {
       poquanSplitPct = Number(q("#f-poquan-pct").value) || 0;
-      poquanTarget = q("#f-poquan-target").value;
+      poquanTargetWeights = readPoquanTargetWeights();
       if (poquanSplitPct <= 0 || poquanSplitPct >= 100) {
         toast("破圈占比必須是 1~99 之間", "bad"); return;
       }
-      if (weights[poquanTarget]) {
-        toast("破圈分配目標已在權重中,請從上方權重移除", "bad"); return;
+      if (Object.keys(poquanTargetWeights).length === 0) {
+        toast("請至少分配一個破圈產品的權重", "bad"); return;
       }
-      // 確保 weights 加總 = 100(一般部分);2 位小數權重允許 0.01 容差
+      const poquanSum = Object.values(poquanTargetWeights).reduce((sum, v) => sum + v, 0);
+      if (Math.abs(poquanSum - 100) > 0.01) {
+        toast(`破圈側權重合計 ${poquanSum}% 不是 100%`, "bad"); return;
+      }
+      // 一般部分加總(2 位小數權重允許 0.01 容差)
       const wSum = Object.values(weights).reduce((sum, v) => sum + (Number(v) || 0), 0);
       if (Math.abs(wSum - 100) > 0.01) {
         toast(`一般部分權重合計 ${wSum.toFixed(2)}% 不是 100%`, "bad"); return;
+      }
+      // 衝突檢查:一般權重中不可有破圈產品
+      for (const pid of Object.keys(poquanTargetWeights)) {
+        if (weights[pid]) {
+          const pname = s.products.find((p) => p.id === pid)?.name || pid;
+          toast(`破圈分配目標「${pname}」已在一般權重中,請從上方權重移除`, "bad"); return;
+        }
       }
     }
 
@@ -1686,6 +1743,8 @@ function openEditor(id, renewFrom = null, prefill = null) {
       // 同時建立破圈分流的 stXXXt 廣告
       if (poquanSplitChecked) {
         const poquanAdId = uid("ad");
+        const tvKeys = Object.keys(poquanTargetWeights);
+        const tvPurchaseMode = (tvKeys.length === 1 && poquanTargetWeights[tvKeys[0]] === 100) ? "independent" : "shared";
         st.ads.push({
           id: poquanAdId,
           ad_code: code + "t",
@@ -1701,8 +1760,8 @@ function openEditor(id, renewFrom = null, prefill = null) {
           end_date: end,
           amortize_days: days,
           daily_amort_twd: poquanTwd / days,
-          weights: { [poquanTarget]: 100 },
-          purchase_mode: "independent",
+          weights: { ...poquanTargetWeights },
+          purchase_mode: tvPurchaseMode,
           renewal_of: null,
           renewal_reason: "初始",
           notes: `破圈分流(由 ${code} 拆出 ${poquanSplitPct}%)`,
@@ -1715,12 +1774,17 @@ function openEditor(id, renewFrom = null, prefill = null) {
         added_ad_ids.push(poquanAdId);
       }
       if (shouldCreateTodo) {
+        const poquanSummary = poquanSplitChecked
+          ? Object.entries(poquanTargetWeights)
+              .map(([pid, w]) => `${(st.products.find((p) => p.id === pid)?.name || pid)} ${w}%`)
+              .join(" / ")
+          : "";
         st.todos.push({
           id: uid("todo"),
           created_at: nowTaipeiStamp(),
           action_type: id ? "手動改權重" : "新增廣告",
           description: buildTodoDesc(patch, weights, st.products, id ? origWeights : null)
-            + (poquanSplitChecked ? `\n\n含破圈分流:${code}t / 占比 ${poquanSplitPct}% / ${poquanCny.toLocaleString()} RMB / ${(st.products.find((p) => p.id === poquanTarget)?.name || poquanTarget)} 100%` : ""),
+            + (poquanSplitChecked ? `\n\n含破圈分流:${code}t / 占比 ${poquanSplitPct}% / ${poquanCny.toLocaleString()} RMB / ${poquanSummary}` : ""),
           status: "pending",
           undo_payload: { ad_snapshots, added_ad_ids },
         });
@@ -1925,11 +1989,14 @@ function openWeightAdjust(seg) {
   };
 }
 
-// 事後拆出破圈/一般分流配對(雙向):
-//   - source 為一般 100% → parent 保留原 weights,新建 t-variant = {破圈目標: 100}(forward)
-//   - source 為破圈 100% → parent = {一般目標: 100},新建 t-variant 沿用 source 原權重(reverse)
+// 事後拆出破圈/一般分流配對(雙向、支援目標側多產品):
+//   - source 為一般 100% → parent 保留原 weights,新建 t-variant = {破圈目標分配}(forward)
+//   - source 為破圈 100% → parent = {一般目標分配},新建 t-variant 沿用 source 原權重(reverse)
 //   - source 混合 → 不支援,提示用「權重調整」
-// 兩支共用 split_pair_id,日後修改任一支會自動連動另一支重平衡。
+//
+// 目標側回歸到「上方的權重分配」概念:列出所有目標側產品 + 權重輸入,使用者填多少
+// 就分多少(加總 = 100% 強制)。例如 forward 時想同時分愛威奶破圈 60% + 健康破圈 40%
+// 都可以。兩支共用 split_pair_id,日後修改任一支會自動連動另一支重平衡。
 function openPoquanSplit(seg) {
   const s = getState();
   const isPoquanProd = (pid) => !!(s.products || []).find((p) => p.id === pid)?.is_poquan;
@@ -1963,25 +2030,35 @@ function openPoquanSplit(seg) {
     ? today
     : addDays(seg.start_date, 1);
 
-  // 預設目標:用 parent_product_id 找對應產品
-  //   forward: source 有 AV9 → 預設選 av9_poquan(parent_product_id === AV9)
-  //   reverse: source 有 av9_poquan → 預設選 AV9(= source pid 的 parent_product_id)
+  // 預設目標分配:用 parent_product_id 對應到 source 產品
+  //   forward: source 有 AV9 → 預設 av9_poquan 100;若有多個 source 都對到不同破圈,平均分
+  //   reverse: source 有 av9_poquan → 預設 AV9 100
   const currentPids = new Set(sourceKeys);
-  let defaultTargetId = targetProducts[0].id;
+  const defaultTargetWeights = {};
   if (direction === "forward") {
-    for (const pq of poquanProducts) {
-      if (pq.parent_product_id && currentPids.has(pq.parent_product_id)) {
-        defaultTargetId = pq.id;
-        break;
-      }
+    const matched = poquanProducts.filter((pq) => pq.parent_product_id && currentPids.has(pq.parent_product_id));
+    if (matched.length > 0) {
+      const share = Math.floor(100 / matched.length);
+      matched.forEach((pq, i) => {
+        defaultTargetWeights[pq.id] = i === 0 ? 100 - share * (matched.length - 1) : share;
+      });
+    } else {
+      defaultTargetWeights[targetProducts[0].id] = 100;
     }
   } else {
+    const parents = new Set();
     for (const sourcePid of sourceKeys) {
       const sourceProd = s.products.find((p) => p.id === sourcePid);
-      if (sourceProd?.parent_product_id) {
-        const np = normalProducts.find((p) => p.id === sourceProd.parent_product_id);
-        if (np) { defaultTargetId = np.id; break; }
-      }
+      if (sourceProd?.parent_product_id) parents.add(sourceProd.parent_product_id);
+    }
+    const matched = normalProducts.filter((np) => parents.has(np.id));
+    if (matched.length > 0) {
+      const share = Math.floor(100 / matched.length);
+      matched.forEach((np, i) => {
+        defaultTargetWeights[np.id] = i === 0 ? 100 - share * (matched.length - 1) : share;
+      });
+    } else {
+      defaultTargetWeights[targetProducts[0].id] = 100;
     }
   }
 
@@ -1991,27 +2068,40 @@ function openPoquanSplit(seg) {
       偵測到此廣告目前是「<strong>${oppositeSide} 100%</strong>」,系統會在生效日後拆成兩支:<br>
       ${direction === "forward" ? `
         ・<strong>${esc(seg.ad_code)}</strong>(一般 parent)保留原權重、金額 = 原 × (100 − 占比)%<br>
-        ・<strong>${esc(seg.ad_code)}t</strong>(破圈 t-variant,新建)目標破圈 100%、金額 = 原 × 占比%
+        ・<strong>${esc(seg.ad_code)}t</strong>(破圈 t-variant,新建)依下方權重分配、金額 = 原 × 占比%
       ` : `
-        ・<strong>${esc(seg.ad_code)}</strong>(一般 parent)權重改為目標一般 100%、金額 = 原 × (100 − 占比)%<br>
+        ・<strong>${esc(seg.ad_code)}</strong>(一般 parent)依下方權重分配、金額 = 原 × (100 − 占比)%<br>
         ・<strong>${esc(seg.ad_code)}t</strong>(破圈 t-variant,新建)沿用原權重、金額 = 原 × 占比%
       `}<br>
       兩支共用 split_pair_id,日後改一支系統會自動重平衡另一支。
     </p>
-    <div class="field"><label>生效日(新段起日)</label><input id="eff" type="date" value="${defEff}" min="${seg.start_date}" max="${seg.end_date}" /></div>
     <div class="field-row" style="margin-top:8px">
+      <div class="field" style="flex:0 0 160px">
+        <label>生效日(新段起日)</label>
+        <input id="eff" type="date" value="${defEff}" min="${seg.start_date}" max="${seg.end_date}" />
+      </div>
       <div class="field" style="flex:0 0 140px">
         <label>${targetSide}占比 (%)</label>
         <input id="pct" type="number" min="1" max="99" step="1" value="${direction === "forward" ? 10 : 50}" />
         <div class="hint" style="font-size:11px">${direction === "forward" ? "破圈側拿幾%(剩下給一般)" : "一般側拿幾%(剩下給破圈)"}</div>
       </div>
-      <div class="field" style="flex:1">
-        <label>${targetSide}分配給</label>
-        <select id="target">
-          ${targetProducts.map((p) => `<option value="${esc(p.id)}" ${p.id === defaultTargetId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
-        </select>
-      </div>
     </div>
+
+    <h3 class="mt-16" style="display:flex;justify-content:space-between;align-items:center;font-size:14px">
+      <span>${targetSide}側權重分配 <span class="ink-3" style="font-size:11px;font-weight:400">(加總須 = 100%)</span></span>
+      <button id="btn-even" style="font-size:11px;padding:3px 8px">平均分配</button>
+    </h3>
+    <div id="tgt-weights">
+      ${targetProducts.map((p) => `
+        <div class="field-row" style="align-items:center;gap:8px;padding:4px 0">
+          <div style="flex:1;font-size:13px">${esc(p.name)} <span class="ink-3" style="font-size:11px">(${esc(p.id)})</span></div>
+          <input type="number" min="0" max="100" step="1" class="tgt-w" data-pid="${esc(p.id)}" value="${defaultTargetWeights[p.id] || 0}" style="width:80px" />
+          <span style="width:14px">%</span>
+        </div>
+      `).join("")}
+    </div>
+    <div class="weight-sum" id="tgt-sum" style="font-size:12px;padding:6px 0;text-align:right">合計:<span id="tgt-sum-val">0</span>%</div>
+
     <div class="field mt-16">
       <label>備註(選填)</label>
       <textarea id="notes" rows="2" style="width:100%;resize:vertical" placeholder="例:5/15 起新增 10% ${targetSide}分流"></textarea>
@@ -2023,24 +2113,58 @@ function openPoquanSplit(seg) {
   `;
   const dlg = modal.open(html);
   const q = (sel) => dlg.querySelector(sel);
+  const qa = (sel) => [...dlg.querySelectorAll(sel)];
+
+  const refreshSum = () => {
+    const sum = qa(".tgt-w").reduce((s, el) => s + (Number(el.value) || 0), 0);
+    const el = q("#tgt-sum-val");
+    el.textContent = sum;
+    el.style.color = sum === 100 ? "var(--ok, #2a9d3c)" : "var(--bad, #c0392b)";
+  };
+  qa(".tgt-w").forEach((el) => { el.oninput = refreshSum; });
+  refreshSum();
+
+  q("#btn-even").onclick = () => {
+    const inputs = qa(".tgt-w");
+    const share = Math.floor(100 / inputs.length);
+    inputs.forEach((el, i) => {
+      el.value = i === 0 ? 100 - share * (inputs.length - 1) : share;
+    });
+    refreshSum();
+  };
 
   q("#cancel").onclick = () => modal.close();
   q("#save").onclick = () => {
     const eff = q("#eff").value;
     const pct = Number(q("#pct").value) || 0;
-    const target = q("#target").value;
     const notes = q("#notes").value.trim();
     if (!eff) { toast("請選生效日", "bad"); return; }
 
+    // 收集目標側權重
+    const tgtWeights = {};
+    qa(".tgt-w").forEach((el) => {
+      const v = Number(el.value) || 0;
+      if (v > 0) tgtWeights[el.dataset.pid] = v;
+    });
+    const tgtSum = Object.values(tgtWeights).reduce((a, b) => a + b, 0);
+    if (Object.keys(tgtWeights).length === 0) {
+      toast(`請至少給一個${targetSide}產品設權重`, "bad");
+      return;
+    }
+    if (Math.abs(tgtSum - 100) > 0.01) {
+      toast(`${targetSide}側權重加總 ${tgtSum}% 不等於 100%`, "bad");
+      return;
+    }
+
     let parentWeights, tVariantWeights, tVariantPct;
     if (direction === "forward") {
-      // source = normal: parent 保留 source.weights,t-variant = {破圈: 100}
+      // source = normal: parent 保留 source.weights,t-variant = 使用者填的破圈分配
       parentWeights = { ...sourceWeights };
-      tVariantWeights = { [target]: 100 };
+      tVariantWeights = tgtWeights;
       tVariantPct = pct;
     } else {
-      // source = poquan: parent = {一般: 100},t-variant 沿用 source.weights
-      parentWeights = { [target]: 100 };
+      // source = poquan: parent = 使用者填的一般分配,t-variant 沿用 source.weights
+      parentWeights = tgtWeights;
       tVariantWeights = { ...sourceWeights };
       tVariantPct = 100 - pct;  // 使用者填的是「一般占比」,t-variant 拿 100 − 一般
     }
@@ -2058,12 +2182,17 @@ function openPoquanSplit(seg) {
       if (i >= 0) st.ads[i] = result.closed;
       st.ads.push(result.parentNewSeg, result.tVariantNewAd);
       const added_ad_ids = [result.parentNewSeg.id, result.tVariantNewAd.id];
-      const targetName = (st.products.find((p) => p.id === target)?.name) || target;
+      const targetSummary = Object.entries(tgtWeights)
+        .map(([pid, w]) => {
+          const nm = st.products.find((p) => p.id === pid)?.name || pid;
+          return `${nm} ${w}%`;
+        })
+        .join(" / ");
       st.todos.push({
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
         action_type: "手動改權重",
-        description: `${seg.ad_code} 事後拆出${targetSide}分流:${eff} 起拆 ${pct}% 給 ${targetName}(新建 ${seg.ad_code}t)`,
+        description: `${seg.ad_code} 事後拆出${targetSide}分流:${eff} 起拆 ${pct}% 給 ${targetSummary}(新建 ${seg.ad_code}t)`,
         status: "pending",
         undo_payload: { ad_snapshots, added_ad_ids },
       });

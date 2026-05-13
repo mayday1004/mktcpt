@@ -266,7 +266,7 @@ function renderDateCombinedCard(cards, days, rate, state) {
             const hint = c.skipBand
               ? `<span class="ink-3" style="font-size:11px">(不檢查日帶寬)</span>`
               : `<span class="ink-3" style="font-size:11px">(最緊 ${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span>`;
-            return `<div><strong>${esc(c.product.name)} ${w}%</strong> — ${Math.round(dailyShare).toLocaleString()} TWD/日 ${hint}</div>`;
+            return `<div><strong>${esc(c.product.name)} ${Math.round(w)}%</strong> — ${Math.round(dailyShare).toLocaleString()} TWD/日 ${hint}</div>`;
           }).join("")}
         </div>
       </div>
@@ -313,7 +313,7 @@ function renderDateCombinedCard(cards, days, rate, state) {
                 <h3>
                   <span>${esc(c.product.name)}</span>
                   <span class="pill ${c.product.type}" style="font-weight:400;font-size:11px;margin-left:4px">${c.product.type === "app" ? "APP" : "小島"}</span>
-                  <span class="pill" style="font-size:14px;margin-left:auto">${w}%</span>
+                  <span class="pill" style="font-size:14px;margin-left:auto">${Math.round(w)}%</span>
                 </h3>
                 <div class="rev-row"><span class="label">月剩餘 / ${c.daysToMonthEnd} 天</span><span class="val">${Math.round(c.monthRemainPerDay || 0).toLocaleString()}/日</span></div>
                 ${c.skipBand
@@ -791,7 +791,7 @@ function renderAmountMode(s, ym) {
           <div class="rev-hero-limits">
             ${Object.entries(suggested).sort(([, a], [, b]) => b - a).map(([pid, w]) => {
               const dailyShare = dailyTwd * (w / 100);
-              return `<div><strong>${esc(nameOf[pid] || pid)} ${w}%</strong> — ${Math.round(dailyShare).toLocaleString()} TWD/日</div>`;
+              return `<div><strong>${esc(nameOf[pid] || pid)} ${Math.round(w)}%</strong> — ${Math.round(dailyShare).toLocaleString()} TWD/日</div>`;
             }).join("")}
           </div>
         </div>
@@ -843,7 +843,7 @@ function renderAmountMode(s, ym) {
                   <h3>
                     <span>${esc(nameOf[pid] || pid)}</span>
                     <span class="pill ${productOf[pid]?.type || ""}" style="font-weight:400;font-size:11px;margin-left:4px">${productOf[pid]?.type === "app" ? "APP" : "小島"}</span>
-                    <span class="pill" style="font-size:14px;margin-left:auto">${w}%</span>
+                    <span class="pill" style="font-size:14px;margin-left:auto">${Math.round(w)}%</span>
                   </h3>
                   <div class="rev-line"><span class="rev-k">日／月</span><span class="rev-v">${fmt(dailyShare)}／${fmt(totalShare)} <span class="ink-3">(${fmt(totalShare / rate)} RMB)</span></span></div>
                   ${thisMonthLine}
@@ -854,7 +854,7 @@ function renderAmountMode(s, ym) {
             }).join("")}
         </div>
         <div class="hint" style="margin-top:8px">
-          合計：<strong>${totalW}%</strong>
+          合計：<strong>${Math.round(totalW)}%</strong>
           ${inMonthDays ? `；本月攤提天 <strong>${inMonthDays}</strong>` : ""}
           ${inNextMonthDays ? `；下月（${ymNext}）攤提天 <strong>${inNextMonthDays}</strong>` : ""}
         </div>
