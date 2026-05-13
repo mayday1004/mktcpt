@@ -424,6 +424,10 @@ dialog#modal::backdrop { background: rgba(15, 20, 30, 0.4); backdrop-filter: blu
   font-size: 12px; padding: 6px 10px; min-width: 76px;
   white-space: nowrap;
 }
+.short-urls-table tr.su-group-header td { background: #eef3f9 !important; }
+.short-urls-table tr.su-group-header:hover td { background: #eef3f9 !important; }
+.short-urls-table tr.su-group-row td { background: rgba(238, 243, 249, 0.35); }
+.short-urls-table tr.su-group-row:hover td { background: rgba(238, 243, 249, 0.65); }
 .perf-mini-metrics {
   display: flex;
   align-items: center;

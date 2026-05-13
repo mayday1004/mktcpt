@@ -13,8 +13,6 @@ function buildUrl(type, domain, param) {
 // 顯示模型(2026-05 修):
 //   - 新網址(newDomain):per-ad override 優先,否則 fall back 到全站 settings.short_url_new_domain
 //   - 舊網址(oldDomain):per-ad override 優先,不 fall back 到全站(沒寫=這支廣告沒有舊網址,屬於新合作)
-// 套用全站新網址時,系統會把每支廣告當下的「有效新網址」snapshot 進它自己的 short_url_old_override,
-// 讓既有廣告自動帶上歷史,新建廣告(沒走過 cascade)就維持「舊=(空)」。
 function effectiveDomains(s, ad) {
   return {
     oldDomain: ad.short_url_old_override || "",
@@ -24,23 +22,57 @@ function effectiveDomains(s, ad) {
   };
 }
 
-// 複製模板分兩種:
-//   有舊連結 → 通知站長更換鏈接
-//   無舊連結 → 新合作(該廣告從沒在別處跑過)
-function buildCopyText(ad, oldUrl, newUrl) {
-  if (!oldUrl) {
-    const head = ad.ad_name ? `新合作 [${ad.ad_name}]` : "新合作";
-    const lines = [head];
-    if (ad.ad_copy) lines.push(`文案：  ${ad.ad_copy}`);
-    lines.push(`链接：${newUrl || "(未設定)"}`);
-    return lines.join("\n");
+// 同站長(contact_info)的廣告分組。空 contact_info 視為各自獨立(每筆單獨群組)。
+// 回傳陣列,multi-ad 群組(2+ 筆同 contact)排前,其他依首支 ad_code 排序。
+function groupByContact(rows) {
+  const groupedByContact = new Map();
+  const ungrouped = [];
+  for (const a of rows) {
+    const key = (a.contact_info || "").trim();
+    if (!key) {
+      ungrouped.push({ contact: "", ads: [a] });
+    } else {
+      if (!groupedByContact.has(key)) groupedByContact.set(key, { contact: key, ads: [] });
+      groupedByContact.get(key).ads.push(a);
+    }
   }
-  const lines = ["你好，麻烦广告链结更换"];
-  if (ad.ad_name) lines.push(`[${ad.ad_name}]`);
-  if (ad.ad_copy) lines.push(`文案：  ${ad.ad_copy}`);
-  lines.push(`旧：  ${oldUrl}`);
-  lines.push(`新：  ${newUrl || "(未設定)"}`);
-  return lines.join("\n");
+  const groups = [...groupedByContact.values(), ...ungrouped];
+  // multi-ad-with-contact 排前,其他依首支 ad_code
+  groups.sort((g1, g2) => {
+    const m1 = g1.ads.length >= 2 ? 0 : 1;
+    const m2 = g2.ads.length >= 2 ? 0 : 1;
+    if (m1 !== m2) return m1 - m2;
+    if (g1.contact && g2.contact && g1.contact !== g2.contact) return g1.contact.localeCompare(g2.contact);
+    return (g1.ads[0]?.ad_code || "").localeCompare(g2.ads[0]?.ad_code || "");
+  });
+  // group 內依 ad_code 排序
+  for (const g of groups) g.ads.sort((a, b) => (a.ad_code || "").localeCompare(b.ad_code || ""));
+  return groups;
+}
+
+// 一個群組合併成一段複製文字。
+//   - 全部都「無舊連結」→ 用「新合作」當開頭
+//   - 任一筆有舊連結 → 用「你好，麻烦广告链结更换」當開頭
+//   - 每筆 ad 一個 block:[name] / 文案 / (旧+新 或 链接),block 間空一行
+function buildGroupCopyText(ads, s) {
+  const adBlocks = ads.map((a) => {
+    const dom = effectiveDomains(s, a);
+    const oldUrl = buildUrl(a.short_url_type, dom.oldDomain, a.short_url_param);
+    const newUrl = buildUrl(a.short_url_type, dom.newDomain, a.short_url_param);
+    const lines = [];
+    if (a.ad_name) lines.push(`[${a.ad_name}]`);
+    if (a.ad_copy) lines.push(`文案：  ${a.ad_copy}`);
+    if (oldUrl) {
+      lines.push(`旧：  ${oldUrl}`);
+      lines.push(`新：  ${newUrl || "(未設定)"}`);
+    } else {
+      lines.push(`链接：${newUrl || "(未設定)"}`);
+    }
+    return lines.join("\n");
+  });
+  const anyHasOld = ads.some((a) => !!effectiveDomains(s, a).oldDomain);
+  const greeting = anyHasOld ? "你好，麻烦广告链结更换" : "新合作";
+  return greeting + "\n" + adBlocks.join("\n\n");
 }
 
 export function render(root) {
@@ -53,9 +85,11 @@ export function render(root) {
     const cur = byCode.get(a.ad_code);
     if (!cur || (a.start_date || "") > (cur.start_date || "")) byCode.set(a.ad_code, a);
   }
-  const rows = [...byCode.values()].sort((a, b) =>
-    (a.ad_code || "").localeCompare(b.ad_code || "")
-  );
+  const rows = [...byCode.values()];
+  const groups = groupByContact(rows);
+  const totalCount = rows.length;
+  const notifiedCount = rows.filter((a) => a.short_url_notified).length;
+  const unnotifiedCount = totalCount - notifiedCount;
 
   const globalNew = s.settings.short_url_new_domain || "";
 
@@ -64,7 +98,7 @@ export function render(root) {
       <div>
         <h1>縮網址管理</h1>
         <div class="desc" style="max-width:760px;line-height:1.6">
-          記錄正在使用中的連結,並通知站長更換。「全站當前網址」即為新網址;套用後<strong>現有廣告</strong>會把當下新網址 snapshot 為自己的舊網址(代表「曾經跑在那」),<strong>新增的廣告</strong>則無舊網址(直接視為新合作)。
+          記錄正在使用中的連結,並通知站長更換。「全站當前網址」即為新網址;套用後<strong>現有廣告</strong>會把當下新網址 snapshot 為自己的舊網址,<strong>新增的廣告</strong>則無舊網址(直接視為新合作)。同站長(聯繫資料相同)的廣告自動分組,一次複製、一次標記已通知。
         </div>
       </div>
     </div>
@@ -79,7 +113,7 @@ export function render(root) {
         <button id="su-apply" class="primary" style="padding:9px 16px;font-size:14px;white-space:nowrap;align-self:flex-end">💾 套用為新網址</button>
       </div>
       <div class="hint" style="margin-top:10px;line-height:1.6;font-size:12px">
-        套用時:<strong>現有廣告</strong>會把目前的新網址(<span class="mono">${esc(globalNew || "未設定")}</span>)寫進各自的舊網址;新網址 ← 您輸入的值。<br>
+        套用時:<strong>現有廣告</strong>會把目前的新網址(<span class="mono">${esc(globalNew || "未設定")}</span>)寫進各自的舊網址;新網址 ← 您輸入的值;<strong>所有廣告的通知狀態會重置為「未通知」</strong>。<br>
         <strong>之後新增的廣告</strong>仍然維持「無舊網址」狀態。
       </div>
       <div style="margin-top:14px;display:inline-flex;gap:10px;align-items:center;font-size:13px;color:var(--ink-2);padding:8px 14px;background:#f6f7f9;border-radius:6px;border:1px solid var(--line)">
@@ -89,7 +123,14 @@ export function render(root) {
     </div>
 
     <div class="card">
-      <h2>清單<span class="ink-3" style="font-size:13px;font-weight:400;margin-left:6px">(${rows.length})</span></h2>
+      <div class="card-head" style="align-items:center">
+        <h2>清單<span class="ink-3" style="font-size:13px;font-weight:400;margin-left:6px">(${totalCount})</span></h2>
+        <div style="margin-left:auto;display:flex;gap:10px;align-items:center;font-size:13px">
+          <span class="pill ok" style="font-size:11px">✅ 已通知 ${notifiedCount}</span>
+          <span class="pill warn" style="font-size:11px">⏳ 未通知 ${unnotifiedCount}</span>
+          ${notifiedCount > 0 ? `<button id="su-reset-notified" class="link-btn" style="font-size:12px">↺ 全部標記未通知</button>` : ""}
+        </div>
+      </div>
       ${rows.length === 0 ? `
         <div class="empty">尚無設定縮網址資訊的廣告<br><span class="ink-3" style="font-size:12px">到「廣告列表 → 新增/編輯廣告」勾選採用連結 (L1/L3/L5) + 填入縮網址參數</span></div>
       ` : `
@@ -97,18 +138,18 @@ export function render(root) {
           <table class="short-urls-table">
             <colgroup>
               <col style="width:90px" />
-              <col style="width:140px" />
+              <col style="width:160px" />
               <col style="width:110px" />
               <col style="width:130px" />
               <col />
               <col />
-              <col style="width:110px" />
+              <col style="width:130px" />
               <col style="width:90px" />
             </colgroup>
             <thead>
               <tr>
                 <th>廣告代碼</th>
-                <th>廣告名稱</th>
+                <th>廣告名稱 / 站長</th>
                 <th>廣告文案</th>
                 <th>類型 / 參數</th>
                 <th>舊連結</th>
@@ -118,7 +159,7 @@ export function render(root) {
               </tr>
             </thead>
             <tbody>
-              ${rows.map((a) => renderRow(a, s)).join("")}
+              ${groups.map((g) => renderGroup(g, s)).join("")}
             </tbody>
           </table>
         </div>
@@ -126,7 +167,7 @@ export function render(root) {
     </div>
   `;
 
-  // 套用「當前網址」:對所有現有廣告做 cascade(snapshot 進 per-ad old override)
+  // 套用「當前網址」:cascade + 重置通知狀態
   const applyBtn = document.getElementById("su-apply");
   if (applyBtn) {
     applyBtn.onclick = () => {
@@ -139,51 +180,125 @@ export function render(root) {
       }
       const adCount = (s.ads || []).length;
       const confirmMsg = v
-        ? `將全站新網址設為「${v}」,並把 ${adCount} 支廣告當下的新網址(${cur || "(空)"})寫進它們各自的舊網址。確定?`
-        : `將全站新網址清空,並把 ${adCount} 支廣告當下的新網址(${cur || "(空)"})寫進它們各自的舊網址。確定?`;
+        ? `將全站新網址設為「${v}」,把 ${adCount} 支廣告當下的新網址(${cur || "(空)"})寫進它們各自的舊網址,並把所有通知狀態重置為未通知。確定?`
+        : `將全站新網址清空,把 ${adCount} 支廣告當下的新網址(${cur || "(空)"})寫進它們各自的舊網址,並把所有通知狀態重置為未通知。確定?`;
       if (!window.confirm(confirmMsg)) return;
       update((st) => {
         const previousGlobalNew = st.settings.short_url_new_domain || "";
         for (const ad of st.ads || []) {
-          // 該支廣告當下的有效新網址 = override 優先,否則用全站舊值
           const adCurrentNew = ad.short_url_new_override || previousGlobalNew;
           if (adCurrentNew) {
             ad.short_url_old_override = adCurrentNew;
           }
-          // 清掉 new override 讓廣告繼續跟全站新值
           delete ad.short_url_new_override;
+          ad.short_url_notified = false;
         }
         st.settings.short_url_new_domain = v;
-        // settings.short_url_old_domain 棄用(改 per-ad),清乾淨避免老 UI 誤用
         st.settings.short_url_old_domain = "";
       }, `更新當前網址:${v || "(空)"}`);
-      window.toast(v ? `已套用 ${v} 為新網址(現有廣告已更新舊網址)` : "已清空當前網址", "ok");
+      window.toast(v ? `已套用 ${v} 為新網址(通知狀態已重置)` : "已清空當前網址", "ok");
     };
   }
 
-  // 每筆 複製通知文字
-  root.querySelectorAll("[data-copy-code]").forEach((btn) => {
+  // 全部標記為未通知(不動網址)
+  const resetBtn = document.getElementById("su-reset-notified");
+  if (resetBtn) {
+    resetBtn.onclick = () => {
+      if (!window.confirm(`將所有廣告的通知狀態重置為「未通知」?(不會動到網址)`)) return;
+      update((st) => {
+        for (const ad of st.ads || []) ad.short_url_notified = false;
+      }, "重置所有通知狀態");
+      window.toast("已重置所有通知狀態", "ok");
+    };
+  }
+
+  // 群組複製 + 標記已通知
+  root.querySelectorAll("[data-group-copy]").forEach((btn) => {
     btn.onclick = () => {
-      const code = btn.dataset.copyCode;
-      const ad = rows.find((r) => r.ad_code === code);
-      if (!ad) return;
-      const dom = effectiveDomains(s, ad);
-      const oldUrl = buildUrl(ad.short_url_type, dom.oldDomain, ad.short_url_param);
-      const newUrl = buildUrl(ad.short_url_type, dom.newDomain, ad.short_url_param);
-      const text = buildCopyText(ad, oldUrl, newUrl);
+      const codes = btn.dataset.groupCopy.split(",").filter(Boolean);
+      const adsInGroup = codes.map((c) => rows.find((r) => r.ad_code === c)).filter(Boolean);
+      if (adsInGroup.length === 0) return;
+      const text = buildGroupCopyText(adsInGroup, s);
       copyToClipboard(text)
-        .then(() => window.toast(`已複製 ${code} 的通知文字`, "ok"))
+        .then(() => {
+          // 標記已通知(對所有同代碼 segments)
+          const codeSet = new Set(codes);
+          update((st) => {
+            for (const ad of st.ads || []) {
+              if (codeSet.has(ad.ad_code)) ad.short_url_notified = true;
+            }
+          }, `標記已通知 ${codes.length} 筆`);
+          window.toast(
+            adsInGroup.length === 1
+              ? `已複製 ${codes[0]} 的通知文字,標記為已通知`
+              : `已複製 ${adsInGroup.length} 筆通知文字(${(adsInGroup[0].contact_info || "")}),全部標記為已通知`,
+            "ok"
+          );
+        })
         .catch(() => window.toast("複製失敗,請手動", "bad"));
     };
   });
 
-  // 每筆 開啟覆寫彈窗
+  // 群組通知狀態手動 toggle
+  root.querySelectorAll("[data-group-toggle]").forEach((btn) => {
+    btn.onclick = () => {
+      const codes = btn.dataset.groupToggle.split(",").filter(Boolean);
+      const nextState = btn.dataset.toState === "true";  // "true" 字串 → true
+      const codeSet = new Set(codes);
+      update((st) => {
+        for (const ad of st.ads || []) {
+          if (codeSet.has(ad.ad_code)) ad.short_url_notified = nextState;
+        }
+      }, `${nextState ? "標記已通知" : "標記未通知"} ${codes.length} 筆`);
+      window.toast(`已標記為${nextState ? "已通知" : "未通知"}`, "ok");
+    };
+  });
+
+  // 編輯網域覆寫
   root.querySelectorAll("[data-override-code]").forEach((btn) => {
     btn.onclick = () => openOverrideModal(btn.dataset.overrideCode);
   });
 }
 
-function renderRow(a, s) {
+function renderGroup(group, s) {
+  const isMulti = group.ads.length >= 2 && !!group.contact;
+  if (isMulti) {
+    return renderGroupHeader(group, s) + group.ads.map((a) => renderRow(a, s, { inGroup: true })).join("");
+  }
+  // 單筆群組(無 contact 或 contact 只有自己一筆)
+  return group.ads.map((a) => renderRow(a, s, { inGroup: false })).join("");
+}
+
+function renderGroupHeader(group, s) {
+  const codes = group.ads.map((a) => a.ad_code);
+  const codesAttr = codes.join(",");
+  const count = group.ads.length;
+  const allNotified = group.ads.every((a) => !!a.short_url_notified);
+  const statusBadge = allNotified
+    ? `<span class="pill ok" style="font-size:11px">✅ 已通知</span>`
+    : `<span class="pill warn" style="font-size:11px">⏳ 未通知</span>`;
+  const toggleBtn = allNotified
+    ? `<button class="su-btn" data-group-toggle="${esc(codesAttr)}" data-to-state="false" title="標記為未通知">↺ 標未通知</button>`
+    : `<button class="su-btn" data-group-toggle="${esc(codesAttr)}" data-to-state="true" title="手動標為已通知(不複製)">✓ 標已通知</button>`;
+  return `
+    <tr class="su-group-header">
+      <td colspan="8" style="background:#eef3f9;padding:10px 14px;border-top:2px solid #c5d4e3;border-bottom:1px solid #c5d4e3">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span style="font-size:13px;color:var(--ink-3)">站長</span>
+          <strong style="font-size:13px">${esc(group.contact)}</strong>
+          <span class="ink-3" style="font-size:12px">(${count} 筆)</span>
+          ${statusBadge}
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="primary su-btn" data-group-copy="${esc(codesAttr)}" title="複製此站長的所有廣告通知文字,並標記為已通知">📋 通知此站長 (${count})</button>
+            ${toggleBtn}
+          </div>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderRow(a, s, { inGroup = false } = {}) {
   const dom = effectiveDomains(s, a);
   const oldUrl = buildUrl(a.short_url_type, dom.oldDomain, a.short_url_param);
   const newUrl = buildUrl(a.short_url_type, dom.newDomain, a.short_url_param);
@@ -196,18 +311,43 @@ function renderRow(a, s) {
   const oldTag = dom.oldOverridden ? `<span class="pill" style="font-size:10px;margin-left:6px;background:#fff3cd;color:#856404">覆寫</span>` : "";
   const newTag = dom.newOverridden ? `<span class="pill" style="font-size:10px;margin-left:6px;background:#fff3cd;color:#856404">覆寫</span>` : "";
   const hasOverride = dom.oldOverridden || dom.newOverridden;
-  const isNewCollab = !oldUrl;
-  const copyLabel = isNewCollab ? "📋 新合作" : "📋 複製";
-  const copyTitle = isNewCollab ? "複製「新合作」通知文字(此廣告沒有舊連結)" : "複製通知站長更換鏈接的文字";
+  const notified = !!a.short_url_notified;
+
+  // 「發送站長」欄:在多筆群組內時只顯示狀態(動作在群組 header);單筆時顯示 📋 + 狀態
+  let sendCell;
+  if (inGroup) {
+    sendCell = `<span class="pill ${notified ? "ok" : "warn"}" style="font-size:11px">${notified ? "✅ 已通知" : "⏳ 未通知"}</span>`;
+  } else {
+    const isNewCollab = !oldUrl;
+    const copyLabel = isNewCollab ? "📋 新合作" : "📋 複製";
+    const copyTitle = isNewCollab ? "複製「新合作」通知文字並標記已通知" : "複製通知站長更換鏈接的文字並標記已通知";
+    const toggleBtn = notified
+      ? `<button class="link-btn" data-group-toggle="${esc(a.ad_code)}" data-to-state="false" style="font-size:11px" title="標記為未通知">↺ 標未通知</button>`
+      : `<button class="link-btn" data-group-toggle="${esc(a.ad_code)}" data-to-state="true" style="font-size:11px" title="手動標為已通知(不複製)">✓ 標已通知</button>`;
+    sendCell = `
+      <button class="su-btn" data-group-copy="${esc(a.ad_code)}" title="${copyTitle}">${copyLabel}</button>
+      <div style="margin-top:4px;display:flex;flex-direction:column;align-items:center;gap:2px">
+        <span class="pill ${notified ? "ok" : "warn"}" style="font-size:10px">${notified ? "✅ 已通知" : "⏳ 未通知"}</span>
+        ${toggleBtn}
+      </div>
+    `;
+  }
+
+  // 「廣告名稱 / 站長」欄:單筆時若有 contact_info 顯示在名稱下方;群組內已在 header 顯示,row 不重複
+  const nameCell = `
+    ${esc(a.ad_name || "")}
+    ${!inGroup && a.contact_info ? `<div class="ink-3" style="font-size:11px;margin-top:3px">站長:${esc(a.contact_info)}</div>` : ""}
+  `;
+
   return `
-    <tr>
+    <tr${inGroup ? ' class="su-group-row"' : ""}>
       <td class="mono">${esc(a.ad_code)}</td>
-      <td>${esc(a.ad_name || "")}</td>
+      <td>${nameCell}</td>
       <td>${a.ad_copy ? esc(a.ad_copy) : "<span class='ink-3'>—</span>"}</td>
       <td>${typeLabel}${paramText}</td>
       <td class="url-cell">${oldUrl ? esc(oldUrl) : "<span class='ink-3'>(無)</span>"}${oldTag}</td>
       <td class="url-cell">${newUrl ? esc(newUrl) : "<span class='ink-3'>(未設定)</span>"}${newTag}</td>
-      <td style="text-align:center"><button data-copy-code="${esc(a.ad_code)}" title="${copyTitle}" class="su-btn">${copyLabel}</button></td>
+      <td style="text-align:center">${sendCell}</td>
       <td style="text-align:center"><button data-override-code="${esc(a.ad_code)}" title="編輯此筆的舊/新網域覆寫" class="su-btn">${hasOverride ? "🔧 已編輯" : "✎ 編輯"}</button></td>
     </tr>
   `;
@@ -215,7 +355,6 @@ function renderRow(a, s) {
 
 function openOverrideModal(adCode) {
   const s = getState();
-  // 取最新一段當顯示來源(實際上覆寫會同步寫到所有同代碼 segments)
   const segs = (s.ads || []).filter((a) => a.ad_code === adCode);
   if (segs.length === 0) return;
   segs.sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""));
