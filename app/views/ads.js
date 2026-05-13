@@ -653,6 +653,7 @@ function renderGroup(group, products, opts = {}) {
         <strong>${esc(latest.ad_name)}</strong>
         ${isMulti ? `<span class="seg-badge">${segs.length} 段</span>` : ""}
         ${eliminated ? `<span class="seg-badge" style="background:#fde3e3;color:var(--bad)">已淘汰</span>` : ""}
+        ${(latest.notes && !/^V2 /.test(latest.notes.trim())) ? `<div class="ink-2" style="font-size:11px;margin-top:3px;line-height:1.4">📝 ${esc(latest.notes)}</div>` : ""}
       </td>
       <td>${esc(latest.group || "—")}</td>
       <td class="num">${Math.round(latestRmb).toLocaleString()}</td>
@@ -1138,12 +1139,23 @@ function openEditor(id, renewFrom = null, prefill = null) {
       renewal_reason: "初始",
     };
   } else {
-    const ym = s.settings.current_month;
+    // 預設:start = 今天,end = 下個月同一日(5/13 → 6/13)。
+    // 月底日不存在則 clamp 到當月最後一天(例 1/31 → 2/28/29)。
+    const today = todayTaipei();
+    const [ty, tm, td] = today.split("-").map(Number);
+    let ey = ty;
+    let em = tm + 1;
+    if (em > 12) { ey += 1; em = 1; }
+    const lastDay = new Date(Date.UTC(ey, em, 0)).getUTCDate();
+    const ed = Math.min(td, lastDay);
+    const endDate = `${ey}-${String(em).padStart(2, "0")}-${String(ed).padStart(2, "0")}`;
+    const amortizeDays = Math.round((Date.parse(endDate) - Date.parse(today)) / 86400000);
+    const startYm = today.slice(0, 7);
     a = {
       ad_code: "", ad_name: "", group: "",
-      amount_cny: 0, exchange_rate: getExpenseRate(s, ym),
-      start_date: `${ym}-01`, end_date: "",
-      amortize_days: 30,
+      amount_cny: 0, exchange_rate: getExpenseRate(s, startYm),
+      start_date: today, end_date: endDate,
+      amortize_days: amortizeDays,
       weights: {}, renewal_of: null, renewal_reason: "初始",
     };
   }
