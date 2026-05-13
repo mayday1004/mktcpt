@@ -1,12 +1,12 @@
 import { getState, update, uid } from "../state.js";
 import { isNoBand, getMonthlyBudget, compareProductOrder } from "../schema.js";
-import { buildAdPivot, previewImpact, computeProductBudgetStatus } from "../domain/perf-adjust.js";
+import { buildAdPivot, computeProductBudgetStatus } from "../domain/perf-adjust.js";
 import { buildWeightAdjust } from "../domain/lifecycle.js";
 import { rebalanceSplitPair } from "../domain/split-pair.js";
 import { todayTaipei, nowTaipeiStamp, daysOfMonth } from "../lib/dates.js";
 import { detectFutureGaps, detectShortfalls, detectAppMonthlyUnderspend } from "../domain/gift-days.js";
 import { openGiftDayFixModal } from "./gift-day-fix-modal.js";
-import { checkMonthlyTotal, bandsForMonth } from "../domain/budget.js";
+import { bandsForMonth } from "../domain/budget.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 import { dailySpendGrid } from "../domain/spending.js";
 import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
@@ -22,10 +22,6 @@ let agreedAdIds = new Set();
 
 // 過濾模式：all / changed / hasdata
 let filterMode = "changed";
-// 影響表是否摺疊 APP 列（預設展開）
-let collapseApp = false;
-// 套用後預估 區塊摺疊（預設摺疊）
-let collapseImpact = true;
 // 「展開全部產品」狀態 (CLAUDE.md §5.4.2)：哪些 ad 的權重欄要顯示全部 11 個產品 (含 0%)
 let expandedAds = new Set();
 let spendScenario = "renewal";
@@ -88,7 +84,6 @@ export function render(root) {
       ? newWeightsByAd[e.ad.id]
       : { ...e.oldWeights };
   }
-  const impact = previewImpact(scenario.state, ym, effectiveWeightsByAd);
 
   // 每產品的預算狀態(headroom 提示用,CLAUDE.md §5.4.2)
   const productStatus = computeProductBudgetStatus(scenario.state, ym, pivotAll);
@@ -127,16 +122,15 @@ export function render(root) {
         <h1>權重調整</h1>
         <div class="desc">以廣告為主：左欄原權重、右欄系統建議；可手動覆寫或鎖定整支廣告不調。<br>建議有兩道安全限制:未來日花費高峰 ≤ 建議日花費上限(破圈產品跳過) + 月攤提合計 ≤ 月預算(破圈/小島/APP 一律強制)。月攤提 = 過去實際攤提 + 未來依權重計算的金額。</div>
       </div>
-      <div class="field" style="min-width:180px;margin-left:auto">
-        <label style="font-size:11px;color:var(--ink-3)">以哪一天為基準計算${basisDate ? ` <span class="pill warn" style="font-size:9px;margin-left:6px">模擬中</span>` : ""}</label>
-        <input id="pa-basis-date" type="date" value="${getBasisDate()}" />
-        <div class="hint" style="font-size:11px">${basisDate ? `<button class="link-btn" id="pa-basis-reset">→ 回到今天</button>` : "預設今天;改成未來日可模擬到時的調整建議"}</div>
-      </div>
     </div>
 
     ${giftDayBanner}
 
-    ${renderImpactSummary(impact)}
+    <div class="card pa-basis-card" style="display:flex;align-items:center;gap:14px;padding:12px 16px">
+      <strong style="font-size:13px">以哪一天為基準計算</strong>
+      <input id="pa-basis-date" type="date" value="${getBasisDate()}" style="font-size:13px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;width:auto" />
+      ${basisDate ? `<span class="pill warn" style="font-size:10px">模擬中</span><button class="link-btn" id="pa-basis-reset" style="font-size:12px">→ 回到今天</button>` : `<span class="ink-3" style="font-size:11px">預設今天;改成未來日可模擬到時的調整建議</span>`}
+    </div>
 
     ${renderImpactDailyGrid(scenario.state, ym, effectiveWeightsByAd, scenario)}
 
@@ -464,117 +458,6 @@ function uniqueByCode(ads) {
     out.push(ad);
   }
   return out;
-}
-
-function renderImpactSummary(impacts) {
-  const islands = impacts.filter((c) => c.product.type === "island");
-  const apps = impacts.filter((c) => c.product.type === "app");
-  const visible = collapseApp ? islands : impacts;
-
-  // 共用:把數字變成「↑ +X」或「↓ -X」或「持平」(花費上升=綠、下降=紅)
-  const fmtDelta = (d) => {
-    if (d === 0) return `<span class="impact-delta zero">→ 持平</span>`;
-    const cls = d > 0 ? "up" : "down";
-    const arrow = d > 0 ? "↑" : "↓";
-    const sign = d > 0 ? "+" : "";
-    return `<span class="impact-delta ${cls}">${arrow} ${sign}${Math.round(d).toLocaleString()}</span>`;
-  };
-
-  const rows = visible.map((c) => {
-    const { product, budget, band, oldTotal, newTotal, oldDailyPeak, newDailyPeak, oldPeakDay, newPeakDay } = c;
-    const totalDelta = newTotal - oldTotal;
-    const peakDelta = newDailyPeak - oldDailyPeak;
-    const isIsland = product.type === "island";
-    const checkBand = !isNoBand(product);
-
-    // 月預算狀態(用 checkMonthlyTotal 統一閾值;APP/小島自動套對應 tolerance)
-    const monthCheck = budget != null ? checkMonthlyTotal(newTotal, budget, product.type) : null;
-    const monthKind = monthCheck?.kind || "ink-3";
-    const monthBadge = monthCheck
-      ? `<span class="pill ${monthKind}" style="font-size:11px;margin-top:4px;display:inline-block">${monthCheck.msg}</span>`
-      : `<span class="ink-3" style="font-size:11px">未設預算</span>`;
-
-    // 評估:新日花費對照建議日花費區間
-    let evalCell;
-    if (!checkBand) {
-      evalCell = `<span class="pill" style="background:#eef1f6;color:var(--ink-3);font-size:11px">不檢查(破圈)</span>`;
-    } else if (band.upper <= 0 || budget == null) {
-      evalCell = `<span class="pill" style="background:#eef1f6;color:var(--ink-3);font-size:11px">未設預算</span>`;
-    } else if (Math.round(newDailyPeak) > Math.round(band.upper)) {
-      const over = newDailyPeak - band.upper;
-      evalCell = `<span class="pill bad" style="font-size:11px">✗ 超出上限 +${Math.round(over).toLocaleString()}</span>
-        <div class="ink-3" style="font-size:10px;margin-top:3px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;
-    } else if (Math.round(newDailyPeak) < Math.round(band.lower) && newDailyPeak > 0) {
-      const under = band.lower - newDailyPeak;
-      evalCell = `<span class="pill warn" style="font-size:11px">⚠ 低於下限 -${Math.round(under).toLocaleString()}</span>
-        <div class="ink-3" style="font-size:10px;margin-top:3px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;
-    } else {
-      evalCell = `<span class="pill ok" style="font-size:11px">✓ 在區間內</span>
-        <div class="ink-3" style="font-size:10px;margin-top:3px">區間 ${Math.round(band.lower).toLocaleString()}~${Math.round(band.upper).toLocaleString()}</div>`;
-    }
-
-    return `
-      <tr class="${isIsland ? "island-row" : ""} impact-row impact-row-${monthKind}">
-        <td>
-          <strong>${esc(product.name)}</strong>
-          <span class="pill ${product.type}" style="margin-left:6px;font-size:10px">${product.type === "app" ? "APP" : "小島"}</span>
-        </td>
-        <td class="num">${budget != null ? Math.round(budget).toLocaleString() : "<span class='ink-3'>未設</span>"}</td>
-        <td class="num">
-          <div class="impact-cell-main"><strong class="${monthKind}">${Math.round(newTotal).toLocaleString()}</strong></div>
-          <div class="impact-cell-sub">原 ${Math.round(oldTotal).toLocaleString()} ${fmtDelta(totalDelta)}</div>
-          <div>${monthBadge}</div>
-        </td>
-        <td class="num">
-          <div class="impact-cell-main"><strong>${Math.round(newDailyPeak).toLocaleString()}</strong></div>
-          <div class="impact-cell-sub">原 ${Math.round(oldDailyPeak).toLocaleString()} ${fmtDelta(peakDelta)}</div>
-          ${newPeakDay ? `<div class="ink-3" style="font-size:10px">於 ${newPeakDay.slice(5)}</div>` : ""}
-        </td>
-        <td>${evalCell}</td>
-      </tr>
-    `;
-  }).join("");
-
-  const chevron = collapseImpact ? "▶" : "▼";
-  return `
-    <div class="card perf-impact-card">
-      <div class="card-head">
-        <h2 id="btn-toggle-impact" style="cursor:pointer;user-select:none">${chevron} 套用後預估</h2>
-        <div class="ink-3" style="font-size:12px">
-          顯示套用建議調整後,每個產品月攤提與日花費的變化
-          ${!collapseImpact && apps.length > 0 ? `<button id="btn-toggle-app" class="link-btn" style="margin-left:8px">${collapseApp ? `展開 APP(${apps.length})` : "只看小島"}</button>` : ""}
-        </div>
-      </div>
-      ${collapseImpact ? "" : `
-      <div class="impact-legend">
-        <span class="impact-legend-item"><span class="pill ok" style="font-size:10px">綠</span> 容許範圍內</span>
-        <span class="impact-legend-item"><span class="pill warn" style="font-size:10px">橘</span> 少花太多</span>
-        <span class="impact-legend-item"><span class="pill bad" style="font-size:10px">紅</span> 多花太多</span>
-      </div>
-      <div class="table-wrap">
-        <table class="impact-table">
-          <colgroup>
-            <col style="width:120px">
-            <col>
-            <col>
-            <col>
-            <col style="width:170px">
-          </colgroup>
-          <thead>
-            <tr>
-              <th>產品</th>
-              <th class="num">月預算</th>
-              <th class="num">月花費(新 / 原 → 變化)</th>
-              <th class="num">日花費(新 / 原 → 變化)</th>
-              <th>評估</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      `}
-    </div>
-  `;
 }
 
 // 套用後每日攤提預覽
@@ -1049,11 +932,6 @@ function bindHandlers(root, pivot, newWeightsByAd) {
   root.querySelectorAll("[data-spend-scenario]").forEach((el) => {
     el.onclick = () => { spendScenario = el.dataset.spendScenario; render(root); };
   });
-  const tg = root.querySelector("#btn-toggle-app");
-  if (tg) tg.onclick = (e) => { e.stopPropagation(); collapseApp = !collapseApp; render(root); };
-  const tgImpact = root.querySelector("#btn-toggle-impact");
-  if (tgImpact) tgImpact.onclick = () => { collapseImpact = !collapseImpact; render(root); };
-
   root.querySelectorAll("input.w-input").forEach((inp) => {
     inp.onchange = () => {
       const v = inp.value === "" ? 0 : Number(inp.value) || 0;
