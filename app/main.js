@@ -128,7 +128,21 @@ function bindKeyboard() {
 
 // Global helpers for views
 window.toast = (msg, kind = "") => {
-  const host = document.getElementById("toast-host");
+  // <dialog showModal()> 開啟時走 browser top-layer,凌駕所有 z-index。
+  // 若把 toast 放在 body 下方的 toast-host,modal 開著時 toast 會被蓋住 → 改 append 進 modal 內,
+  // 讓 toast 跟著進 top-layer。
+  const modal = document.getElementById("modal");
+  let host;
+  if (modal && modal.open) {
+    host = modal.querySelector(".toast-host-in-modal");
+    if (!host) {
+      host = document.createElement("div");
+      host.className = "toast-host-in-modal";
+      modal.appendChild(host);
+    }
+  } else {
+    host = document.getElementById("toast-host");
+  }
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
   el.textContent = msg;
@@ -157,7 +171,9 @@ document.getElementById("modal")?.addEventListener("click", (e) => {
 });
 
 // 取代 native confirm()。回傳 Promise<boolean>。
-// opts: { title, body, okText, cancelText, danger, details: [string]|HTML }
+// opts: { title, body, okText, cancelText, danger, details: [string]|HTML, requireType }
+// requireType:危險動作要使用者打字確認,例 { word: "覆寫", label: "請輸入「覆寫」以確認" } —
+// 輸入框內容必須完全等於 word 才會啟用確認按鈕。
 window.confirmAsync = function (opts) {
   if (typeof opts === "string") opts = { body: opts };
   const {
@@ -167,6 +183,7 @@ window.confirmAsync = function (opts) {
     cancelText = "取消",
     danger = false,
     details = null,
+    requireType = null,
   } = opts || {};
 
   const detailsHtml = details
@@ -175,21 +192,43 @@ window.confirmAsync = function (opts) {
         : `<div class="confirm-details">${details}</div>`)
     : "";
 
+  const typeHtml = requireType
+    ? `
+      <div class="field" style="margin-top:12px">
+        <label style="font-size:13px;color:var(--ink-2)">${esc(requireType.label || `請輸入「${requireType.word}」以確認`)}</label>
+        <input id="cmf-type" type="text" placeholder="${esc(requireType.word)}" autocomplete="off" style="width:100%" />
+      </div>
+    `
+    : "";
+
   return new Promise((resolve) => {
     const html = `
       <h2>${esc(title)}</h2>
       <p style="font-size:14px;color:var(--ink-2);white-space:pre-wrap">${esc(body)}</p>
       ${detailsHtml}
+      ${typeHtml}
       <div class="modal-actions">
         <button id="cmf-cancel">${esc(cancelText)}</button>
-        <button id="cmf-ok" class="primary ${danger ? "danger" : ""}">${esc(okText)}</button>
+        <button id="cmf-ok" class="primary ${danger ? "danger" : ""}" ${requireType ? "disabled" : ""}>${esc(okText)}</button>
       </div>
     `;
     const dlg = window.modal.open(html);
     const finish = (v) => { window.modal.close(); resolve(v); };
+    const okBtn = dlg.querySelector("#cmf-ok");
     dlg.querySelector("#cmf-cancel").onclick = () => finish(false);
-    dlg.querySelector("#cmf-ok").onclick = () => finish(true);
-    setTimeout(() => dlg.querySelector("#cmf-ok").focus(), 0);
+    okBtn.onclick = () => { if (!okBtn.disabled) finish(true); };
+    if (requireType) {
+      const typeInput = dlg.querySelector("#cmf-type");
+      typeInput.oninput = () => {
+        okBtn.disabled = typeInput.value !== requireType.word;
+      };
+      typeInput.onkeydown = (e) => {
+        if (e.key === "Enter" && !okBtn.disabled) finish(true);
+      };
+      setTimeout(() => typeInput.focus(), 0);
+    } else {
+      setTimeout(() => okBtn.focus(), 0);
+    }
   });
 };
 

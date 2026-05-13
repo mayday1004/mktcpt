@@ -394,9 +394,10 @@ function bindHandlers(root) {
   bind("#btn-push-overwrite", async () => {
     saveSyncFields(root);
     const ok = await confirmAsync({
-      title: "整份覆寫 Sheets",
-      body: "將以本地資料整份覆寫到 Sheets，會清掉 Sheets 上其他人未同步到本地的改動。\n\n這個動作不可逆,只在「需要救援/重置」時用。一般協作不需要。",
+      title: "⚠️ 整份覆寫 Sheets",
+      body: "將以本地資料整份覆寫到 Sheets,會清掉 Sheets 上其他人未同步到本地的改動。\n\n這個動作不可逆,只在「需要救援/重置」時用。一般協作不需要 — 自動同步已經處理多人協作。",
       okText: "整份覆寫", danger: true,
+      requireType: { word: "覆寫", label: "確定要做的話,在下方輸入「覆寫」二字解鎖按鈕" },
     });
     if (!ok) return;
     setBusy(true);
