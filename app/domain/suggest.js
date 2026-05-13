@@ -32,8 +32,30 @@ function nextMonthYM(ym) {
  */
 export function suggestWeights(state, products, existingAds, ym, newAd) {
   const reasons = [];
-  const totals = monthlyTotals(existingAds, ym);
+  // 跟「依日期」對齊:月度合計排除成效全爛(月剩餘估寬),但每日 baseline 用真實值(headroom 才不會估太寬)
+  const excludedThisMonthPoorPerf = [];
+  const adsForMonthly = existingAds.filter((ad) => {
+    if (evaluatePoorPerf(state, ad)) {
+      excludedThisMonthPoorPerf.push(ad);
+      return false;
+    }
+    return true;
+  });
+  const totals = monthlyTotals(adsForMonthly, ym);
   const grid = dailySpendGrid(existingAds, ym);
+  if (excludedThisMonthPoorPerf.length > 0) {
+    const seen = new Set();
+    const uniqueAds = [];
+    for (const a of excludedThisMonthPoorPerf) {
+      const key = a.ad_code || a.id;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniqueAds.push(a);
+    }
+    const names = uniqueAds.map((a) => a.ad_name || a.ad_code).slice(0, 3).join("、");
+    const more = uniqueAds.length > 3 ? `…等 ${uniqueAds.length} 支` : "";
+    reasons.push(`本月剩餘預算已排除計算 ${uniqueAds.length} 支成效全爛廣告(理論上不會續費):${names}${more}`);
+  }
   const activeDays = countActiveDays(newAd, ym);
   if (activeDays === 0) {
     reasons.push("新廣告在本月無任何攤提日");

@@ -271,7 +271,15 @@ function renderDateCombinedCard(cards, days, rate, state) {
         </div>
       </div>
 
-      ${renderOverflowCallout(overflowItems)}
+      ${(() => {
+        if (!overflowItems || overflowItems.length === 0) return "";
+        const ymNext = nextMonthOf(pickedDate);
+        const nextDays = countOverflowDaysInMonth(overflowItems, ymNext);
+        const summary = nextDays > 0
+          ? `<div class="hint rev-summary rev-summary-warn" style="margin-top:8px">⚠️ 下月會有 <strong>${nextDays}</strong> 天日花費會超出建議上限,需注意下月預算狀況</div>`
+          : "";
+        return `${summary}${renderOverflowCallout(overflowItems)}`;
+      })()}
 
       ${cantFillCards.length > 0 ? `
         <div class="rev-callout-perf-adjust">
@@ -330,6 +338,27 @@ function renderDateCombinedCard(cards, days, rate, state) {
       ${renderSkippedList(skipped)}
     </div>
   `;
+}
+
+function nextMonthOf(ymd) {
+  const ym = monthOf(ymd);
+  const [y, m] = ym.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
+
+// 算 overflowItems 中落在 ymNext (YYYY-MM) 的總天數,給「下月會有 N 天日花費會超出」摘要用
+function countOverflowDaysInMonth(items, ymPrefix) {
+  if (!ymPrefix) return 0;
+  let n = 0;
+  for (const it of items) {
+    for (const r of it.ranges || []) {
+      for (let i = 0; i < r.days; i++) {
+        const d = addDays(r.start, i);
+        if (d.slice(0, 7) === ymPrefix) n++;
+      }
+    }
+  }
+  return n;
 }
 
 // APP / no_band 因不檢查日帶寬,suggest 可能造成攤提期某些天超過 upper。
@@ -507,7 +536,16 @@ function renderDateCardLarge(c, days, rate) {
         </div>
       ` : ""}
 
-      ${(usable && skipBand && c.overflowRanges && c.overflowRanges.length > 0) ? renderOverflowCallout([{ product: c.product, ranges: c.overflowRanges }]) : ""}
+      ${(() => {
+        if (!(usable && skipBand && c.overflowRanges && c.overflowRanges.length > 0)) return "";
+        const items = [{ product: c.product, ranges: c.overflowRanges }];
+        const ymNext = nextMonthOf(pickedDate);
+        const nextDays = countOverflowDaysInMonth(items, ymNext);
+        const summary = nextDays > 0
+          ? `<div class="hint rev-summary rev-summary-warn" style="margin-top:8px">⚠️ 下月會有 <strong>${nextDays}</strong> 天日花費會超出建議上限,需注意下月預算狀況</div>`
+          : "";
+        return `${summary}${renderOverflowCallout(items)}`;
+      })()}
 
       <details class="rev-details">
         <summary>細節（月度／當日／建議花費值）</summary>
@@ -784,33 +822,21 @@ function renderAmountMode(s, ym) {
                 thisMonthLine = `<div class="rev-line"><span class="rev-k">本月</span><span class="rev-v ${cls}">${fmt(projTotal)} / ${fmt(budget)} ${sign}</span></div>`;
               }
 
-              // 下月：baseline + nextContrib vs nextBudget
+              // 下月:baseline + nextContrib vs nextBudget(此為「月總額」資訊性提示;
+              // 強制砍預算的硬性建議已移除,改用下方「每日 upper 超出天數」做提醒)
               let nextMonthLine = "";
-              let cutLine = "";
               if (inNextMonthDays > 0 && cand?.nextBudgetAssumed != null && cand.nextBudgetAssumed > 0) {
                 const nextContrib = dailyShare * inNextMonthDays;
                 const baseline = cand.nextSpent || 0;
                 const nextProj = baseline + nextContrib;
                 const nextBudget = cand.nextBudgetAssumed;
                 const nextOver = nextProj - nextBudget;
-                const baselineOver = Math.max(0, baseline - nextBudget);
-                const newOnlyOver = Math.max(0, nextOver) - baselineOver;
                 const cls = nextOver > 0.5 ? "bad" : "ok";
                 const sign = nextOver > 0.5 ? `✗ +${fmt(nextOver)}` : "✓";
                 const tipText = `${cand.nextBudgetIsAssumed ? "下月預算未設，以本月為假設；" : ""}已含現廣告續費`;
                 nextMonthLine = `<div class="rev-line"><span class="rev-k" title="${tipText}">下月</span><span class="rev-v ${cls}">${fmt(nextProj)} / ${fmt(nextBudget)} ${sign}</span></div>`;
-                if (nextOver > 0.5) {
-                  if (newOnlyOver > 0.5 && rate > 0) {
-                    const cutRmb = Math.ceil(newOnlyOver / rate);
-                    const note = baselineOver > 0.5
-                      ? `<div class="rev-note">光現有廣告續費就會超 ${Math.ceil(baselineOver / rate).toLocaleString()} RMB（與這筆採買無關）</div>`
-                      : "";
-                    cutLine = `<div class="rev-line"><span class="rev-k">需砍</span><span class="rev-v bad">≈ ${cutRmb.toLocaleString()} RMB</span></div>${note}`;
-                  } else if (baselineOver > 0.5) {
-                    cutLine = `<div class="rev-note">超出全來自「現有廣告續費」（與這筆採買無關）</div>`;
-                  }
-                }
               }
+              const cutLine = "";
 
               return `
                 <div class="rev-card">
@@ -834,48 +860,41 @@ function renderAmountMode(s, ym) {
         </div>
         </details>
         ${(() => {
-          // 全局淘汰建議：彙總所有產品的下月超支
-          // 只算「新廣告造成的額外超出」（newOnlyOver），不把 baseline 已超的部分推給這筆新廣告
-          if (!inNextMonthDays || rate <= 0) return "";
-          let newOnlyOverTotal = 0;     // 純粹由新廣告引發的超支總額
-          let baselineOverTotal = 0;     // baseline 已超的總額（提示用）
-          const overByProd = [];
+          // 改成「逐日 upper 比對」(跟依日期同一套):對每個產品 baseline+dailyShare > upper 就計入 overflow,
+          // 連續超出合併成 range。下月有 N 天超出時提醒,不再強制建議砍預算。
+          if (rate <= 0) return "";
+          const overflowItems = [];
           for (const [pid, w] of Object.entries(suggested)) {
             const cand = candById[pid];
-            if (!cand?.nextBudgetAssumed || cand.nextBudgetAssumed <= 0) continue;
+            if (!cand?.p) continue;
             const dailyShare = dailyTwd * (w / 100);
-            const nextContrib = dailyShare * inNextMonthDays;
-            const baseline = cand.nextSpent || 0;
-            const nextBudget = cand.nextBudgetAssumed;
-            const totalOver = Math.max(0, baseline + nextContrib - nextBudget);
-            const baselineOver = Math.max(0, baseline - nextBudget);
-            const newOnly = Math.max(0, totalOver - baselineOver);
-            if (newOnly > 0.5) {
-              newOnlyOverTotal += newOnly;
-              overByProd.push({ name: nameOf[pid] || pid, over: newOnly });
+            const ranges = computeOverflowRangesForProduct(scenario.state, cand.p, amtStart, amtDays, dailyShare);
+            if (ranges.length === 0) continue;
+            overflowItems.push({ product: cand.p, ranges });
+          }
+          const nextMonthOverflowDays = countOverflowDaysInMonth(overflowItems, ymNext);
+
+          // 「現有廣告續費就會超下月預算」資訊提示(跟新採買無關,單獨保留)
+          let baselineOverTotal = 0;
+          if (inNextMonthDays && rate > 0) {
+            for (const c of candidates) {
+              if (!c.nextBudgetAssumed || c.nextBudgetAssumed <= 0) continue;
+              const baseline = c.nextSpent || 0;
+              const baselineOver = Math.max(0, baseline - c.nextBudgetAssumed);
+              if (baselineOver > 0.5) baselineOverTotal += baselineOver;
             }
-            if (baselineOver > 0.5) baselineOverTotal += baselineOver;
           }
-          if (newOnlyOverTotal <= 0 && baselineOverTotal <= 0) return "";
-          if (newOnlyOverTotal <= 0) {
-            return `
-              <div class="hint rev-summary rev-summary-info">
-                ℹ️ 光現有廣告續費就會超 ${Math.ceil(baselineOverTotal / rate).toLocaleString()} RMB（與這筆採買無關）
-              </div>
-            `;
-          }
-          const totalEliminateRmb = Math.ceil(newOnlyOverTotal / rate);
-          const detail = overByProd.map((x) => `${esc(x.name)} ${Math.ceil(x.over / rate).toLocaleString()}`).join("、");
           const baselineNote = baselineOverTotal > 0.5
-            ? `<div class="rev-note">另外，光現有廣告續費就會超 ${Math.ceil(baselineOverTotal / rate).toLocaleString()} RMB（與這筆採買無關）</div>`
+            ? `<div class="hint rev-summary rev-summary-info" style="margin-top:8px">ℹ️ 光現有廣告續費就會超下月預算 ${Math.ceil(baselineOverTotal / rate).toLocaleString()} RMB(與這筆採買無關)</div>`
             : "";
-          return `
-            <div class="hint rev-summary rev-summary-bad">
-              <strong>⚠️ 需先砍 ≈ ${totalEliminateRmb.toLocaleString()} RMB</strong>
-              <div class="rev-note" style="margin-left:0">明細：${detail} RMB</div>
-              ${baselineNote}
-            </div>
-          `;
+
+          if (overflowItems.length === 0) return baselineNote;
+
+          const overflowCallout = renderOverflowCallout(overflowItems);
+          const nextMonthSummary = nextMonthOverflowDays > 0
+            ? `<div class="hint rev-summary rev-summary-warn" style="margin-top:8px">⚠️ 下月會有 <strong>${nextMonthOverflowDays}</strong> 天日花費會超出建議上限,需注意下月預算狀況</div>`
+            : "";
+          return `${nextMonthSummary}${overflowCallout}${baselineNote}`;
         })()}
         ${excluded.length ? `
           <div class="hint" style="margin-top:12px;padding:10px 12px;background:#f7f9fc;border-radius:6px;font-size:12px">

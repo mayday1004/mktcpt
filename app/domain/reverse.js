@@ -239,9 +239,8 @@ function computeOverflowRanges(p, ymd, amDays, daily, getGrid, getBands, state) 
 // View 在多選合計模式下用 dailyShare 重算 overflow ranges
 // (suggestForDate 已內建用 suggestTwd 算的版本,單選直接用即可;多選因為 dailyShare ≠ suggestTwd 才需要這個)
 // baseline 跟 suggestForDate 對齊用未過濾的真實 ads(避免 headroom 與模擬 grid 不一致)
+// 不分產品類型都掃 — 依金額會在使用者輸入金額過大時讓島型也超出 upper
 export function computeOverflowRangesForProduct(state, product, ymd, amDays, daily) {
-  const skipBand = product.type === "app" || !!product.no_band;
-  if (!skipBand) return [];
   const gridCache = {};
   const bandsCache = {};
   const adsForGrid = state.ads || [];

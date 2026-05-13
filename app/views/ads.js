@@ -5,7 +5,7 @@ import { getExpenseRate, getUsdtToCnyRate } from "../schema.js";
 import { expiringAds } from "../domain/alerts.js";
 import { renderGiftDayInfo } from "./dashboard.js";
 import { todayTaipei, nowTaipeiStamp, addDays } from "../lib/dates.js";
-import { buildWeightAdjust } from "../domain/lifecycle.js";
+import { buildWeightAdjust, buildPoquanSplit } from "../domain/lifecycle.js";
 import { rebalanceSplitPair } from "../domain/split-pair.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
@@ -1842,9 +1842,103 @@ function openWeightAdjust(seg) {
   };
 }
 
+// 事後拆出破圈分流:把現有單支廣告(stXXX)在生效日後拆成
+//   parent (stXXX, 維持原權重 × (100−pct)%) + t-variant (stXXXt, 100% 破圈產品 × pct%)
+// 兩支共用 split_pair_id,日後修改任一支會自動連動另一支重平衡。
+function openPoquanSplit(seg) {
+  const s = getState();
+  const poquanProducts = (s.products || []).filter((p) => p.is_poquan);
+  if (poquanProducts.length === 0) {
+    toast("尚未建立任何破圈產品", "bad");
+    return;
+  }
+  const today = todayTaipei();
+  // 預設生效日:今天若落在原段內就用今天,否則用 start_date 隔天
+  const defEff = (today > seg.start_date && today < seg.end_date)
+    ? today
+    : addDays(seg.start_date, 1);
+
+  // 預設選跟 ad 內現有產品同源的破圈(例如 ad 有 AV9 → 預設 av9_poquan)
+  const currentPids = new Set(Object.keys(seg.weights || {}));
+  let defaultPoquanId = poquanProducts[0].id;
+  for (const pq of poquanProducts) {
+    if (pq.poquan_of && currentPids.has(pq.poquan_of)) {
+      defaultPoquanId = pq.id;
+      break;
+    }
+  }
+
+  const html = `
+    <h2>＋ 拆出破圈分流：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
+    <p class="ink-2" style="font-size:13px">
+      系統會把這段在生效日後切成兩支:<br>
+      ・<strong>${esc(seg.ad_code)}</strong> 維持原權重、金額 = 原 × (100 − 占比)%<br>
+      ・<strong>${esc(seg.ad_code)}t</strong>(新建)目標破圈產品 100%、金額 = 原 × 占比%<br>
+      兩支共用 split_pair_id,日後改一支系統會自動重平衡另一支。
+    </p>
+    <div class="field"><label>生效日(新段起日)</label><input id="eff" type="date" value="${defEff}" min="${seg.start_date}" max="${seg.end_date}" /></div>
+    <div class="field-row" style="margin-top:8px">
+      <div class="field" style="flex:0 0 130px">
+        <label>破圈占比 (%)</label>
+        <input id="pct" type="number" min="1" max="99" step="1" value="10" />
+      </div>
+      <div class="field" style="flex:1">
+        <label>破圈分配給</label>
+        <select id="target">
+          ${poquanProducts.map((p) => `<option value="${esc(p.id)}" ${p.id === defaultPoquanId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="field mt-16">
+      <label>備註(選填)</label>
+      <textarea id="notes" rows="2" style="width:100%;resize:vertical" placeholder="例:5/15 起加 10% 破圈分流"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button id="cancel">取消</button>
+      <button class="primary" id="save">套用</button>
+    </div>
+  `;
+  const dlg = modal.open(html);
+  const q = (sel) => dlg.querySelector(sel);
+
+  q("#cancel").onclick = () => modal.close();
+  q("#save").onclick = () => {
+    const eff = q("#eff").value;
+    const pct = Number(q("#pct").value) || 0;
+    const target = q("#target").value;
+    const notes = q("#notes").value.trim();
+    if (!eff) { toast("請選生效日", "bad"); return; }
+    let result;
+    try {
+      result = buildPoquanSplit(seg, eff, pct, target, notes);
+    } catch (e) {
+      toast(e.message, "bad");
+      return;
+    }
+    update((st) => {
+      const ad_snapshots = captureUndoSnapshot(st, [seg.id]);
+      const i = st.ads.findIndex((a) => a.id === seg.id);
+      if (i >= 0) st.ads[i] = result.closed;
+      st.ads.push(result.parentNewSeg, result.tVariantNewAd);
+      const added_ad_ids = [result.parentNewSeg.id, result.tVariantNewAd.id];
+      const targetName = (st.products.find((p) => p.id === target)?.name) || target;
+      st.todos.push({
+        id: uid("todo"),
+        created_at: nowTaipeiStamp(),
+        action_type: "手動改權重",
+        description: `${seg.ad_code} 事後拆出破圈分流:${eff} 起拆 ${pct}% 給 ${targetName}(新建 ${seg.ad_code}t)`,
+        status: "pending",
+        undo_payload: { ad_snapshots, added_ad_ids },
+      });
+    }, `事後拆出破圈分流: ${seg.ad_code} → +${seg.ad_code}t`);
+    modal.close();
+    toast(`已拆分:${seg.ad_code} + ${seg.ad_code}t,已建立待辦`, "ok");
+  };
+}
 
 // 摺疊列上的 "⋯" 按鈕：展開更多動作
 function openMoreMenu(seg) {
+  const s = getState();
   const lockState = seg.lock_full ? "full" : (seg.lock_perf_adjust ? "weight" : "free");
   const eliminated = !!seg.eliminated;
   const lockBtn = (id, icon, label, hint, isCurrent) => `
@@ -1855,12 +1949,20 @@ function openMoreMenu(seg) {
   // 只支援「單一產品 100%」的 ad 做轉移(常見場景)
   const wKeys = Object.keys(seg.weights || {});
   const isSingle100 = wKeys.length === 1 && Number(seg.weights[wKeys[0]]) === 100;
+  // 事後拆出破圈分流:不是已配對 ad + 有破圈產品可選
+  const hasPoquanProducts = (s.products || []).some((p) => p.is_poquan);
+  const canPoquanSplit = !seg.split_pair_id && hasPoquanProducts;
+  const alreadyPaired = !!seg.split_pair_id;
+  const poquanSplitTitle = alreadyPaired
+    ? "此廣告已是破圈分流配對,不需再拆"
+    : (!hasPoquanProducts ? "尚未在「產品」頁建立任何破圈產品" : "");
   const html = `
     <h2>更多動作：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
     <p class="ink-2" style="font-size:13px">選擇要對此段執行的動作。</p>
     <div class="more-actions">
       <button data-pick="weight">權重調整</button>
       <button data-pick="transfer" ${isSingle100 ? "" : 'disabled title="只有「單一產品 100%」的廣告能轉移"'}>↪ 轉移到新代碼</button>
+      <button data-pick="poquan-split" ${canPoquanSplit ? "" : `disabled title="${esc(poquanSplitTitle)}"`}>＋ 拆出破圈分流</button>
     </div>
     <h3 style="margin-top:16px;font-size:13px">自動建議調整的鎖定設定</h3>
     <p class="ink-3" style="font-size:11px;margin:0 0 8px">手動編輯權重永遠可用,這個設定只影響系統自動建議。</p>
@@ -1883,6 +1985,7 @@ function openMoreMenu(seg) {
       modal.close();
       if (pick === "weight") openWeightAdjust(seg);
       else if (pick === "transfer") openTransfer(seg);
+      else if (pick === "poquan-split") openPoquanSplit(seg);
       else if (pick === "lock-free" || pick === "lock-weight" || pick === "lock-full") {
         const newState = pick.split("-")[1];
         const labels = { free: "自由", weight: "鎖權重", full: "禁止挪動" };
