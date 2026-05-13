@@ -647,13 +647,12 @@ function renderGroup(group, products, opts = {}) {
 
   const headRow = `
     <tr class="group-head ${isOpen ? "open" : ""} ${eliminated ? "ad-eliminated" : ""} ${familyMemberClass} ${familyPosClass}" data-anchor-code="${esc(code)}">
-      <td class="toggle">${isMulti ? `<button class="icon-btn" data-toggle="${esc(code)}">${isOpen ? "▾" : "▸"}</button>` : ""}</td>
+      <td class="toggle"><button class="icon-btn" data-toggle="${esc(code)}">${isOpen ? "▾" : "▸"}</button></td>
       <td class="code-cell mono">${esc(code)}${roleBadge}</td>
       <td>
         <strong>${esc(latest.ad_name)}</strong>
         ${isMulti ? `<span class="seg-badge">${segs.length} 段</span>` : ""}
         ${eliminated ? `<span class="seg-badge" style="background:#fde3e3;color:var(--bad)">已淘汰</span>` : ""}
-        ${(latest.notes && !/^V2 /.test(latest.notes.trim())) ? `<div class="ink-2" style="font-size:11px;margin-top:3px;line-height:1.4">📝 ${esc(latest.notes)}</div>` : ""}
       </td>
       <td>${esc(latest.group || "—")}</td>
       <td class="num">${Math.round(latestRmb).toLocaleString()}</td>
@@ -668,9 +667,9 @@ function renderGroup(group, products, opts = {}) {
 
   const weightDetailRow = weightsOpen ? renderWeightDetailRow(latest, products, { allSegs: segs, filterStart, filterEnd, familyScale: opts.familyScale }) : "";
 
-  if (!isOpen || !isMulti) return headRow + weightDetailRow;
+  if (!isOpen) return headRow + weightDetailRow;
 
-  // 展開時：用一列容納整個 vertical timeline
+  // 展開時:即使單段也顯示 timeline node(讓備註 / 廣告文案 / 站長 / 短網址資訊有地方看)
   return headRow + weightDetailRow + `
     <tr class="seg-timeline-row">
       <td></td>
@@ -726,6 +725,10 @@ function renderTimelineNode(seg, idx, segs, products, opts = {}) {
   const prev = idx > 0 ? segs[idx - 1] : null;
   const delta = prev ? segDelta(prev, seg, products) : "";
   const reasonCls = reasonClass(seg.renewal_reason);
+  // 廣告文案 / 站長 / 短網址 等資訊只在最新段(段落鏈的 latest)顯示 — 這些是「廣告層級」資料,
+  // 多段都同步,顯示在最新段避免重複
+  const isLatest = idx === segs.length - 1;
+  const extraInfo = isLatest ? renderAdExtras(seg) : "";
   return `
     <div class="tl-node">
       <div class="tl-rail"></div>
@@ -743,12 +746,27 @@ function renderTimelineNode(seg, idx, segs, products, opts = {}) {
           <span>${weightSummary(seg, products, "inline", { familyScale: opts.familyScale })}</span>
         </div>
         ${(seg.notes && !/^V2 /.test(seg.notes.trim())) ? `<div class="tl-notes ink-2" style="font-size:12px;margin-top:4px;padding:4px 8px;background:#f7f9fc;border-radius:4px">📝 ${esc(seg.notes)}</div>` : ""}
+        ${extraInfo}
         <div class="tl-actions">
           ${actionButtons(seg, /*compact=*/false)}
         </div>
       </div>
     </div>
   `;
+}
+
+// 廣告層級的附加資訊(廣告文案 / 站長聯繫 / 縮網址)
+function renderAdExtras(ad) {
+  const items = [];
+  if (ad.ad_copy) items.push(`<span><strong>文案:</strong> ${esc(ad.ad_copy)}</span>`);
+  if (ad.contact_info) items.push(`<span><strong>站長:</strong> ${esc(ad.contact_info)}</span>`);
+  if (ad.short_url_type) {
+    const lbl = ad.short_url_type === "L1" ? "權重" : (ad.short_url_type === "L3" ? "APK" : (ad.short_url_type === "L5" ? "小島" : ""));
+    items.push(`<span><strong>連結:</strong> ${esc(ad.short_url_type)}${lbl ? `(${lbl})` : ""}</span>`);
+  }
+  if (ad.short_url_param) items.push(`<span><strong>參數:</strong> <span class="mono">${esc(ad.short_url_param)}</span></span>`);
+  if (items.length === 0) return "";
+  return `<div class="tl-meta" style="margin-top:4px;font-size:12px;color:var(--ink-2)">${items.join("")}</div>`;
 }
 
 function segDelta(prev, cur, products) {
@@ -1261,6 +1279,39 @@ function openEditor(id, renewFrom = null, prefill = null) {
     </div>
     ` : ""}
 
+    <div class="field-row mt-16">
+      <div class="field" style="flex:1">
+        <label>廣告文案<span class="ink-3" style="font-size:11px;font-weight:400;margin-left:6px">(最多 10 字)</span></label>
+        <input id="f-ad-copy" type="text" maxlength="10" value="${esc(a.ad_copy || "")}" placeholder="例:免費下載" />
+        <div class="hint"><span id="ad-copy-count">${(a.ad_copy || "").length}</span> / 10</div>
+      </div>
+      <div class="field" style="flex:2">
+        <label>站長聯繫資料(選填)</label>
+        <input id="f-contact-info" type="text" value="${esc(a.contact_info || "")}" placeholder="例:微信 abc123、TG @xyz" />
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field" style="flex:1">
+        <label>採用連結</label>
+        <div class="radio-row" style="display:flex;gap:14px;padding-top:6px">
+          ${["L1", "L3", "L5"].map((t) => {
+            const lbl = t === "L1" ? "權重" : (t === "L3" ? "APK" : "小島");
+            return `<label style="font-weight:400;font-size:13px;cursor:pointer">
+              <input type="radio" name="f-short-url-type" value="${t}" ${(a.short_url_type === t) ? "checked" : ""} /> ${t}(${lbl})
+            </label>`;
+          }).join("")}
+          <label style="font-weight:400;font-size:13px;cursor:pointer;color:var(--ink-3)">
+            <input type="radio" name="f-short-url-type" value="" ${!a.short_url_type ? "checked" : ""} /> 不採用
+          </label>
+        </div>
+      </div>
+      <div class="field" style="flex:1">
+        <label>縮網址參數(選填)</label>
+        <input id="f-short-url-param" type="text" value="${esc(a.short_url_param || "")}" placeholder="例:utm_source=st123" />
+      </div>
+    </div>
+
     <div class="field mt-16">
       <label>備註（選填，例：本次續費送 5 天）</label>
       <textarea id="f-notes" rows="2" style="width:100%;resize:vertical">${esc(a.notes || "")}</textarea>
@@ -1295,6 +1346,15 @@ function openEditor(id, renewFrom = null, prefill = null) {
         groupNew.style.display = "none";
         groupNew.value = "";
       }
+    };
+  }
+
+  // 廣告文案字數即時計數
+  const adCopyInput = q("#f-ad-copy");
+  const adCopyCount = q("#ad-copy-count");
+  if (adCopyInput && adCopyCount) {
+    adCopyInput.oninput = () => {
+      adCopyCount.textContent = String(adCopyInput.value.length);
     };
   }
 
@@ -1567,6 +1627,13 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const normalTwd = normalCny * rate;
     const poquanTwd = poquanCny * rate;
 
+    // 廣告文案 / 站長聯繫 / 縮網址類型 / 縮網址參數
+    const adCopy = (q("#f-ad-copy").value || "").trim();
+    const contactInfo = (q("#f-contact-info").value || "").trim();
+    const shortUrlTypeRadio = dlg.querySelector('input[name="f-short-url-type"]:checked');
+    const shortUrlType = shortUrlTypeRadio ? shortUrlTypeRadio.value : "";
+    const shortUrlParam = (q("#f-short-url-param").value || "").trim();
+
     const patch = {
       ad_code: code,
       ad_name: name,
@@ -1583,6 +1650,10 @@ function openEditor(id, renewFrom = null, prefill = null) {
       daily_amort_twd: normalTwd / days,
       weights,
       purchase_mode: purchaseMode,
+      ad_copy: adCopy,
+      contact_info: contactInfo,
+      short_url_type: shortUrlType,
+      short_url_param: shortUrlParam,
       renewal_of: a.renewal_of || null,
       renewal_reason: a.renewal_reason || (a.renewal_of ? "續費" : "初始"),
       notes,

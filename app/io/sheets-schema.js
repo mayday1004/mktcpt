@@ -186,6 +186,7 @@ export const TABLES = [
       "開始日期", "結束日期", "攤提天數", "每日攤提(台幣)",
       "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動", "備註",
       "破圈分流配對ID", "破圈分流角色",
+      "廣告文案", "站長聯繫", "縮網址類型", "縮網址參數",
     ],
     toRows: (s) => s.ads.map((a) => [
       a.id, a.ad_code, a.ad_name, a.group || "",
@@ -203,6 +204,10 @@ export const TABLES = [
       a.notes || "",
       a.split_pair_id || "",
       a.split_role || "",
+      a.ad_copy || "",
+      a.contact_info || "",
+      a.short_url_type || "",
+      a.short_url_param || "",
     ]),
   },
   {
@@ -403,6 +408,14 @@ export function assembleFromTables(raw) {
         ? { split_pair_id: String(o["破圈分流配對ID"]) } : {}),
       ...(adT.headers.includes("破圈分流角色") && o["破圈分流角色"]
         ? { split_role: String(o["破圈分流角色"]) } : {}),
+      ...(adT.headers.includes("廣告文案")
+        ? { ad_copy: String(o["廣告文案"] || "") } : {}),
+      ...(adT.headers.includes("站長聯繫")
+        ? { contact_info: String(o["站長聯繫"] || "") } : {}),
+      ...(adT.headers.includes("縮網址類型")
+        ? { short_url_type: String(o["縮網址類型"] || "") } : {}),
+      ...(adT.headers.includes("縮網址參數")
+        ? { short_url_param: String(o["縮網址參數"] || "") } : {}),
     };
   });
 
