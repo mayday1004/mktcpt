@@ -771,16 +771,10 @@ function renderTimelineNode(seg, idx, segs, products, opts = {}) {
   `;
 }
 
-// 廣告層級的附加資訊(廣告文案 / 站長聯繫 / 縮網址)
+// 廣告層級的附加資訊(只顯示廣告文案;站長 / 連結 / 縮網址參數移到「🔗 縮網址」頁集中管理)
 function renderAdExtras(ad) {
   const items = [];
   if (ad.ad_copy) items.push(`<span><strong>文案:</strong> ${esc(ad.ad_copy)}</span>`);
-  if (ad.contact_info) items.push(`<span><strong>站長:</strong> ${esc(ad.contact_info)}</span>`);
-  if (ad.short_url_type) {
-    const lbl = ad.short_url_type === "L1" ? "權重" : (ad.short_url_type === "L3" ? "APK" : (ad.short_url_type === "L5" ? "小島" : ""));
-    items.push(`<span><strong>連結:</strong> ${esc(ad.short_url_type)}${lbl ? `(${lbl})` : ""}</span>`);
-  }
-  if (ad.short_url_param) items.push(`<span><strong>參數:</strong> <span class="mono">${esc(ad.short_url_param)}</span></span>`);
   if (items.length === 0) return "";
   return `<div class="tl-meta" style="margin-top:4px;font-size:12px;color:var(--ink-2)">${items.join("")}</div>`;
 }
