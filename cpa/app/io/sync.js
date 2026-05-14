@@ -100,6 +100,12 @@ async function call(payload) {
   return json;
 }
 
+// 給設定頁的「測試連線」按鈕用 — 只 ping,不動資料。
+// URL / Token 未設或錯誤 → 拋 Error。
+export async function pingSheets() {
+  return await call({ action: "ping" });
+}
+
 // 把 server 回的 raw row 解析成 { _id, _updated_at, _deleted, _version, dataRow, dataHeaders }
 function parseServerRows(headers, rows) {
   const idIdx = headers.indexOf("_id");
