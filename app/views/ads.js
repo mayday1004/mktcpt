@@ -1646,7 +1646,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
       ad_name: name,
       group: groupValue,
       currency,
-      amount_orig: poquanSplitChecked ? normalCny : amount_orig,
+      amount_orig,
       currency_rate,
       amount_cny: normalCny,
       exchange_rate: rate,
