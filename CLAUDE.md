@@ -642,24 +642,39 @@ for APP 產品 X:
 
 ### 7.1 前端
 - 預設用**瀏覽器本機儲存**操作(零延遲、離線可用)
-- 提供兩顆按鈕:
-  - **☁️ 同步到 Google 試算表**:整份資料推上去
-  - **⬇️ 從試算表拉下來**:覆寫本地
-- 不做自動同步,避免衝突
+- **自動 row-level CAS 同步**(2026-05 改版):state 變動後 debounce 5 秒推上 Sheets、每 30 秒拉一次;不再有「☁️ 推」/「⬇️ 拉」整批按鈕(留設定頁的「手動同步」當 fallback)
+- 多人協作衝突:有衝突時右下角出現 ⚠️ banner,點開 modal 逐筆解決(用我的 / 用對方的 / 逐欄選擇);衝突未解前自動同步暫停
 
-### 7.2 Google 試算表串接
+### 7.2 Google 試算表串接(v4 協定)
 - 用 **Apps Script 網頁應用程式**當中介(執行身分 = 擁有者、存取權 = 任何人)
-- Apps Script 只提供 3 個通用動作,**不含任何業務邏輯**:
-  - `{ action: "ping" }` → 檢查連線
-  - `{ action: "writeTable", sheetName, headers, rows }` → 清掉並覆寫指定分頁
-  - `{ action: "readTable", sheetName }` → 讀回該分頁的標題與資料列
+- Apps Script 提供以下 actions,**不含任何業務邏輯**:
+  - `{ action: "ping" }` → 健康檢查
+  - `{ action: "readMeta" }` → 拿 server_version + last_modified_at(輕量短路 pull 用)
+  - `{ action: "readTable", sheetName }` → 讀單張 sheet
+  - `{ action: "readAllTables", sheetNames }` → 一次拉多張 sheet(合 12 round trip 為 1)
+  - `{ action: "upsertRows", sheetName, headers, rows }` → **CAS 寫入**:rows 內 `_version` 為 expected,server 不符就回 `conflicts` 不寫入;符合就 +1 寫入
+  - `{ action: "writeTable", sheetName, headers, rows }` → 整片覆寫(救援用)
 - 前端呼叫時用表單格式(`multipart/form-data`,欄位名 `payload` = JSON 字串),原因:
   - 避免跨域 POST 預檢
   - 避免 Apps Script 轉址時 `Content-Type: application/json` 被改成 GET 導致回 405
 - 每個請求都要帶 `token`,後端比對 Apps Script 裡寫死的 `SECRET` 常數
-- 推資料 = 前端遍歷結構定義([app/io/sheets-schema.js](app/io/sheets-schema.js))逐個分頁呼叫 `writeTable`
-- 拉資料 = 前端遍歷結構定義呼叫 `readTable`,然後用 `assembleFromTables` 組回完整狀態
-- 拉之前會先自動下載一份目前本機 JSON 備份,避免誤覆蓋
+- 每張資料分頁的最後 4 欄固定為隱性 metadata:`_id` / `_updated_at` / `_deleted` / `_version`
+
+### 7.2.1 衝突偵測與解決流程
+- **Push 路徑(CAS)**:client `update()` 觸發 → debounce 5s → 推 `upsertRows`,每筆 row 帶 `_version = sync_meta._version`(client 上次看到的 server 版本);server 比對:
+  - 版本對得上 → 寫入,server bump version+1,client 更新 sync_meta
+  - 版本不符 → server 回 `conflicts[]`(含 current_row + current_version)→ client 進 conflict-store
+- **Pull 路徑**:`readAllTables` 拉回所有 row → LWW 合併,但加一道偵測:
+  - 若 (server `_updated_at > sync_meta._updated_at`)**且**(本機 fingerprint ≠ sync_meta.fingerprint)→ 衝突(雙方都改過)→ 不套用,進 conflict-store
+  - 否則照原本 LWW(只有一邊改 → 接受該邊)
+- **解衝突 modal**([app/io/conflict-resolver.js](app/io/conflict-resolver.js)):
+  - 列出每筆衝突的「欄位 / 我的值 / 對方值 / radio」per-field diff
+  - 三顆快捷:🟢 全用我的、🔵 全用對方、🟡 套用上方逐欄選擇
+  - 全域快捷:全部用我的 / 全部用對方
+  - 「用我的」= 用對方的 `_version` 當新 expected,標 `__force_push__` fingerprint → 下次 push 重推、CAS 通過
+  - 「用對方的」= 把對方 row 套進本機 state,sync_meta 對齊
+- **暫停 auto-sync**:衝突佇列非空時 orchestrator 跳過,使用者解完佇列歸零後自動恢復
+- **錯誤 logging**:同步層所有事件(push 成功/失敗、衝突發生、pull 衝突、網路錯誤、retry)都進 console + in-memory ring buffer。DevTools 打 `__buyadsLog()` 看最近 200 筆 — 給「我明明儲存了卻又被改回去」這類抱怨除錯用([app/lib/sync-log.js](app/lib/sync-log.js))
 
 ### 7.3 試算表結構(正規化)
 單一資料來源,後端只存正規化資料,人工瀏覽用衍生報表。
@@ -778,6 +793,7 @@ for APP 產品 X:
   - 跨家族純破圈共存(例 `st123` av9_poquan 70% + jk_poquan 30%,無 AV9 / JK)→ 不拆 t,儀表板將該支同時計入 AV9 與 JK 家族卡(各依 weight 份額)
 - **縮網址管理(per-ad 舊網址 + 全站新網址 cascade)**(2026-05 新增):「🔗 縮網址」頁面採「新網址全站共用、舊網址 per-ad」的混合模型 — 全站只存 `settings.short_url_new_domain`,舊網址寫進每支廣告自己的 `ad.short_url_old_override`(空 = 此廣告沒有舊連結,屬於新合作)。新網址可被 `ad.short_url_new_override` 覆寫,沒寫就 fall back 全站。「💾 套用為新網址」cascade 行為:對 `state.ads` 每支廣告做 snapshot — 該支廣告當下的有效新網址(`new_override` 優先,否則全站舊新值)寫進它自己的 `short_url_old_override`、清掉 `new_override` 讓它繼續跟新全站;`settings.short_url_new_domain ← 輸入值`。這樣**現有廣告**自動帶上歷史,**之後新建的廣告**沒走過 cascade,維持「舊=空」狀態,代表「沒在別處跑過」。複製文字分兩種模板:有舊連結 → 「你好，麻烦广告链结更换\\n[ad_name]\\n文案：  ad_copy\\n旧/新：URL」;無舊連結 → 「新合作 [ad_name]\\n文案：  ad_copy\\n链接：URL」。URL 構造:`https://{採用連結 lowercased}.{domain}/{縮網址參數}`(L1/L3/L5)。覆寫彈窗的舊網域留空 = 強制新合作模板。[app/views/short-urls.js](app/views/short-urls.js)。`settings.short_url_old_domain` 仍在 schema 中但已棄用(cascade 邏輯一執行就清空)。
 - **縮網址依站長分組 + 通知狀態追蹤**(2026-05 新增):縮網址頁面依 `contact_info`(站長聯繫資料)把同站長的廣告分組,**多筆同站長**(≥2)會插入群組 header 列(藍底),內含群組通知狀態(✅ 已通知 / ⏳ 未通知)、「📋 通知此站長 (N)」與手動 toggle 按鈕;按下 📋 把整組廣告併在一份模板裡複製(同一句開場 + 每支廣告自己的 block,block 間空一行),並把所有 segments 的 `ad.short_url_notified` 標為 true。空 `contact_info` 或單筆站長的廣告維持原本 per-row 操作(📋 + 狀態 + toggle 在 row 內)。「💾 套用為新網址」cascade 時自動把所有廣告通知狀態重置為 false;另有「↺ 全部標記未通知」按鈕單獨重置(不動網址)。schema 新增 ad 欄位 `縮網址已通知`(Y/空)。[app/views/short-urls.js](app/views/short-urls.js) `groupByContact` / `buildGroupCopyText` / `renderGroupHeader`。
+- **同步協定升 v4:Row-level CAS + 衝突 modal**(2026-05 新增):取代原本的 row-level LWW silent overwrite。每筆 row 多 `_version` 欄,push 時帶 `_expected_version`,server CAS 不符就回 `conflicts` 不寫入;pull 時若雙方都改過(本機 fingerprint ≠ sync_meta + server `_updated_at` 更新)也視為衝突。衝突進 [conflict-store](app/io/conflict-store.js) 並彈出 [conflict-resolver](app/io/conflict-resolver.js) modal:per-field diff、三快捷(🟢 全用我的 / 🔵 全用對方 / 🟡 逐欄選擇)+ 全域「全部用我的 / 全部用對方」。「用我的」會把 sync_meta 標 `__force_push__` 並對齊 theirs.version,下次 push CAS 通過;「用對方的」直接套進本機 state 並對齊 sync_meta。衝突未解前 auto-sync 暫停,解完自動恢復。錯誤紀錄走 [sync-log.js](app/lib/sync-log.js),DevTools 打 `__buyadsLog()` 可看最近 200 筆,給「我明明儲存了卻又被改回去」這類抱怨除錯用。Apps Script `Code.gs` 升 v4(`META_COLS` = `_id, _updated_at, _deleted, _version`),首次跑會自動 migrate header(整片清掉 → client resync)。詳見 [§7.2 / §7.2.1](#7-儲存與同步)。
 
 ---
 

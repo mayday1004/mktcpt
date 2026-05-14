@@ -1,6 +1,8 @@
 import { getState, subscribe, canUndo, peekUndo, undo } from "./state.js";
 import { getExpenseRate, getIncomeRate, getRateSource } from "./schema.js";
-import { initSyncOrchestrator } from "./io/sync.js";
+import { initSyncOrchestrator, onConflictResolved } from "./io/sync.js";
+import { initConflictBanner } from "./io/conflict-resolver.js";
+import "./lib/sync-log.js";  // 註冊 window.__buyadsLog 給 DevTools 用
 import * as Dashboard from "./views/dashboard.js";
 import * as Products from "./views/products.js";
 import * as Ads from "./views/ads.js";
@@ -92,8 +94,10 @@ window.addEventListener("DOMContentLoaded", () => {
   bindUndoBtn();
   bindKeyboard();
   bindSidebarToggle();
-  // 啟動 row-level LWW 同步：載入時跑一次、state 變動 debounce 5 秒、每 30 秒背景 poll
+  // 啟動 row-level CAS 同步:載入時跑一次、state 變動 debounce 5 秒、每 30 秒背景 poll
   initSyncOrchestrator();
+  // 衝突 banner:有衝突時釘在右下角,點擊開 resolver
+  initConflictBanner(onConflictResolved);
 });
 subscribe(() => {
   renderSidebar();
