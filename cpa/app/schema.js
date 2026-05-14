@@ -43,12 +43,15 @@ export function defaultState() {
       low_balance_threshold_rmb: 200,  // 站長餘額低於此值在概覽顯示警示
       sheets_webapp_url: "",
       sheets_token: "",
+      short_url_new_domain: "",     // 全站當前新網域(縮網址頁)
+      short_url_prefix: "",         // 全站前綴(例:l5 / go),可空。URL 形式 https://[prefix.]domain/param
     },
     products: [],          // [{ id, name, gsheet_field_code, cpa_enabled, created_at }]
     publishers: [],        // [{ id, name, default_cpa_price_rmb, contact_info, settlement_mode, created_at }]
     channels: [],          // [{ id, name(=渠道名稱), publisher_id, cpa_price_rmb?, status,
                            //   eliminated_at?, billing_end_date?, elimination_mode?,
-                           //   confirmed_eliminated_at?, notes, created_at }]
+                           //   confirmed_eliminated_at?, notes, created_at,
+                           //   short_url_param?, short_url_old_override?, short_url_new_override?, short_url_notified? }]
     payments: [],          // [{ id, publisher_id, date, amount_rmb, exchange_rate,
                            //   remaining_rmb(FIFO 剩餘), notes, created_at }]
     install_data: [],      // [{ id(=date::channel_id::product_id), date, channel_id,

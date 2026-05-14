@@ -10,6 +10,7 @@ import * as Products from "./views/products.js";
 import * as ImportView from "./views/import.js";
 import * as Payments from "./views/payments.js";
 import * as Settlement from "./views/settlement.js";
+import * as ShortUrls from "./views/short-urls.js";
 import * as PerfReport from "./views/perf-report.js";
 import * as Settings from "./views/settings.js";
 
@@ -21,6 +22,7 @@ const views = {
   import: ImportView,
   payments: Payments,
   settlement: Settlement,
+  "short-urls": ShortUrls,
   "perf-report": PerfReport,
   settings: Settings,
 };

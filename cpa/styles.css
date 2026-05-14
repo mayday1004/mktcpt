@@ -2754,3 +2754,36 @@ tr.family-member.family-last > td {
   color: #333;
 }
 .ch-pending-btn:hover { background: #fff3e0; }
+
+/* ===== 縮網址頁 ===== */
+.su-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.su-table thead th {
+  background: #fafafa;
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  color: #666;
+  border-bottom: 1px solid #e5e5e5;
+}
+.su-table td {
+  padding: 8px 10px;
+  vertical-align: middle;
+  border-bottom: 1px solid #f3f3f3;
+}
+.su-table tr.su-group-header td {
+  background: #eef3f9;
+  padding: 10px 14px;
+  border-bottom: 1px solid #d4dee8;
+}
+.su-table tr.su-group-row td { background: rgba(238, 243, 249, 0.35); }
+.su-table tr.su-group-row:hover td { background: rgba(238, 243, 249, 0.7); }
+.su-table tr:not(.su-group-header):not(.su-group-row):hover td { background: #fafbfd; }
+.su-table code {
+  background: #f5f5f5;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.su-group-copy-btn { padding: 4px 10px; font-size: 12px; }
+.su-row-copy-btn { padding: 3px 8px; font-size: 11px; }

@@ -121,6 +121,7 @@ export const TABLE_SYNC_SPECS = [
       "id", "渠道名稱", "站長ID", "(站長名稱)", "個別CPA單價(RMB)",
       "狀態", "淘汰日期", "截止計費日期", "淘汰模式", "已確認淘汰日",
       "備註", "建立時間",
+      "縮網址參數", "舊網域覆寫", "新網域覆寫", "縮網址已通知",
     ],
     flatten: (s) => {
       const pubName = Object.fromEntries((s.publishers || []).map((p) => [p.id, p.name]));
@@ -139,6 +140,10 @@ export const TABLE_SYNC_SPECS = [
           c.confirmed_eliminated_at || "",
           c.notes || "",
           c.created_at || "",
+          c.short_url_param || "",
+          c.short_url_old_override || "",
+          c.short_url_new_override || "",
+          c.short_url_notified ? "Y" : "",
         ],
       }));
     },
@@ -160,6 +165,10 @@ export const TABLE_SYNC_SPECS = [
         confirmed_eliminated_at: String(obj["已確認淘汰日"] || "").slice(0, 10) || "",
         notes: String(obj["備註"] || ""),
         created_at: String(obj["建立時間"] || existing?.created_at || ""),
+        short_url_param: String(obj["縮網址參數"] || ""),
+        short_url_old_override: String(obj["舊網域覆寫"] || ""),
+        short_url_new_override: String(obj["新網域覆寫"] || ""),
+        short_url_notified: String(obj["縮網址已通知"] || "").toUpperCase() === "Y",
       };
       if (existing) Object.assign(existing, rec);
       else state.channels.push(rec);
@@ -382,6 +391,8 @@ export const TABLE_SYNC_SPECS = [
       push("expense_rate", settings.expense_rate ?? 4.8);
       push("income_rate", settings.income_rate ?? 4.6);
       push("low_balance_threshold_rmb", settings.low_balance_threshold_rmb ?? 200);
+      push("short_url_new_domain", settings.short_url_new_domain ?? "");
+      push("short_url_prefix", settings.short_url_prefix ?? "");
       return out;
     },
     upsertInState(state, _id, obj) {
@@ -390,6 +401,8 @@ export const TABLE_SYNC_SPECS = [
       if (_id === "expense_rate") state.settings.expense_rate = numOr(v, 4.8);
       else if (_id === "income_rate") state.settings.income_rate = numOr(v, 4.6);
       else if (_id === "low_balance_threshold_rmb") state.settings.low_balance_threshold_rmb = numOr(v, 200);
+      else if (_id === "short_url_new_domain") state.settings.short_url_new_domain = String(v ?? "");
+      else if (_id === "short_url_prefix") state.settings.short_url_prefix = String(v ?? "");
       // 忽略 current_month / sheets_webapp_url / sheets_token(這些不該從 server 套用)
     },
     removeFromState(state, _id) {
@@ -397,6 +410,8 @@ export const TABLE_SYNC_SPECS = [
       if (_id === "expense_rate") state.settings.expense_rate = 4.8;
       else if (_id === "income_rate") state.settings.income_rate = 4.6;
       else if (_id === "low_balance_threshold_rmb") state.settings.low_balance_threshold_rmb = 200;
+      else if (_id === "short_url_new_domain") state.settings.short_url_new_domain = "";
+      else if (_id === "short_url_prefix") state.settings.short_url_prefix = "";
     },
     legacyParse(headers, rows) {
       const idx = (h) => headers.indexOf(h);
