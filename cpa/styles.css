@@ -2787,3 +2787,80 @@ tr.family-member.family-last > td {
 }
 .su-group-copy-btn { padding: 4px 10px; font-size: 12px; }
 .su-row-copy-btn { padding: 3px 8px; font-size: 11px; }
+
+/* ===== 對帳單 cell 雙值樣式(2026-05 update)===== */
+.settlement-grid .col-product-sub {
+  font-size: 10px;
+  color: #999;
+  font-weight: 400;
+  margin-top: 2px;
+}
+.settlement-grid td.cell-stack {
+  padding: 3px 8px;
+  line-height: 1.25;
+}
+.settlement-grid td.cell-stack .cell-installs {
+  font-weight: 600;
+  color: #2a2a2a;
+  font-size: 12px;
+}
+.settlement-grid td.cell-stack .cell-amount {
+  font-size: 10.5px;
+  color: #888;
+  margin-top: 1px;
+}
+.settlement-grid tr.row-totals td.cell-stack .cell-installs,
+.settlement-grid tr.row-totals td.cell-stack .cell-amount {
+  color: #333;
+}
+.settlement-grid tr.row-future td.cell-stack .cell-installs,
+.settlement-grid tr.row-future td.cell-stack .cell-amount {
+  color: #c5c5c5;
+}
+
+/* ===== 設定頁分頁 ===== */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #d8d8d8;
+  margin-bottom: 0;
+}
+.settings-tab {
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 14px;
+  cursor: pointer;
+  color: #666;
+  margin-bottom: -1px;
+}
+.settings-tab:hover { background: #f5f5f5; color: #333; }
+.settings-tab.active {
+  background: #fff;
+  border: 1px solid #d8d8d8;
+  border-bottom: 2px solid #fff;
+  color: #2a82c8;
+  font-weight: 600;
+  border-radius: 4px 4px 0 0;
+}
+
+/* 月匯率表 */
+.rates-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rates-table thead th {
+  background: #fafafa;
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  color: #666;
+  border-bottom: 1px solid #e5e5e5;
+}
+.rates-table thead th.num { text-align: right; }
+.rates-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #f3f3f3;
+  font-variant-numeric: tabular-nums;
+}
+.rates-table td.num { text-align: right; }
+.rates-table td input { padding: 4px 8px; font-size: 12px; border: 1px solid #d8d8d8; border-radius: 3px; }

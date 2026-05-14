@@ -3,7 +3,7 @@
 
 import { getState, update, uid } from "../state.js";
 import { nowTaipeiStamp } from "../lib/dates.js";
-import { SETTLEMENT_MODES } from "../schema.js";
+import { SETTLEMENT_MODES, SHORT_URL_TYPES, SHORT_URL_TYPE_LABEL } from "../schema.js";
 
 export function render(root) {
   const s = getState();
@@ -38,6 +38,7 @@ export function render(root) {
                 <th>名稱</th>
                 <th>預設 CPA 單價(RMB)</th>
                 <th>結算模式</th>
+                <th>採用連結</th>
                 <th>聯絡方式</th>
                 <th>旗下線路</th>
                 <th></th>
@@ -61,6 +62,10 @@ export function render(root) {
 
 function row(p, channelCount) {
   const modeLabel = p.settlement_mode === "postpaid" ? "後結算" : "預付款";
+  const surlType = p.short_url_type || "";
+  const surlLabel = surlType
+    ? `<span style="padding:1px 6px;background:#e3f2fd;color:#1565c0;border-radius:4px;font-size:11px">${surlType} · ${SHORT_URL_TYPE_LABEL[surlType]}</span>`
+    : '<span class="ink-3">不採用</span>';
   return `
     <tr>
       <td>
@@ -69,6 +74,7 @@ function row(p, channelCount) {
       </td>
       <td class="num">${formatPrice(p.default_cpa_price_rmb)}</td>
       <td>${modeLabel}</td>
+      <td>${surlLabel}</td>
       <td>${esc(p.contact_info || "—")}</td>
       <td class="num">${channelCount}</td>
       <td class="num">
@@ -88,7 +94,7 @@ function openEditor(publisherId) {
   const s = getState();
   const isNew = !publisherId;
   const p = isNew
-    ? { id: uid("pub"), name: "", default_cpa_price_rmb: 2.5, contact_info: "", settlement_mode: "prepaid" }
+    ? { id: uid("pub"), name: "", default_cpa_price_rmb: 2.5, contact_info: "", settlement_mode: "prepaid", short_url_type: "" }
     : s.publishers.find((x) => x.id === publisherId);
   if (!p) return;
 
@@ -121,6 +127,17 @@ function openEditor(publisherId) {
       <input id="f-contact" type="text" value="${esc(p.contact_info || "")}" placeholder="例:@telegram_id / email / 微信" />
       <div class="ink-3" style="font-size:11px;margin-top:4px">同站長的線路在「縮網址」頁會分一組批次通知</div>
     </div>
+    <div class="field mt-8">
+      <label>採用連結 <span class="ink-3" style="font-weight:400">(決定縮網址前綴;「不採用」= 此站長不出現在縮網址頁)</span></label>
+      <div>
+        ${["L1", "L3", "L5", ""].map((t) => `
+          <label style="margin-right:14px">
+            <input type="radio" name="f-surl" value="${t}" ${(p.short_url_type || "") === t ? "checked" : ""} />
+            ${t ? `${t} · ${SHORT_URL_TYPE_LABEL[t]}` : "不採用"}
+          </label>
+        `).join("")}
+      </div>
+    </div>
     <div class="modal-actions">
       <button id="btn-cancel">取消</button>
       <button id="btn-save" class="primary">儲存</button>
@@ -135,6 +152,7 @@ function openEditor(publisherId) {
     const price = Number(q("#f-price").value);
     const contact = q("#f-contact").value.trim();
     const mode = dlg.querySelector('input[name="f-mode"]:checked')?.value || "prepaid";
+    const surlType = dlg.querySelector('input[name="f-surl"]:checked')?.value ?? "";
     if (!name) { window.toast("站長名稱必填", "bad"); return; }
     if (!Number.isFinite(price) || price <= 0) { window.toast("預設單價要 > 0", "bad"); return; }
 
@@ -147,6 +165,7 @@ function openEditor(publisherId) {
         default_cpa_price_rmb: price,
         contact_info: contact,
         settlement_mode: SETTLEMENT_MODES.includes(mode) ? mode : "prepaid",
+        short_url_type: SHORT_URL_TYPES.includes(surlType) ? surlType : "",
         created_at: existing?.created_at || nowTaipeiStamp(),
       };
       if (existing) Object.assign(existing, rec);

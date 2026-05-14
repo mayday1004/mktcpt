@@ -8,7 +8,7 @@
 //   - 各 spec 互不相依;upsertInState 不能假設「先有產品才有 install_data」
 //     (sync 順序未必如此 — 用 ensureXxx 容錯)
 
-import { RAW_INSTALL_FIELDS, CHANNEL_STATUSES, SETTLEMENT_MODES, ELIMINATION_MODES } from "../schema.js";
+import { RAW_INSTALL_FIELDS, CHANNEL_STATUSES, SETTLEMENT_MODES, ELIMINATION_MODES, SHORT_URL_TYPES } from "../schema.js";
 
 const numOr = (v, fallback = 0) => {
   const n = Number(v);
@@ -21,13 +21,14 @@ export const TABLE_SYNC_SPECS = [
   // ── 1. 產品(_id = product.id) ──────────────────────────────────────
   {
     sheetName: "產品",
-    dataHeaders: ["id", "名稱", "GSheets欄位代碼", "啟用CPA計費", "建立時間"],
+    dataHeaders: ["id", "名稱", "GSheets欄位代碼", "縮網址代碼", "啟用CPA計費", "建立時間"],
     flatten: (s) => (s.products || []).map((p) => ({
       _id: p.id,
       dataRow: [
         p.id,
         p.name || "",
         p.gsheet_field_code || "",
+        p.short_url_code || "",
         p.cpa_enabled ? "Y" : "",
         p.created_at || "",
       ],
@@ -39,6 +40,7 @@ export const TABLE_SYNC_SPECS = [
         id: _id,
         name: String(obj["名稱"] || ""),
         gsheet_field_code: String(obj["GSheets欄位代碼"] || ""),
+        short_url_code: String(obj["縮網址代碼"] || ""),
         cpa_enabled: String(obj["啟用CPA計費"] || "").toUpperCase() === "Y",
         created_at: String(obj["建立時間"] || existing?.created_at || ""),
       };
@@ -50,25 +52,24 @@ export const TABLE_SYNC_SPECS = [
     },
     legacyParse(headers, rows) {
       const idx = (h) => headers.indexOf(h);
-      const iId = idx("id"), iName = idx("名稱"), iCode = idx("GSheets欄位代碼"),
-            iEn = idx("啟用CPA計費"), iAt = idx("建立時間");
       return rows
         .map((r) => ({
-          id: String(r[iId] || ""),
-          name: String(r[iName] || ""),
-          code: String(r[iCode] || ""),
-          en: iEn >= 0 && String(r[iEn] || "").toUpperCase() === "Y" ? "Y" : "",
-          at: String(r[iAt] || ""),
+          id: String(r[idx("id")] || ""),
+          name: String(r[idx("名稱")] || ""),
+          code: String(r[idx("GSheets欄位代碼")] || ""),
+          su: String(r[idx("縮網址代碼")] || ""),
+          en: idx("啟用CPA計費") >= 0 && String(r[idx("啟用CPA計費")] || "").toUpperCase() === "Y" ? "Y" : "",
+          at: String(r[idx("建立時間")] || ""),
         }))
         .filter((p) => p.id)
-        .map((p) => ({ _id: p.id, dataRow: [p.id, p.name, p.code, p.en, p.at] }));
+        .map((p) => ({ _id: p.id, dataRow: [p.id, p.name, p.code, p.su, p.en, p.at] }));
     },
   },
 
   // ── 2. 站長(_id = publisher.id) ─────────────────────────────────────
   {
     sheetName: "站長",
-    dataHeaders: ["id", "名稱", "預設CPA單價(RMB)", "聯絡方式", "結算模式", "建立時間"],
+    dataHeaders: ["id", "名稱", "預設CPA單價(RMB)", "聯絡方式", "結算模式", "採用連結", "建立時間"],
     flatten: (s) => (s.publishers || []).map((p) => ({
       _id: p.id,
       dataRow: [
@@ -77,6 +78,7 @@ export const TABLE_SYNC_SPECS = [
         p.default_cpa_price_rmb ?? "",
         p.contact_info || "",
         p.settlement_mode || "prepaid",
+        p.short_url_type || "",
         p.created_at || "",
       ],
     })),
@@ -84,12 +86,14 @@ export const TABLE_SYNC_SPECS = [
       state.publishers = state.publishers || [];
       const existing = state.publishers.find((x) => x.id === _id);
       const mode = String(obj["結算模式"] || "prepaid");
+      const surl = String(obj["採用連結"] || "");
       const rec = {
         id: _id,
         name: String(obj["名稱"] || ""),
         default_cpa_price_rmb: numOr(obj["預設CPA單價(RMB)"]),
         contact_info: String(obj["聯絡方式"] || ""),
         settlement_mode: SETTLEMENT_MODES.includes(mode) ? mode : "prepaid",
+        short_url_type: SHORT_URL_TYPES.includes(surl) ? surl : "",
         created_at: String(obj["建立時間"] || existing?.created_at || ""),
       };
       if (existing) Object.assign(existing, rec);
@@ -107,10 +111,11 @@ export const TABLE_SYNC_SPECS = [
           price: numOr(r[idx("預設CPA單價(RMB)")]),
           contact: String(r[idx("聯絡方式")] || ""),
           mode: String(r[idx("結算模式")] || "prepaid"),
+          surl: String(r[idx("採用連結")] || ""),
           at: String(r[idx("建立時間")] || ""),
         }))
         .filter((x) => x.id)
-        .map((x) => ({ _id: x.id, dataRow: [x.id, x.name, x.price, x.contact, x.mode, x.at] }));
+        .map((x) => ({ _id: x.id, dataRow: [x.id, x.name, x.price, x.contact, x.mode, x.surl, x.at] }));
     },
   },
 
@@ -121,7 +126,7 @@ export const TABLE_SYNC_SPECS = [
       "id", "渠道名稱", "站長ID", "(站長名稱)", "個別CPA單價(RMB)",
       "狀態", "淘汰日期", "截止計費日期", "淘汰模式", "已確認淘汰日",
       "備註", "建立時間",
-      "縮網址參數", "舊網域覆寫", "新網域覆寫", "縮網址已通知",
+      "縮網址參數JSON", "舊網域覆寫", "新網域覆寫", "縮網址已通知",
     ],
     flatten: (s) => {
       const pubName = Object.fromEntries((s.publishers || []).map((p) => [p.id, p.name]));
@@ -140,7 +145,7 @@ export const TABLE_SYNC_SPECS = [
           c.confirmed_eliminated_at || "",
           c.notes || "",
           c.created_at || "",
-          c.short_url_param || "",
+          c.short_url_params ? JSON.stringify(c.short_url_params) : "",
           c.short_url_old_override || "",
           c.short_url_new_override || "",
           c.short_url_notified ? "Y" : "",
@@ -152,6 +157,11 @@ export const TABLE_SYNC_SPECS = [
       const existing = state.channels.find((x) => x.id === _id);
       const status = String(obj["狀態"] || "啟用中");
       const elimMode = String(obj["淘汰模式"] || "");
+      let paramsObj = {};
+      try {
+        const raw = String(obj["縮網址參數JSON"] || "").trim();
+        if (raw && raw.startsWith("{")) paramsObj = JSON.parse(raw) || {};
+      } catch {}
       const rec = {
         id: _id,
         name: String(obj["渠道名稱"] || ""),
@@ -165,7 +175,7 @@ export const TABLE_SYNC_SPECS = [
         confirmed_eliminated_at: String(obj["已確認淘汰日"] || "").slice(0, 10) || "",
         notes: String(obj["備註"] || ""),
         created_at: String(obj["建立時間"] || existing?.created_at || ""),
-        short_url_param: String(obj["縮網址參數"] || ""),
+        short_url_params: paramsObj,
         short_url_old_override: String(obj["舊網域覆寫"] || ""),
         short_url_new_override: String(obj["新網域覆寫"] || ""),
         short_url_notified: String(obj["縮網址已通知"] || "").toUpperCase() === "Y",
@@ -392,7 +402,11 @@ export const TABLE_SYNC_SPECS = [
       push("income_rate", settings.income_rate ?? 4.6);
       push("low_balance_threshold_rmb", settings.low_balance_threshold_rmb ?? 200);
       push("short_url_new_domain", settings.short_url_new_domain ?? "");
-      push("short_url_prefix", settings.short_url_prefix ?? "");
+      const prefMap = settings.short_url_prefix_map || {};
+      push("short_url_prefix_L1", prefMap.L1 ?? "l1");
+      push("short_url_prefix_L3", prefMap.L3 ?? "l3");
+      push("short_url_prefix_L5", prefMap.L5 ?? "l5");
+      push("monthly_rates_json", JSON.stringify(settings.monthly_rates || {}));
       return out;
     },
     upsertInState(state, _id, obj) {
@@ -402,7 +416,16 @@ export const TABLE_SYNC_SPECS = [
       else if (_id === "income_rate") state.settings.income_rate = numOr(v, 4.6);
       else if (_id === "low_balance_threshold_rmb") state.settings.low_balance_threshold_rmb = numOr(v, 200);
       else if (_id === "short_url_new_domain") state.settings.short_url_new_domain = String(v ?? "");
-      else if (_id === "short_url_prefix") state.settings.short_url_prefix = String(v ?? "");
+      else if (_id === "short_url_prefix_L1" || _id === "short_url_prefix_L3" || _id === "short_url_prefix_L5") {
+        if (!state.settings.short_url_prefix_map) state.settings.short_url_prefix_map = { L1: "l1", L3: "l3", L5: "l5" };
+        const slot = _id.slice(-2);
+        state.settings.short_url_prefix_map[slot] = String(v ?? "");
+      } else if (_id === "monthly_rates_json") {
+        try {
+          const raw = String(v ?? "").trim();
+          state.settings.monthly_rates = raw && raw.startsWith("{") ? (JSON.parse(raw) || {}) : {};
+        } catch { state.settings.monthly_rates = {}; }
+      }
       // 忽略 current_month / sheets_webapp_url / sheets_token(這些不該從 server 套用)
     },
     removeFromState(state, _id) {
@@ -411,7 +434,9 @@ export const TABLE_SYNC_SPECS = [
       else if (_id === "income_rate") state.settings.income_rate = 4.6;
       else if (_id === "low_balance_threshold_rmb") state.settings.low_balance_threshold_rmb = 200;
       else if (_id === "short_url_new_domain") state.settings.short_url_new_domain = "";
-      else if (_id === "short_url_prefix") state.settings.short_url_prefix = "";
+      else if (_id === "short_url_prefix_L1" || _id === "short_url_prefix_L3" || _id === "short_url_prefix_L5") {
+        if (state.settings.short_url_prefix_map) state.settings.short_url_prefix_map[_id.slice(-2)] = _id.slice(-2).toLowerCase();
+      } else if (_id === "monthly_rates_json") state.settings.monthly_rates = {};
     },
     legacyParse(headers, rows) {
       const idx = (h) => headers.indexOf(h);

@@ -26,6 +26,10 @@ export const CHANNEL_STATUSES = ["啟用中", "淘汰中", "已淘汰"];
 // 結算模式(站長)
 export const SETTLEMENT_MODES = ["prepaid", "postpaid"];  // 預付款 / 後結算
 
+// 採用連結 slot(站長)— 同 CPT short_url_type
+export const SHORT_URL_TYPES = ["L1", "L3", "L5", ""];
+export const SHORT_URL_TYPE_LABEL = { L1: "權重", L3: "APK", L5: "小島", "": "不採用" };
+
 // 淘汰模式(線路)
 export const ELIMINATION_MODES = ["stop", "winding-down"];
 // stop          → 明確停止合作,從淘汰隔天起不計費
@@ -38,20 +42,23 @@ export function defaultState() {
     version: VERSION,
     settings: {
       current_month: ym,
-      expense_rate: 4.8,            // RMB → TWD 支出匯率(內部報表預設值;若打款記錄有指定,以該批次為準)
-      income_rate: 4.6,             // TWD 收款匯率(內部報表「首儲金額」這類收入欄位用)
+      expense_rate: 4.8,            // RMB → TWD 支出匯率(預設值;月匯率沒設才用此)
+      income_rate: 4.6,             // TWD 收款匯率(預設值;月匯率沒設才用此)
       low_balance_threshold_rmb: 200,  // 站長餘額低於此值在概覽顯示警示
       sheets_webapp_url: "",
       sheets_token: "",
       short_url_new_domain: "",     // 全站當前新網域(縮網址頁)
-      short_url_prefix: "",         // 全站前綴(例:l5 / go),可空。URL 形式 https://[prefix.]domain/param
+      short_url_prefix_map: { L1: "l1", L3: "l3", L5: "l5" },  // slot → 實際前綴(同 CPT)
+      monthly_rates: {},            // { "2026-05": { expense: 4.8, income: 4.6 }, ... }
     },
-    products: [],          // [{ id, name, gsheet_field_code, cpa_enabled, created_at }]
-    publishers: [],        // [{ id, name, default_cpa_price_rmb, contact_info, settlement_mode, created_at }]
+    products: [],          // [{ id, name, gsheet_field_code, short_url_code?, cpa_enabled, created_at }]
+    publishers: [],        // [{ id, name, default_cpa_price_rmb, contact_info, settlement_mode,
+                           //   short_url_type?(L1/L3/L5/""), created_at }]
     channels: [],          // [{ id, name(=渠道名稱), publisher_id, cpa_price_rmb?, status,
                            //   eliminated_at?, billing_end_date?, elimination_mode?,
                            //   confirmed_eliminated_at?, notes, created_at,
-                           //   short_url_param?, short_url_old_override?, short_url_new_override?, short_url_notified? }]
+                           //   short_url_params?({product_id: param}),  // per-product 參數覆寫
+                           //   short_url_old_override?, short_url_new_override?, short_url_notified? }]
     payments: [],          // [{ id, publisher_id, date, amount_rmb, exchange_rate,
                            //   remaining_rmb(FIFO 剩餘), notes, created_at }]
     install_data: [],      // [{ id(=date::channel_id::product_id), date, channel_id,
@@ -66,4 +73,13 @@ export function channelStatusColor(status) {
   if (status === "淘汰中") return "#ff9800";    // 橘
   if (status === "已淘汰") return "#d32f2f";    // 紅
   return "#4caf50";                              // 綠(啟用中)
+}
+
+// 取得指定月份的匯率(回 { expense, income });沒設月匯率時 fallback 全域預設
+export function getRatesForMonth(settings, yearMonth) {
+  const monthly = settings?.monthly_rates?.[yearMonth];
+  return {
+    expense: Number(monthly?.expense ?? settings?.expense_rate ?? 4.8),
+    income: Number(monthly?.income ?? settings?.income_rate ?? 4.6),
+  };
 }

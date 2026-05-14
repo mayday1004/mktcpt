@@ -30,6 +30,7 @@ export function render(root) {
               <tr>
                 <th>名稱</th>
                 <th>GSheets 欄位代碼</th>
+                <th>縮網址代碼</th>
                 <th>CPA 計費</th>
                 <th></th>
               </tr>
@@ -58,6 +59,7 @@ function row(p) {
         <div class="ink-3" style="font-size:11px;margin-top:2px">id: <code>${esc(p.id)}</code></div>
       </td>
       <td><code>${esc(p.gsheet_field_code || "—")}</code></td>
+      <td><code>${esc(p.short_url_code || "—")}</code></td>
       <td>${p.cpa_enabled ? "✓ 啟用" : "—"}</td>
       <td class="num">
         <button data-edit="${esc(p.id)}">編輯</button>
@@ -71,7 +73,7 @@ function openEditor(productId) {
   const s = getState();
   const isNew = !productId;
   const p = isNew
-    ? { id: uid("prod"), name: "", gsheet_field_code: "", cpa_enabled: true }
+    ? { id: uid("prod"), name: "", gsheet_field_code: "", short_url_code: "", cpa_enabled: true }
     : s.products.find((x) => x.id === productId);
   if (!p) return;
 
@@ -84,6 +86,10 @@ function openEditor(productId) {
     <div class="field mt-8">
       <label>GSheets 欄位代碼 <span class="ink-3" style="font-weight:400">(匯入時用此代碼對應欄位,不可重複)</span></label>
       <input id="f-code" type="text" value="${esc(p.gsheet_field_code || "")}" placeholder="例:AV9、jk" />
+    </div>
+    <div class="field mt-8">
+      <label>縮網址代碼 <span class="ink-3" style="font-weight:400">(縮網址參數預設 = 此代碼 + 渠道名稱;例:AV9 → 9、JK → jk;留空 = 不參與)</span></label>
+      <input id="f-su-code" type="text" value="${esc(p.short_url_code || "")}" placeholder="例:9 / jk / hyc" />
     </div>
     <div class="field mt-8">
       <label><input id="f-enabled" type="checkbox" ${p.cpa_enabled ? "checked" : ""} /> 啟用 CPA 計費(未勾選的產品不參與結算)</label>
@@ -100,6 +106,7 @@ function openEditor(productId) {
   q("#btn-save").onclick = () => {
     const name = q("#f-name").value.trim();
     const code = q("#f-code").value.trim();
+    const suCode = q("#f-su-code").value.trim();
     const enabled = q("#f-enabled").checked;
     if (!name) { window.toast("名稱必填", "bad"); return; }
     if (!code) { window.toast("GSheets 欄位代碼必填", "bad"); return; }
@@ -114,6 +121,7 @@ function openEditor(productId) {
         id: p.id,
         name,
         gsheet_field_code: code,
+        short_url_code: suCode,
         cpa_enabled: enabled,
         created_at: existing?.created_at || nowTaipeiStamp(),
       };

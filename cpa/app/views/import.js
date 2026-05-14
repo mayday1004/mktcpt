@@ -48,27 +48,16 @@ export function render(root) {
       </div>
     </div>
 
-    <div class="card">
-      <h2 style="margin-top:0">📋 欄位規格(${INPUT_HEADERS.length} 欄)</h2>
-      <div class="table-wrap" style="max-width:100%">
-        <table>
-          <thead>
-            <tr><th>欄位</th><th>說明 / 範例</th></tr>
-          </thead>
-          <tbody>
-            <tr><td><code>日期</code></td><td>YYYY-MM-DD,例:<code>2026-05-14</code></td></tr>
-            <tr><td><code>渠道名稱</code></td><td>跟系統內「線路」的「渠道名稱」完全一致,大小寫敏感</td></tr>
-            <tr><td><code>產品代碼</code></td><td>跟系統內「產品」的「GSheets 欄位代碼」一致;或填產品 id / 中文名</td></tr>
-            ${RAW_INSTALL_FIELDS.map((f) => `
-              <tr><td><code>${esc(f)}</code></td><td>${f === "廠商安裝" ? "<strong>CPA 計費依此欄位</strong>(整數)" : "數值欄位"}</td></tr>
-            `).join("")}
-          </tbody>
-        </table>
+    <details class="card" style="padding:10px 14px">
+      <summary class="ink-3" style="cursor:pointer;font-size:13px">📋 欄位規格(點開展開,共 ${INPUT_HEADERS.length} 欄)</summary>
+      <div class="ink-3" style="font-size:12px;line-height:1.8;margin-top:8px">
+        <strong>日期</strong>(YYYY-MM-DD)·
+        <strong>渠道名稱</strong>(跟線路頁「渠道名稱」完全一致)·
+        <strong>產品代碼</strong>(產品的 GSheets 欄位代碼 / id / 中文名皆可)·
+        ${RAW_INSTALL_FIELDS.map((f) => f === "廠商安裝" ? `<strong style="color:#d32f2f">${esc(f)}(CPA 計費依此)</strong>` : `<strong>${esc(f)}</strong>`).join(" · ")}
+        <br>每列 = 一筆 (日期 × 渠道 × 產品) 的安裝數據;同 (日期+渠道+產品) 多次匯入會以最新一筆為準。
       </div>
-      <div class="ink-3" style="font-size:12px;margin-top:8px">
-        每列 = 一筆 (日期 × 渠道 × 產品) 的安裝數據;同 (日期+渠道+產品) 多次匯入會以最新一筆為準
-      </div>
-    </div>
+    </details>
 
     <div id="preview-card"></div>
 

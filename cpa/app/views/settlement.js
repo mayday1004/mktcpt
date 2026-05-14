@@ -1,15 +1,5 @@
-// 對帳報表(站長視角):日期(列) × 產品(欄)矩陣,給站長對帳用,全程 RMB。
-// 設計:壓縮網格、A4 直印剛好、整個畫面截圖即可、今天列高亮、未來列淡灰。
-//
-// 結構:
-//   [日期]  [款/預付款]  [產品1]  [產品2]  ...
-//   上月總結  期初餘額
-//   5/1      該日打款    該日該產品結算 RMB ...
-//   ...
-//   5/14 (今天,高亮)
-//   ... 未來日期淡灰
-//   總計     期初+本期打款合計    產品結算合計 ...
-//   結算     (跨所有欄)期末餘額
+// 对账报表(站长视角,整页简体):日期(列) × 产品(栏)矩阵。
+// 每个 cell 显示两行 — 厂商安装数 + 换算金额(RMB)。
 
 import { getState } from "../state.js";
 import { aggregateByPublisherMonth } from "../domain/billing.js";
@@ -43,15 +33,15 @@ export function render(root) {
   root.innerHTML = `
     <div class="view-head no-print">
       <div>
-        <h1>📄 對帳報表</h1>
-        <div class="desc">站長對帳用 · 全程 RMB · 按「列印 / 截圖」一畫面截下整張對帳單</div>
+        <h1>📄 对账报表</h1>
+        <div class="desc">站长对账用 · 全程 RMB · 整页简体 · 按「打印 / 截图」一画面截下整张对账单</div>
       </div>
     </div>
 
     <div class="card no-print">
       <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
         <div class="field" style="flex:1;min-width:200px">
-          <label>站長</label>
+          <label>站长</label>
           <select id="f-pub">
             ${publishers.map((p) => `<option value="${esc(p.id)}" ${p.id === view.publisher_id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
           </select>
@@ -63,14 +53,14 @@ export function render(root) {
           </select>
         </div>
         <div class="field" style="flex:1;min-width:140px">
-          <label>欄位</label>
+          <label>字段</label>
           <select id="f-product-mode">
-            <option value="active" ${view.product_mode === "active" ? "selected" : ""}>有跑過的產品</option>
-            <option value="all" ${view.product_mode === "all" ? "selected" : ""}>全部啟用產品</option>
+            <option value="active" ${view.product_mode === "active" ? "selected" : ""}>有跑过的产品</option>
+            <option value="all" ${view.product_mode === "all" ? "selected" : ""}>全部启用产品</option>
           </select>
         </div>
         <div>
-          <button class="primary" id="btn-print">🖨️ 列印 / 截圖</button>
+          <button class="primary" id="btn-print">🖨️ 打印 / 截图</button>
         </div>
       </div>
     </div>
@@ -98,7 +88,7 @@ export function render(root) {
 
   if (publishers.length === 0) {
     root.querySelector("#report").innerHTML = `
-      <div class="card"><p class="ink-2" style="margin:0">尚無站長,先到「站長」頁建立。</p></div>
+      <div class="card"><p class="ink-2" style="margin:0">尚无站长,先到「站长」页建立。</p></div>
     `;
     return;
   }
@@ -117,48 +107,53 @@ function renderReport(root, view) {
   const yearMonth = view.month;
   const daysInMonth = lastDayOfMonth(yearMonth);
 
-  // 決定要列哪些產品欄
   const productsToShow = decideProducts(s, pub.id, r.daily_costs, view.product_mode || "active");
 
-  // 建 (date, product_id) → cost RMB lookup
+  // (date, product_id) → { installs, cost }
   const dailyByKey = new Map();
   for (const d of r.daily_costs) {
     const key = `${d.date}::${d.product_id}`;
-    dailyByKey.set(key, (dailyByKey.get(key) || 0) + d.cost_rmb);
+    if (!dailyByKey.has(key)) dailyByKey.set(key, { installs: 0, cost: 0 });
+    const e = dailyByKey.get(key);
+    e.installs += d.installs_billed;
+    e.cost += d.cost_rmb;
   }
-  // 各產品月總計
+  // product_id → { installs, cost } 月总计
   const productTotals = new Map();
   for (const d of r.daily_costs) {
-    productTotals.set(d.product_id, (productTotals.get(d.product_id) || 0) + d.cost_rmb);
+    if (!productTotals.has(d.product_id)) productTotals.set(d.product_id, { installs: 0, cost: 0 });
+    const t = productTotals.get(d.product_id);
+    t.installs += d.installs_billed;
+    t.cost += d.cost_rmb;
   }
 
-  // 各日打款金額
+  // 每日打款金额
   const paymentsByDate = new Map();
   for (const p of r.payments_in_period) {
     paymentsByDate.set(p.date, (paymentsByDate.get(p.date) || 0) + Number(p.amount_rmb || 0));
   }
 
   const productColCount = productsToShow.length;
-  const numericColCount = 1 + productColCount;  // 款 + 產品數
+  const numericColCount = 1 + productColCount;
 
   panel.innerHTML = `
     <div class="settlement-print-card">
       <div class="settlement-banner">
         <div>
-          <div class="settlement-title">${esc(pub.name)} · ${esc(view.month)} 對帳單</div>
+          <div class="settlement-title">${esc(pub.name)} · ${esc(view.month)} 对账单</div>
           <div class="settlement-meta">
-            ${pub.settlement_mode === "postpaid" ? "後結算" : "預付款"} ·
-            預設單價 ¥${Number(pub.default_cpa_price_rmb || 0).toFixed(2)} ·
-            ${productColCount} 個產品在跑
-            ${r.shortfall_rmb > 0 ? ` · <span style="color:#d32f2f">⚠️ 有 ¥${formatNum(r.shortfall_rmb)} 結算未對應到打款批次</span>` : ""}
+            ${pub.settlement_mode === "postpaid" ? "后结算" : "预付款"} ·
+            预设单价 ¥${Number(pub.default_cpa_price_rmb || 0).toFixed(2)} ·
+            ${productColCount} 个产品在跑
+            ${r.shortfall_rmb > 0 ? ` · <span style="color:#d32f2f">⚠️ 有 ¥${formatNum(r.shortfall_rmb)} 结算未对应到打款批次</span>` : ""}
           </div>
         </div>
         <div class="settlement-balance">
-          <div class="settlement-balance-label">期末餘額(RMB)</div>
+          <div class="settlement-balance-label">期末余额(RMB)</div>
           <div class="settlement-balance-value ${r.closing_balance_rmb < 0 ? "neg" : ""}">
             ${formatRmb(r.closing_balance_rmb)}
           </div>
-          ${r.closing_balance_rmb < 0 ? '<div class="settlement-balance-hint">應付給站長</div>' : ""}
+          ${r.closing_balance_rmb < 0 ? '<div class="settlement-balance-hint">应付给站长</div>' : ""}
         </div>
       </div>
 
@@ -166,16 +161,16 @@ function renderReport(root, view) {
         <thead>
           <tr>
             <th rowspan="2" class="col-date">日期</th>
-            <th rowspan="2" class="col-payment">款/預付款</th>
+            <th rowspan="2" class="col-payment">款/预付款</th>
             ${productColCount === 0 ? "" : `<th colspan="${productColCount}" class="col-product-group">${esc(pub.name)}</th>`}
           </tr>
           <tr>
-            ${productsToShow.map((p) => `<th class="col-product">${esc(p.name)}</th>`).join("")}
+            ${productsToShow.map((p) => `<th class="col-product"><div>${esc(p.name)}</div><div class="col-product-sub">安装 / 金额</div></th>`).join("")}
           </tr>
         </thead>
         <tbody>
           <tr class="row-opening">
-            <td class="col-date">上月總結</td>
+            <td class="col-date">上月总结</td>
             <td class="col-payment num">${formatNum(r.opening_balance_rmb, true)}</td>
             ${productsToShow.map(() => `<td class="cell-empty"></td>`).join("")}
           </tr>
@@ -191,27 +186,39 @@ function renderReport(root, view) {
                 <td class="col-date">${day}日</td>
                 <td class="col-payment num ${payment > 0 ? "" : "cell-empty"}">${payment > 0 ? formatNum(payment) : ""}</td>
                 ${productsToShow.map((p) => {
-                  const val = dailyByKey.get(`${ymd}::${p.id}`) || 0;
-                  return `<td class="num ${val > 0 ? "" : "cell-empty"}">${val > 0 ? formatNum(val) : ""}</td>`;
+                  const v = dailyByKey.get(`${ymd}::${p.id}`);
+                  if (!v || v.installs === 0) {
+                    return `<td class="num cell-empty"></td>`;
+                  }
+                  return `<td class="num cell-stack">
+                    <div class="cell-installs">${formatNum(v.installs)}</div>
+                    <div class="cell-amount">¥${formatNum(v.cost)}</div>
+                  </td>`;
                 }).join("")}
               </tr>
             `;
           }).join("")}
 
           <tr class="row-totals">
-            <td class="col-date">總計</td>
+            <td class="col-date">总计</td>
             <td class="col-payment num">${formatNum(r.opening_balance_rmb + r.total_paid_in_period_rmb, true)}</td>
             ${productsToShow.map((p) => {
-              const t = productTotals.get(p.id) || 0;
-              return `<td class="num ${t > 0 ? "" : "cell-empty"}">${t > 0 ? formatNum(t) : ""}</td>`;
+              const t = productTotals.get(p.id);
+              if (!t || t.installs === 0) {
+                return `<td class="num cell-empty"></td>`;
+              }
+              return `<td class="num cell-stack">
+                <div class="cell-installs">${formatNum(t.installs)}</div>
+                <div class="cell-amount">¥${formatNum(t.cost)}</div>
+              </td>`;
             }).join("")}
           </tr>
 
           <tr class="row-final">
-            <td class="col-date">結算</td>
+            <td class="col-date">结算</td>
             <td colspan="${numericColCount}" class="num ${r.closing_balance_rmb < 0 ? "neg" : ""}">
               ${formatRmb(r.closing_balance_rmb)}
-              ${r.closing_balance_rmb < 0 ? "(應付給站長)" : ""}
+              ${r.closing_balance_rmb < 0 ? "(应付给站长)" : ""}
             </td>
           </tr>
         </tbody>
@@ -219,7 +226,7 @@ function renderReport(root, view) {
 
       ${r.payments_in_period.length > 0 ? `
         <div class="settlement-footnote">
-          本期打款明細:${r.payments_in_period.map((p) =>
+          本期打款明细:${r.payments_in_period.map((p) =>
             `${p.date.slice(5)} ¥${formatNum(p.amount_rmb)}${p.notes ? `(${esc(p.notes)})` : ""}`
           ).join(" · ")}
         </div>
@@ -228,19 +235,16 @@ function renderReport(root, view) {
   `;
 }
 
-// 哪些產品要列為欄
 function decideProducts(state, publisherId, dailyCosts, mode) {
   const products = state.products || [];
   if (mode === "all") {
     return products.filter((p) => p.cpa_enabled !== false);
   }
-  // active 模式:這站長有跑過的產品(install_data 有對應)
   const myChannelIds = new Set((state.channels || []).filter((c) => c.publisher_id === publisherId).map((c) => c.id));
   const seenProductIds = new Set();
   for (const d of state.install_data || []) {
     if (myChannelIds.has(d.channel_id)) seenProductIds.add(d.product_id);
   }
-  // 也納入「本月有結算」的產品(冗餘安全網)
   for (const d of dailyCosts) seenProductIds.add(d.product_id);
   return products.filter((p) => seenProductIds.has(p.id));
 }
@@ -269,18 +273,17 @@ function formatRmb(v) {
   if (v == null || !Number.isFinite(Number(v))) return "—";
   const n = Number(v);
   const sign = n < 0 ? "-" : "";
-  return `${sign}¥${Math.abs(n).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${sign}¥${Math.abs(n).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-// 對帳網格內 cell 用:整數顯示(節省空間),保留 1 位小數於必要
 function formatNum(v, allowZero = false) {
   if (v == null || !Number.isFinite(Number(v))) return "";
   const n = Number(v);
   if (!allowZero && n === 0) return "";
   if (Math.abs(n) >= 100 || Number.isInteger(n)) {
-    return Math.round(n).toLocaleString("zh-TW");
+    return Math.round(n).toLocaleString("zh-CN");
   }
-  return n.toLocaleString("zh-TW", { maximumFractionDigits: 1 });
+  return n.toLocaleString("zh-CN", { maximumFractionDigits: 1 });
 }
 
 function esc(s) {

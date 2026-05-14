@@ -141,9 +141,6 @@ export function render(root) {
           記錄正在使用中的連結,並通知站長更換。「全站當前網址」即為新網址;套用後<strong>現有廣告</strong>會把當下新網址 snapshot 為自己的舊網址,<strong>新增的廣告</strong>則無舊網址(直接視為新合作)。同站長(聯繫資料相同)的廣告自動分組,一次複製、一次標記已通知。
         </div>
       </div>
-      <div class="view-actions">
-        <button id="su-prefix" class="link-btn" style="font-size:13px;padding:6px 14px;border:1px solid var(--line);border-radius:6px;background:#fff">🔧 縮網址前綴</button>
-      </div>
     </div>
 
     <div class="card">
@@ -154,11 +151,13 @@ export function render(root) {
           <input id="su-current" type="text" value="${esc(globalNew)}" placeholder="例:abc.com" style="font-size:14px;padding:9px 12px" />
         </div>
         <button id="su-apply" class="primary" style="padding:9px 16px;font-size:14px;white-space:nowrap;align-self:flex-end">💾 套用為新網址</button>
+        <button id="su-prefix" style="padding:9px 14px;font-size:14px;white-space:nowrap;align-self:flex-end;border:1px solid var(--line);border-radius:6px;background:#fff">🔧 縮網址前綴</button>
       </div>
       <div class="hint" style="margin-top:10px;line-height:1.6;font-size:12px">
         套用時:<strong>現有廣告</strong>會把目前的新網址(<span class="mono">${esc(globalNew || "未設定")}</span>)寫進各自的舊網址;新網址 ← 您輸入的值;<strong>所有廣告的通知狀態會重置為「未通知」</strong>。<br>
         <strong>之後新增的廣告</strong>仍然維持「無舊網址」狀態。
       </div>
+
       <div style="margin-top:14px;display:inline-flex;gap:10px;align-items:center;font-size:13px;color:var(--ink-2);padding:8px 14px;background:#f6f7f9;border-radius:6px;border:1px solid var(--line)">
         <span style="color:var(--ink-3)">目前全站新網址</span>
         <strong class="mono" style="font-size:14px;color:var(--ink)">${esc(globalNew || "—")}</strong>
@@ -210,7 +209,7 @@ export function render(root) {
     </div>
   `;
 
-  // 縮網址前綴設定彈窗(§5.7.x)
+  // 縮網址前綴 — 按鈕在「套用為新網址」旁邊,點開彈窗(同 CPA)
   const prefixBtn = document.getElementById("su-prefix");
   if (prefixBtn) prefixBtn.onclick = () => openPrefixMapModal();
 
@@ -402,7 +401,7 @@ function renderRow(a, s, { inGroup = false } = {}) {
   `;
 }
 
-// 縮網址前綴對應彈窗(2026-05):編輯 settings.short_url_prefix_map
+// 縮網址前綴對應彈窗:編輯 settings.short_url_prefix_map
 // 業務 slot 永遠是 L1/L3/L5,實際 URL 子網域前綴可以另外設定(例如 L1 → L7)
 function openPrefixMapModal() {
   const s = getState();
@@ -451,14 +450,12 @@ function openPrefixMapModal() {
       L3: (q("#pf-L3").value.trim() || "L3"),
       L5: (q("#pf-L5").value.trim() || "L5"),
     };
-    // 簡易驗證:前綴不能含 . / / 或空白
     for (const [slot, v] of Object.entries(newMap)) {
       if (/[.\/\s]/.test(v)) {
         window.toast(`${slot} 前綴格式錯誤(不可含 . / 或空白)`, "bad");
         return;
       }
     }
-    // 偵測哪些 slot 真的變了 → 觸發 URL cascade(舊前綴凍結進 ad.short_url_old_prefix)
     const oldMap = { ...DEFAULT_PREFIX_MAP, ...(s.settings.short_url_prefix_map || {}) };
     const changedSlots = Object.keys(newMap).filter((slot) => newMap[slot] !== oldMap[slot]);
     if (changedSlots.length === 0) {
@@ -466,7 +463,6 @@ function openPrefixMapModal() {
       window.toast("前綴沒有變更", "");
       return;
     }
-    // 統計影響到的廣告數
     const affectedAds = (s.ads || []).filter((a) =>
       changedSlots.includes(a.short_url_type) && a.short_url_param
     );
@@ -481,13 +477,10 @@ function openPrefixMapModal() {
         const slot = ad.short_url_type;
         if (!slot || !changedSlots.includes(slot)) continue;
         if (!ad.short_url_param) continue;
-        // snapshot 目前 URL 為舊連結:domain 用當下的 effective new domain,prefix 凍結為舊 prefix
         const currentNewDomain = ad.short_url_new_override || previousGlobalNew;
-        if (currentNewDomain) {
-          ad.short_url_old_override = currentNewDomain;
-        }
+        if (currentNewDomain) ad.short_url_old_override = currentNewDomain;
         ad.short_url_old_prefix = oldMap[slot];
-        delete ad.short_url_new_override;  // 強制 fall back 到新前綴
+        delete ad.short_url_new_override;
         ad.short_url_notified = false;
       }
       st.settings.short_url_prefix_map = newMap;
@@ -496,6 +489,7 @@ function openPrefixMapModal() {
     window.toast(`已套用前綴更新(${affectedAds.length} 支廣告 snapshot 為舊連結,通知狀態已重置)`, "ok");
   };
 }
+
 
 function openOverrideModal(adCode) {
   const s = getState();
