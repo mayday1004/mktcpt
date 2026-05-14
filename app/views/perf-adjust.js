@@ -292,12 +292,8 @@ function renderEditableAdviceCard(entry, state, newWeightsByAd) {
     }
   }
   let products = (state.products || []).filter((p) => includedIds.has(p.id));
-  products = products.sort((a, b) => {
-    const wa = Number(oldWeights[a.id]) || 0;
-    const wb = Number(oldWeights[b.id]) || 0;
-    if (wa !== wb) return wb - wa;
-    return a.name.localeCompare(b.name);
-  });
+  // 排序:依固定產品順序(APP 家族先 + 各自破圈,小島依常見順序),跟 perf-adjust 主表一致
+  products = [...products].sort(compareProductOrder);
   const hiddenCount = Math.max(0, (state.products || []).length - products.length);
 
   const rows = products.map((p) => {

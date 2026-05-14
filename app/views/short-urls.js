@@ -12,12 +12,18 @@ function prefixOf(state, slotType) {
 
 // 構造完整 URL: https://{actualPrefix-lowercased}.{domain}/{param}
 //   slotType = "L1"/"L3"/"L5" 業務 slot;實際前綴由 settings.short_url_prefix_map 決定
-function buildUrl(slotType, domain, param, state) {
+//   prefixOverride(選填):明確指定前綴(用於舊 URL 渲染,當 ad.short_url_old_prefix 有值時)
+function buildUrl(slotType, domain, param, state, prefixOverride) {
   if (!slotType || !domain || !param) return "";
   const cleanDomain = String(domain).trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
   if (!cleanDomain) return "";
-  const prefix = prefixOf(state || getState(), slotType);
+  const prefix = prefixOverride || prefixOf(state || getState(), slotType);
   return `https://${prefix.toLowerCase()}.${cleanDomain}/${param}`;
+}
+
+// 取得舊 URL:若 ad.short_url_old_prefix 有值(前綴 cascade 時凍結),用它;否則用當前 slot 前綴
+function oldUrlOf(ad, oldDomain, state) {
+  return buildUrl(ad.short_url_type, oldDomain, ad.short_url_param, state, ad.short_url_old_prefix || undefined);
 }
 
 // 顯示模型(2026-05 修):
@@ -67,7 +73,7 @@ function groupByContact(rows) {
 function buildGroupCopyText(ads, s) {
   const adBlocks = ads.map((a) => {
     const dom = effectiveDomains(s, a);
-    const oldUrl = buildUrl(a.short_url_type, dom.oldDomain, a.short_url_param, s);
+    const oldUrl = oldUrlOf(a, dom.oldDomain, s);
     const newUrl = buildUrl(a.short_url_type, dom.newDomain, a.short_url_param, s);
     const lines = [];
     if (a.ad_name) lines.push(`[${a.ad_name}]`);
@@ -208,6 +214,8 @@ export function render(root) {
             ad.short_url_old_override = adCurrentNew;
           }
           delete ad.short_url_new_override;
+          // 域名 cascade 時清掉前綴凍結 — 舊 URL 用當前 slot 前綴(這是「域名」變動,不是前綴變動)
+          delete ad.short_url_old_prefix;
           ad.short_url_notified = false;
         }
         st.settings.short_url_new_domain = v;
@@ -317,7 +325,7 @@ function renderGroupHeader(group, s) {
 
 function renderRow(a, s, { inGroup = false } = {}) {
   const dom = effectiveDomains(s, a);
-  const oldUrl = buildUrl(a.short_url_type, dom.oldDomain, a.short_url_param, s);
+  const oldUrl = oldUrlOf(a, dom.oldDomain, s);
   const newUrl = buildUrl(a.short_url_type, dom.newDomain, a.short_url_param, s);
   const typeLabel = a.short_url_type
     ? `<span class="pill">${esc(a.short_url_type)}${TYPE_LABEL[a.short_url_type] ? `(${TYPE_LABEL[a.short_url_type]})` : ""}</span>`
@@ -426,11 +434,42 @@ function openPrefixMapModal() {
         return;
       }
     }
+    // 偵測哪些 slot 真的變了 → 觸發 URL cascade(舊前綴凍結進 ad.short_url_old_prefix)
+    const oldMap = { ...DEFAULT_PREFIX_MAP, ...(s.settings.short_url_prefix_map || {}) };
+    const changedSlots = Object.keys(newMap).filter((slot) => newMap[slot] !== oldMap[slot]);
+    if (changedSlots.length === 0) {
+      window.modal.close();
+      window.toast("前綴沒有變更", "");
+      return;
+    }
+    // 統計影響到的廣告數
+    const affectedAds = (s.ads || []).filter((a) =>
+      changedSlots.includes(a.short_url_type) && a.short_url_param
+    );
+    const summary = changedSlots
+      .map((slot) => `${slot}: ${oldMap[slot]} → ${newMap[slot]}`).join("、");
+    const confirmMsg = `將更新 ${changedSlots.length} 個 slot 前綴(${summary})。\n` +
+      `${affectedAds.length} 支廣告的「目前 URL」會 snapshot 為各自的舊連結,通知狀態重置為未通知。確定?`;
+    if (!window.confirm(confirmMsg)) return;
     update((st) => {
+      const previousGlobalNew = st.settings.short_url_new_domain || "";
+      for (const ad of st.ads || []) {
+        const slot = ad.short_url_type;
+        if (!slot || !changedSlots.includes(slot)) continue;
+        if (!ad.short_url_param) continue;
+        // snapshot 目前 URL 為舊連結:domain 用當下的 effective new domain,prefix 凍結為舊 prefix
+        const currentNewDomain = ad.short_url_new_override || previousGlobalNew;
+        if (currentNewDomain) {
+          ad.short_url_old_override = currentNewDomain;
+        }
+        ad.short_url_old_prefix = oldMap[slot];
+        delete ad.short_url_new_override;  // 強制 fall back 到新前綴
+        ad.short_url_notified = false;
+      }
       st.settings.short_url_prefix_map = newMap;
     }, "更新縮網址前綴對應");
     window.modal.close();
-    window.toast(`已儲存:L1→${newMap.L1} / L3→${newMap.L3} / L5→${newMap.L5}`, "ok");
+    window.toast(`已套用前綴更新(${affectedAds.length} 支廣告 snapshot 為舊連結,通知狀態已重置)`, "ok");
   };
 }
 
@@ -442,7 +481,7 @@ function openOverrideModal(adCode) {
   const ad = segs[0];
   const globalNew = s.settings.short_url_new_domain || "";
   const dom = effectiveDomains(s, ad);
-  const oldUrl = buildUrl(ad.short_url_type, dom.oldDomain, ad.short_url_param, s);
+  const oldUrl = oldUrlOf(ad, dom.oldDomain, s);
   const newUrl = buildUrl(ad.short_url_type, dom.newDomain, ad.short_url_param, s);
   const html = `
     <h2>編輯網域覆寫:${esc(adCode)} ${esc(ad.ad_name || "")}</h2>

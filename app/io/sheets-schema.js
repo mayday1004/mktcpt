@@ -187,7 +187,7 @@ export const TABLES = [
       "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動", "備註",
       "破圈分流配對ID", "破圈分流角色", "段建立時代碼",
       "廣告文案", "站長聯繫", "縮網址類型", "縮網址參數",
-      "縮網址舊網域覆寫", "縮網址新網域覆寫", "縮網址已通知",
+      "縮網址舊網域覆寫", "縮網址新網域覆寫", "縮網址舊前綴", "縮網址已通知",
     ],
     toRows: (s) => s.ads.map((a) => [
       a.id, a.ad_code, a.ad_name, a.group || "",
@@ -212,6 +212,7 @@ export const TABLES = [
       a.short_url_param || "",
       a.short_url_old_override || "",
       a.short_url_new_override || "",
+      a.short_url_old_prefix || "",
       a.short_url_notified ? "Y" : "",
     ]),
   },
@@ -432,6 +433,8 @@ export function assembleFromTables(raw) {
         ? { short_url_old_override: String(o["縮網址舊網域覆寫"] || "") } : {}),
       ...(adT.headers.includes("縮網址新網域覆寫")
         ? { short_url_new_override: String(o["縮網址新網域覆寫"] || "") } : {}),
+      ...(adT.headers.includes("縮網址舊前綴") && o["縮網址舊前綴"]
+        ? { short_url_old_prefix: String(o["縮網址舊前綴"]) } : {}),
       ...(adT.headers.includes("縮網址已通知")
         ? { short_url_notified: String(o["縮網址已通知"] || "").trim().toUpperCase() === "Y" } : {}),
     };
