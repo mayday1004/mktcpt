@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CPA 廣告計價後台</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <button id="sidebar-toggle" class="sidebar-toggle" title="收合 / 展開選單">☰</button>
+    <div class="brand">
+      <div class="brand-title">CPA 後台</div>
+      <div class="brand-sub" id="brand-month">—</div>
+    </div>
+    <nav>
+      <a href="#dashboard" data-view="dashboard" title="概覽"><span class="nav-ico">■</span><span class="nav-label">概覽</span><span class="nav-badge" data-badge="dashboard"></span></a>
+      <a href="#publishers" data-view="publishers" title="站長"><span class="nav-ico">●</span><span class="nav-label">站長</span></a>
+      <a href="#channels" data-view="channels" title="線路"><span class="nav-ico">▣</span><span class="nav-label">線路</span></a>
+      <a href="#products" data-view="products" title="產品"><span class="nav-ico">▲</span><span class="nav-label">產品</span></a>
+      <a href="#import" data-view="import" title="資料匯入"><span class="nav-ico">📥</span><span class="nav-label">資料匯入</span></a>
+      <a href="#payments" data-view="payments" title="帳務"><span class="nav-ico">💰</span><span class="nav-label">帳務</span></a>
+      <a href="#settlement" data-view="settlement" title="對帳報表"><span class="nav-ico">📄</span><span class="nav-label">對帳報表</span></a>
+      <a href="#perf-report" data-view="perf-report" title="內部報表"><span class="nav-ico">📈</span><span class="nav-label">內部報表</span></a>
+      <a href="#settings" data-view="settings" title="設定"><span class="nav-ico">⚙</span><span class="nav-label">設定</span></a>
+    </nav>
+    <div class="sidebar-footer">
+      <button id="btn-undo" class="undo-btn" disabled title="復原最近一次操作">↶ <span id="undo-label">復原</span></button>
+      <div class="rate-mini" id="rate-mini">匯率載入中…</div>
+    </div>
+  </aside>
+  <main id="view"></main>
+
+  <dialog id="modal"></dialog>
+  <div id="toast-host"></div>
+
+  <script type="module" src="app/main.js"></script>
+</body>
+</html>
