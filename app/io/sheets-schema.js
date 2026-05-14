@@ -185,7 +185,7 @@ export const TABLES = [
       "人民幣金額", "匯率", "台幣金額",
       "開始日期", "結束日期", "攤提天數", "每日攤提(台幣)",
       "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動", "備註",
-      "破圈分流配對ID", "破圈分流角色",
+      "破圈分流配對ID", "破圈分流角色", "段建立時代碼",
       "廣告文案", "站長聯繫", "縮網址類型", "縮網址參數",
       "縮網址舊網域覆寫", "縮網址新網域覆寫", "縮網址已通知",
     ],
@@ -205,6 +205,7 @@ export const TABLES = [
       a.notes || "",
       a.split_pair_id || "",
       a.split_role || "",
+      a.code_at_creation || "",
       a.ad_copy || "",
       a.contact_info || "",
       a.short_url_type || "",
@@ -414,6 +415,8 @@ export function assembleFromTables(raw) {
         ? { split_pair_id: String(o["破圈分流配對ID"]) } : {}),
       ...(adT.headers.includes("破圈分流角色") && o["破圈分流角色"]
         ? { split_role: String(o["破圈分流角色"]) } : {}),
+      ...(adT.headers.includes("段建立時代碼") && o["段建立時代碼"]
+        ? { code_at_creation: String(o["段建立時代碼"]) } : {}),
       ...(adT.headers.includes("廣告文案")
         ? { ad_copy: String(o["廣告文案"] || "") } : {}),
       ...(adT.headers.includes("站長聯繫")

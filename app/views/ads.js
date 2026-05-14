@@ -5,8 +5,9 @@ import { getExpenseRate, getUsdtToCnyRate } from "../schema.js";
 import { expiringAds } from "../domain/alerts.js";
 import { renderGiftDayInfo } from "./dashboard.js";
 import { todayTaipei, nowTaipeiStamp, addDays } from "../lib/dates.js";
-import { buildWeightAdjust, buildPoquanSplit } from "../domain/lifecycle.js";
+import { buildWeightAdjust, buildWeightAdjustWithAutoSplit } from "../domain/lifecycle.js";
 import { rebalanceSplitPair } from "../domain/split-pair.js";
+import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes } from "../domain/auto-split.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 
@@ -934,25 +935,18 @@ function weightSummary(seg, products, mode = "bar", opts = {}) {
 
 function actionButtons(seg, compact) {
   const id = seg.id;
-  const lockIcon = seg.lock_perf_adjust
-    ? `<span class="lock-icon" title="已鎖定不被成效自動調整">🔒</span>`
-    : "";
-  if (compact) {
-    return `
-      ${lockIcon}
-      <button data-edit="${id}">編輯</button>
-      <button data-renew="${id}">續費</button>
-      <button data-act="eliminate" data-id="${id}" title="淘汰(不再通知)">淘汰</button>
-      <button data-act="more" data-id="${id}" title="更多動作">⋯</button>
-    `;
-  }
+  const lockIcon = seg.lock_full
+    ? `<span class="lock-icon" title="🚫 禁止挪動">🚫</span>`
+    : (seg.lock_perf_adjust
+      ? `<span class="lock-icon" title="🔒 鎖權重">🔒</span>`
+      : "");
+  // 2026-05 按鈕 layout 重整(§5.7):[編輯][權重調整][⋯]
+  // ⋯ 內含 續費 / 結束 / 鎖定狀態 / 淘汰
   return `
     ${lockIcon}
     <button data-edit="${id}">編輯</button>
-    <button data-renew="${id}">續費</button>
-    <button data-act="weight" data-id="${id}">權重</button>
-    <button data-act="eliminate" data-id="${id}" title="淘汰(不再通知)">淘汰</button>
-    <button data-act="more" data-id="${id}" title="更多動作">⋯</button>
+    <button data-act="weight" data-id="${id}" title="權重調整(可觸發自動拆 t)">權重調整</button>
+    <button data-act="more" data-id="${id}" title="更多動作(續費 / 結束 / 鎖定 / 淘汰)">⋯</button>
   `;
 }
 
@@ -1088,6 +1082,46 @@ function bindHandlers(root, s) {
 }
 
 // 淘汰：標記為「不再投放、不再通知」。實際資料保留，只是不會再出現在到期清單與警告
+// 結束:把 end_date 改到提前結束日,不開新段(§5.7)
+async function openEndAd(seg) {
+  const today = todayTaipei();
+  const defaultEnd = today < seg.end_date ? today : seg.end_date;
+  const html = `
+    <h2>結束廣告:${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
+    <p class="ink-2" style="font-size:13px">提前結束此段,不開新段。原期間 ${seg.start_date} ~ ${seg.end_date}。</p>
+    <div class="field"><label>提前結束日(含當日後不再攤提)</label>
+      <input id="end-at" type="date" value="${defaultEnd}" min="${seg.start_date}" max="${seg.end_date}" />
+    </div>
+    <div class="modal-actions">
+      <button id="end-cancel">取消</button>
+      <button class="primary danger" id="end-ok">確認結束</button>
+    </div>
+  `;
+  const dlg = modal.open(html);
+  dlg.querySelector("#end-cancel").onclick = () => modal.close();
+  dlg.querySelector("#end-ok").onclick = () => {
+    const newEnd = dlg.querySelector("#end-at").value;
+    if (!newEnd || newEnd <= seg.start_date || newEnd > seg.end_date) {
+      toast("結束日必須在原期間內", "bad"); return;
+    }
+    update((st) => {
+      const ad_snapshots = captureUndoSnapshot(st, [seg.id]);
+      const a = st.ads.find((x) => x.id === seg.id);
+      if (a) a.end_date = newEnd;
+      st.todos.push({
+        id: uid("todo"),
+        created_at: nowTaipeiStamp(),
+        action_type: "手動",
+        description: `${seg.ad_code} ${seg.ad_name}:提前結束到 ${newEnd}(原 ${seg.end_date})`,
+        status: "pending",
+        undo_payload: { ad_snapshots, added_ad_ids: [] },
+      });
+    }, "提前結束");
+    modal.close();
+    toast(`已結束於 ${newEnd}`, "ok");
+  };
+}
+
 async function openEliminate(seg) {
   const ok = await confirmAsync({
     title: "淘汰廣告",
@@ -1247,45 +1281,8 @@ function openEditor(id, renewFrom = null, prefill = null) {
     <div class="weight-sum" id="weight-sum">合計：<span id="wsum-val">0</span>%</div>
 
     ${!id && !renewFrom && s.products.some((p) => p.is_poquan) ? `
-    <div class="poquan-split-box mt-16">
-      <label class="poquan-split-toggle">
-        <input type="checkbox" id="f-poquan-split" />
-        <strong>＋ 拆出破圈分流</strong>
-        <span class="ink-3" style="font-size:12px">(系統會自動建立 stXXXt 廣告)</span>
-      </label>
-      <div id="poquan-split-detail" style="display:none">
-        <div class="field-row" style="margin-top:8px">
-          <div class="field" style="flex:0 0 130px">
-            <label>破圈占比 (%)</label>
-            <input id="f-poquan-pct" type="number" min="0" max="100" step="1" value="10" />
-          </div>
-          <div class="field" style="flex:1">
-            <label>預覽</label>
-            <div id="poquan-preview" class="ink-2" style="font-size:12px;padding:8px 0">
-              <span class="ink-3">填好上方 RMB / 占比後顯示</span>
-            </div>
-          </div>
-        </div>
-        <div style="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:6px;background:rgba(0,0,0,0.02)">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-            <strong style="font-size:13px">破圈側權重分配 <span class="ink-3" style="font-size:11px;font-weight:400">(加總須 = 100%)</span></strong>
-            <button id="btn-poquan-even" style="font-size:11px;padding:3px 8px">平均分配</button>
-          </div>
-          <div id="poquan-targets">
-            ${s.products.filter((p) => p.is_poquan).map((p, i) => `
-              <div class="field-row" style="align-items:center;gap:8px;padding:3px 0">
-                <div style="flex:1;font-size:13px">${esc(p.name)} <span class="ink-3" style="font-size:11px">(${esc(p.id)})</span></div>
-                <input type="number" min="0" max="100" step="1" class="f-poquan-w" data-pid="${esc(p.id)}" value="${i === 0 ? 100 : 0}" style="width:80px" />
-                <span style="width:14px">%</span>
-              </div>
-            `).join("")}
-          </div>
-          <div style="font-size:11px;text-align:right;padding:4px 0">合計:<span id="f-poquan-sum">0</span>%</div>
-        </div>
-        <div class="hint" style="margin-top:4px">
-          開啟後上方權重分配是「一般」部分(加總應 = 100%);系統會額外建 stXXXt 廣告承擔破圈的 <span id="poquan-pct-label">10</span>% 比例,依下方破圈側權重分配。兩支廣告共享起迄日 / 攤提天數 / 匯率, 加總 = 你填的 RMB 金額。
-        </div>
-      </div>
+    <div class="hint mt-8" style="padding:8px 10px;background:#f0f7ff;border:1px solid #cfe1f5;border-radius:6px;font-size:12px;line-height:1.5">
+      💡 <strong>自動拆 t 配對</strong>:若上方權重同時含「某家族母 + 破圈」(例 AV9 + 愛威奶破圈),儲存時系統會自動建立 <code>stXXX</code> + <code>stXXXt</code> 兩支廣告並 split_pair 連動。純破圈 / 跨家族不撞母則維持單支不加 t。
     </div>
     ` : ""}
 
@@ -1368,29 +1365,17 @@ function openEditor(id, renewFrom = null, prefill = null) {
     };
   }
 
-  // 破圈分流 toggle + 預覽 (Note: 變數宣告 hoisted, 但其他 input handler 之後才寫的 updatePoquanPreview() 呼叫須等到下方定義後才會生效)
-  const poquanSplit = q("#f-poquan-split");
-  const poquanDetail = q("#poquan-split-detail");
-  const poquanProducts = s.products.filter((p) => p.is_poquan);
+  // 破圈分流 UI 已移除(2026-05),改用自動拆 t(§5.7.2)。
+  // 保留以下空殼函式以最小化下方既有呼叫點變動;後續清理時可一併移除。
+  const poquanSplit = null;
+  const poquanDetail = null;
+  const poquanProducts = [];
   const poquanNameOf = (pid) => s.products.find((x) => x.id === pid)?.name || pid;
-  // 讀取破圈側權重分配輸入(只有有開破圈分流才會有這些 input)
-  const readPoquanTargetWeights = () => {
-    const out = {};
-    dlg.querySelectorAll(".f-poquan-w").forEach((el) => {
-      const v = Number(el.value) || 0;
-      if (v > 0) out[el.dataset.pid] = v;
-    });
-    return out;
-  };
-  const refreshPoquanSum = () => {
-    const sum = [...dlg.querySelectorAll(".f-poquan-w")].reduce((s, el) => s + (Number(el.value) || 0), 0);
-    const el = q("#f-poquan-sum");
-    if (el) {
-      el.textContent = String(sum);
-      el.style.color = sum === 100 ? "var(--ok, #2a9d3c)" : "var(--bad, #c0392b)";
-    }
-  };
+  const readPoquanTargetWeights = () => ({});
+  const refreshPoquanSum = () => {};
   const updatePoquanPreview = () => {
+    return;  // 已停用(2026-05),保留空函式避免破壞既有呼叫點
+    /* eslint-disable no-unreachable */
     if (!poquanSplit || !poquanSplit.checked) return;
     refreshPoquanSum();
     const cny = Number(q("#f-cny").value) || 0;
@@ -1445,31 +1430,8 @@ function openEditor(id, renewFrom = null, prefill = null) {
         整體分配:${overallEntries.join(" / ")} = <strong>${overallTotal.toFixed(1)}%</strong>
       </div>
     `;
+    /* eslint-enable no-unreachable */
   };
-  if (poquanSplit && poquanDetail) {
-    poquanSplit.onchange = () => {
-      poquanDetail.style.display = poquanSplit.checked ? "block" : "none";
-      if (poquanSplit.checked) {
-        for (const pp of poquanProducts) delete weights[pp.id];
-      }
-      renderWeights();
-      updatePoquanPreview();
-    };
-    const pctInput = q("#f-poquan-pct");
-    if (pctInput) pctInput.oninput = updatePoquanPreview;
-    const evenBtn = q("#btn-poquan-even");
-    if (evenBtn) evenBtn.onclick = () => {
-      const inputs = [...dlg.querySelectorAll(".f-poquan-w")];
-      const share = Math.floor(100 / inputs.length);
-      inputs.forEach((el, i) => {
-        el.value = i === 0 ? 100 - share * (inputs.length - 1) : share;
-      });
-      updatePoquanPreview();
-    };
-    dlg.querySelectorAll(".f-poquan-w").forEach((el) => { el.oninput = updatePoquanPreview; });
-    const cnyInput = q("#f-cny");
-    if (cnyInput) cnyInput.addEventListener("input", updatePoquanPreview);
-  }
 
   const recalcDaily = () => {
     // USDT 模式：amount_cny = amount_orig × currency_rate
@@ -1514,13 +1476,10 @@ function openEditor(id, renewFrom = null, prefill = null) {
   };
 
   const weights = { ...(a.weights || {}) };
-  const isSplitOn = () => !!(poquanSplit && poquanSplit.checked);
+  const isSplitOn = () => false;  // 已停用(自動拆 t 取代)
   const renderWeights = () => {
     const host = q("#weights");
-    const splitOn = isSplitOn();
-    const productsToShow = splitOn
-      ? s.products.filter((p) => !p.is_poquan)
-      : s.products;
+    const productsToShow = s.products;  // 永遠顯示全部產品(包含破圈),由 submit 時偵測碰撞自動拆
     host.innerHTML = productsToShow.map((p) => `
       <div class="weight-grid">
         <div>${esc(p.name)} <span class="ink-3 mono" style="font-size:11px">${esc(p.id)}</span></div>
@@ -1634,36 +1593,23 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const cny = Number(q("#f-cny").value) || 0;
     const rate = Number(q("#f-rate").value) || 0;
 
-    // 破圈分流:檢查並準備拆分(只在新增時有此選項)
-    const poquanSplitChecked = !id && !renewFrom && poquanSplit && poquanSplit.checked;
-    let poquanSplitPct = 0;
-    let poquanTargetWeights = {};
-    if (poquanSplitChecked) {
-      poquanSplitPct = Number(q("#f-poquan-pct").value) || 0;
-      poquanTargetWeights = readPoquanTargetWeights();
-      if (poquanSplitPct <= 0 || poquanSplitPct >= 100) {
-        toast("破圈占比必須是 1~99 之間", "bad"); return;
-      }
-      if (Object.keys(poquanTargetWeights).length === 0) {
-        toast("請至少分配一個破圈產品的權重", "bad"); return;
-      }
-      const poquanSum = Object.values(poquanTargetWeights).reduce((sum, v) => sum + v, 0);
-      if (Math.abs(poquanSum - 100) > 0.01) {
-        toast(`破圈側權重合計 ${poquanSum}% 不是 100%`, "bad"); return;
-      }
-      // 一般部分加總(2 位小數權重允許 0.01 容差)
-      const wSum = Object.values(weights).reduce((sum, v) => sum + (Number(v) || 0), 0);
-      if (Math.abs(wSum - 100) > 0.01) {
-        toast(`一般部分權重合計 ${wSum.toFixed(2)}% 不是 100%`, "bad"); return;
-      }
-      // 衝突檢查:一般權重中不可有破圈產品
-      for (const pid of Object.keys(poquanTargetWeights)) {
-        if (weights[pid]) {
-          const pname = s.products.find((p) => p.id === pid)?.name || pid;
-          toast(`破圈分配目標「${pname}」已在一般權重中,請從上方權重移除`, "bad"); return;
-        }
-      }
+    // 權重加總(只在新建/續費需要 = 100;編輯則維持舊邏輯讓使用者自己負責)
+    const wSum = Object.values(weights).reduce((sum, v) => sum + (Number(v) || 0), 0);
+    if (!id && Math.abs(wSum - 100) > 0.01) {
+      toast(`權重合計 ${wSum.toFixed(2)}% 必須 = 100%`, "bad"); return;
     }
+
+    // 自動拆 t 偵測(只在新增 / 續費 / 編輯沒在 pair 內時觸發;§5.7.2)
+    // detect 引用 auto-split.js
+    const collision = (!id || !(s.ads.find((x) => x.id === id)?.split_pair_id))
+      ? detectFamilyCollision(weights, s.products)
+      : { collision: false };
+    const splitWeights = collision.collision
+      ? splitWeightsByFamily(weights, s.products)
+      : null;
+    const splitCodes = collision.collision
+      ? deriveSplitCodes(code)
+      : null;
 
     const twd = cny * rate;
     const wKeys = Object.keys(weights);
@@ -1678,9 +1624,13 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const groupValue = groupSelectVal === "__new__"
       ? (q("#f-group-new").value || "").trim()
       : groupSelectVal;
-    // 破圈分流:把 cny / amount_twd / daily 按比例拆分
-    const normalCny = poquanSplitChecked ? Math.round(cny * (100 - poquanSplitPct) / 100 * 100) / 100 : cny;
-    const poquanCny = poquanSplitChecked ? Math.round(cny * poquanSplitPct / 100 * 100) / 100 : 0;
+    // 自動拆 t:按一般 / 破圈權重 sum 切 cny / twd
+    const totalWSum = splitWeights ? (splitWeights.normalSum + splitWeights.poquanSum) : wSum;
+    const generalRatio = splitWeights ? splitWeights.normalSum / totalWSum : 1;
+    const poquanRatio = splitWeights ? splitWeights.poquanSum / totalWSum : 0;
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const normalCny = splitWeights ? round2(cny * generalRatio) : cny;
+    const poquanCny = splitWeights ? round2(cny * poquanRatio) : 0;
     const normalTwd = normalCny * rate;
     const poquanTwd = poquanCny * rate;
 
@@ -1727,31 +1677,48 @@ function openEditor(id, renewFrom = null, prefill = null) {
       const ad_snapshots = id ? captureUndoSnapshot(st, [id]) : [];
       const added_ad_ids = [];
       const newAdId = uid("ad");
-      // 破圈分流配對 id(只在新建 + 勾選 split 時生成,parent + t-variant 共用)
-      const pairId = poquanSplitChecked ? `pair_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}` : null;
+      // 自動拆 t 配對(2026-05,§5.7.2):依 collision 偵測決定是否建 pair
+      const pairId = splitWeights ? `pair_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}` : null;
+      // 拆 t 時 parent 承接「一般側」,代碼 = splitCodes.parentCode(strip 掉使用者輸入的 t,若有)
+      // 拆 t 時 patch 也要相應改:weights → 一般側、金額 → 一般側比例、ad_code → parentCode
+      const finalPatch = splitWeights ? {
+        ...patch,
+        ad_code: splitCodes.parentCode,
+        weights: splitWeights.normal,
+        amount_cny: normalCny,
+        amount_orig: currency === "USDT" ? round2(amount_orig * generalRatio) : normalCny,
+        amount_twd: normalTwd,
+        daily_amort_twd: normalTwd / days,
+        purchase_mode: (Object.keys(splitWeights.normal).length === 1 && Object.values(splitWeights.normal)[0] === 100) ? "independent" : "shared",
+        code_at_creation: splitCodes.parentCode,
+      } : { ...patch, code_at_creation: code };
       if (id) {
         const idx = st.ads.findIndex((x) => x.id === id);
-        st.ads[idx] = { ...st.ads[idx], ...patch };
+        st.ads[idx] = { ...st.ads[idx], ...finalPatch };
+        if (pairId) {
+          st.ads[idx].split_pair_id = pairId;
+          st.ads[idx].split_role = "parent";
+        }
       } else {
         st.ads.push({
           id: newAdId,
-          ...patch,
+          ...finalPatch,
           ...(pairId ? { split_pair_id: pairId, split_role: "parent" } : {}),
         });
         added_ad_ids.push(newAdId);
       }
-      // 同時建立破圈分流的 stXXXt 廣告
-      if (poquanSplitChecked) {
-        const poquanAdId = uid("ad");
-        const tvKeys = Object.keys(poquanTargetWeights);
-        const tvPurchaseMode = (tvKeys.length === 1 && poquanTargetWeights[tvKeys[0]] === 100) ? "independent" : "shared";
+      // 拆 t 時同時建破圈側 t-variant ad
+      if (splitWeights) {
+        const tvAdId = uid("ad");
+        const tvKeys = Object.keys(splitWeights.poquan);
+        const tvPurchaseMode = (tvKeys.length === 1 && splitWeights.poquan[tvKeys[0]] === 100) ? "independent" : "shared";
         st.ads.push({
-          id: poquanAdId,
-          ad_code: code + "t",
-          ad_name: name + "t",
+          id: tvAdId,
+          ad_code: splitCodes.tVariantCode,
+          ad_name: name,
           group: groupValue,
           currency,
-          amount_orig: poquanCny,
+          amount_orig: currency === "USDT" ? round2(amount_orig * poquanRatio) : poquanCny,
           currency_rate,
           amount_cny: poquanCny,
           exchange_rate: rate,
@@ -1760,22 +1727,23 @@ function openEditor(id, renewFrom = null, prefill = null) {
           end_date: end,
           amortize_days: days,
           daily_amort_twd: poquanTwd / days,
-          weights: { ...poquanTargetWeights },
+          weights: { ...splitWeights.poquan },
           purchase_mode: tvPurchaseMode,
           renewal_of: null,
           renewal_reason: "初始",
-          notes: `破圈分流(由 ${code} 拆出 ${poquanSplitPct}%)`,
+          notes: `自動拆 t 配對(由 ${splitCodes.parentCode} 觸發,新增當下偵測到同家族碰撞)`,
           lock_perf_adjust: false,
           lock_full: false,
           eliminated: false,
           split_pair_id: pairId,
           split_role: "t_variant",
+          code_at_creation: splitCodes.tVariantCode,
         });
-        added_ad_ids.push(poquanAdId);
+        added_ad_ids.push(tvAdId);
       }
       if (shouldCreateTodo) {
-        const poquanSummary = poquanSplitChecked
-          ? Object.entries(poquanTargetWeights)
+        const splitSummary = splitWeights
+          ? Object.entries(splitWeights.poquan)
               .map(([pid, w]) => `${(st.products.find((p) => p.id === pid)?.name || pid)} ${w}%`)
               .join(" / ")
           : "";
@@ -1783,17 +1751,17 @@ function openEditor(id, renewFrom = null, prefill = null) {
           id: uid("todo"),
           created_at: nowTaipeiStamp(),
           action_type: id ? "手動改權重" : "新增廣告",
-          description: buildTodoDesc(patch, weights, st.products, id ? origWeights : null)
-            + (poquanSplitChecked ? `\n\n含破圈分流:${code}t / 占比 ${poquanSplitPct}% / ${poquanCny.toLocaleString()} RMB / ${poquanSummary}` : ""),
+          description: buildTodoDesc(finalPatch, splitWeights ? splitWeights.normal : weights, st.products, id ? origWeights : null)
+            + (splitWeights ? `\n\n自動拆 t:建立 ${splitCodes.tVariantCode} ${poquanCny.toLocaleString()} RMB / ${splitSummary}` : ""),
           status: "pending",
           undo_payload: { ad_snapshots, added_ad_ids },
         });
       }
     });
     modal.close();
-    const successMsg = poquanSplitChecked
-      ? `已儲存 2 支廣告(${code} + ${code}t), 已建立待辦`
-      : (weightsChanged ? "已儲存，已建立待辦" : "已儲存");
+    const successMsg = splitWeights
+      ? `已儲存 2 支廣告(${splitCodes.parentCode} + ${splitCodes.tVariantCode}),已自動拆 t 配對,已建立待辦`
+      : (weightsChanged ? "已儲存,已建立待辦" : "已儲存");
     toast(successMsg, "ok");
   };
 }
@@ -1955,256 +1923,135 @@ function openWeightAdjust(seg) {
   renderWeights();
 
   q("#cancel").onclick = () => modal.close();
-  q("#save").onclick = () => {
+  q("#save").onclick = async () => {
     const eff = q("#eff").value;
     if (!eff) { toast("請選生效日", "bad"); return; }
     if (Object.keys(newWeights).length === 0) { toast("至少一個產品權重 > 0", "bad"); return; }
     const notes = q("#f-notes").value.trim();
-    let result;
-    try { result = buildWeightAdjust(seg, eff, newWeights, notes); }
-    catch (e) { toast(e.message, "bad"); return; }
-    update((st) => {
-      const ad_snapshots = captureUndoSnapshot(st, [seg.id]);
-      const i = st.ads.findIndex((a) => a.id === seg.id);
-      if (i >= 0) st.ads[i] = result.closed;
-      st.ads.push(...result.segments);
-      const added_ad_ids = result.segments.map((s) => s.id);
-      // 若屬破圈分流配對,自動對 linked 廣告同步重平衡(parent ↔ t-variant 金額)
-      for (const newSeg of result.segments) {
-        const inAds = st.ads.find((a) => a.id === newSeg.id);
-        const rebal = inAds ? rebalanceSplitPair(st, inAds) : null;
-        if (rebal?.newLinkedSegId) added_ad_ids.push(rebal.newLinkedSegId);
-      }
-      st.todos.push({
-        id: uid("todo"),
-        created_at: nowTaipeiStamp(),
-        action_type: "手動改權重",
-        description: buildTodoDesc(seg, newWeights, st.products, seg.weights),
-        status: "pending",
-        undo_payload: { ad_snapshots, added_ad_ids },
+
+    // 自動拆 t 偵測(§5.7.2):非 pair + 同家族碰撞 → 觸發拆 pair
+    const collision = !seg.split_pair_id
+      ? detectFamilyCollision(newWeights, s.products)
+      : { collision: false };
+
+    // 鎖定狀態 + 觸發自動拆 t → 跳確認框(§5.7.2)
+    if (collision.collision && (seg.lock_perf_adjust || seg.lock_full)) {
+      const lockLabel = seg.lock_full ? "🚫 禁止挪動" : "🔒 鎖權重";
+      const ok = await confirmAsync({
+        title: `${lockLabel} + 手動拆 t`,
+        body: `此廣告為${lockLabel}狀態,您手動把權重改成「一般 + 破圈混合」,系統將自動建立 ${seg.ad_code.replace(/[tT]$/, "")}t 配對(分流到 t-variant)。確定嗎?`,
+        details: [`生效日 ${eff}`, `家族碰撞:${collision.families.join(" / ")}`],
+        okText: "確定拆分",
       });
-    });
-    modal.close();
-    toast("已產生新段（權重調整），已建立待辦", "ok");
-  };
-}
-
-// 事後拆出破圈/一般分流配對(雙向、支援目標側多產品):
-//   - source 為一般 100% → parent 保留原 weights,新建 t-variant = {破圈目標分配}(forward)
-//   - source 為破圈 100% → parent = {一般目標分配},新建 t-variant 沿用 source 原權重(reverse)
-//   - source 混合 → 不支援,提示用「權重調整」
-//
-// 目標側回歸到「上方的權重分配」概念:列出所有目標側產品 + 權重輸入,使用者填多少
-// 就分多少(加總 = 100% 強制)。例如 forward 時想同時分愛威奶破圈 60% + 健康破圈 40%
-// 都可以。兩支共用 split_pair_id,日後修改任一支會自動連動另一支重平衡。
-function openPoquanSplit(seg) {
-  const s = getState();
-  const isPoquanProd = (pid) => !!(s.products || []).find((p) => p.id === pid)?.is_poquan;
-  const poquanProducts = (s.products || []).filter((p) => p.is_poquan);
-  const normalProducts = (s.products || []).filter((p) => !p.is_poquan);
-
-  // 偵測 source 方向
-  const sourceWeights = seg.weights || {};
-  const sourceKeys = Object.keys(sourceWeights).filter((k) => Number(sourceWeights[k]) > 0);
-  if (sourceKeys.length === 0) {
-    toast("此廣告權重為空,無法拆分", "bad");
-    return;
-  }
-  const allPoquan = sourceKeys.every((pid) => isPoquanProd(pid));
-  const allNormal = sourceKeys.every((pid) => !isPoquanProd(pid));
-  if (!allPoquan && !allNormal) {
-    toast("此廣告已混合一般/破圈,請改用「權重調整」", "bad");
-    return;
-  }
-  const direction = allNormal ? "forward" : "reverse";
-  const targetSide = direction === "forward" ? "破圈" : "一般";
-  const oppositeSide = direction === "forward" ? "一般" : "破圈";
-  const targetProducts = direction === "forward" ? poquanProducts : normalProducts;
-  if (targetProducts.length === 0) {
-    toast(direction === "forward" ? "尚未建立任何破圈產品" : "沒有可選的一般產品", "bad");
-    return;
-  }
-
-  const today = todayTaipei();
-  const defEff = (today > seg.start_date && today < seg.end_date)
-    ? today
-    : addDays(seg.start_date, 1);
-
-  // 預設目標分配:用 parent_product_id 對應到 source 產品
-  //   forward: source 有 AV9 → 預設 av9_poquan 100;若有多個 source 都對到不同破圈,平均分
-  //   reverse: source 有 av9_poquan → 預設 AV9 100
-  const currentPids = new Set(sourceKeys);
-  const defaultTargetWeights = {};
-  if (direction === "forward") {
-    const matched = poquanProducts.filter((pq) => pq.parent_product_id && currentPids.has(pq.parent_product_id));
-    if (matched.length > 0) {
-      const share = Math.floor(100 / matched.length);
-      matched.forEach((pq, i) => {
-        defaultTargetWeights[pq.id] = i === 0 ? 100 - share * (matched.length - 1) : share;
-      });
-    } else {
-      defaultTargetWeights[targetProducts[0].id] = 100;
-    }
-  } else {
-    const parents = new Set();
-    for (const sourcePid of sourceKeys) {
-      const sourceProd = s.products.find((p) => p.id === sourcePid);
-      if (sourceProd?.parent_product_id) parents.add(sourceProd.parent_product_id);
-    }
-    const matched = normalProducts.filter((np) => parents.has(np.id));
-    if (matched.length > 0) {
-      const share = Math.floor(100 / matched.length);
-      matched.forEach((np, i) => {
-        defaultTargetWeights[np.id] = i === 0 ? 100 - share * (matched.length - 1) : share;
-      });
-    } else {
-      defaultTargetWeights[targetProducts[0].id] = 100;
-    }
-  }
-
-  const html = `
-    <h2>＋ 拆出${targetSide}分流：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
-    <p class="ink-2" style="font-size:13px">
-      偵測到此廣告目前是「<strong>${oppositeSide} 100%</strong>」,系統會在生效日後拆成兩支:<br>
-      ${direction === "forward" ? `
-        ・<strong>${esc(seg.ad_code)}</strong>(一般 parent)保留原權重、金額 = 原 × (100 − 占比)%<br>
-        ・<strong>${esc(seg.ad_code)}t</strong>(破圈 t-variant,新建)依下方權重分配、金額 = 原 × 占比%
-      ` : `
-        ・<strong>${esc(seg.ad_code)}</strong>(一般 parent)依下方權重分配、金額 = 原 × (100 − 占比)%<br>
-        ・<strong>${esc(seg.ad_code)}t</strong>(破圈 t-variant,新建)沿用原權重、金額 = 原 × 占比%
-      `}<br>
-      兩支共用 split_pair_id,日後改一支系統會自動重平衡另一支。
-    </p>
-    <div class="field-row" style="margin-top:8px">
-      <div class="field" style="flex:0 0 160px">
-        <label>生效日(新段起日)</label>
-        <input id="eff" type="date" value="${defEff}" min="${seg.start_date}" max="${seg.end_date}" />
-      </div>
-      <div class="field" style="flex:0 0 140px">
-        <label>${targetSide}占比 (%)</label>
-        <input id="pct" type="number" min="1" max="99" step="1" value="${direction === "forward" ? 10 : 50}" />
-        <div class="hint" style="font-size:11px">${direction === "forward" ? "破圈側拿幾%(剩下給一般)" : "一般側拿幾%(剩下給破圈)"}</div>
-      </div>
-    </div>
-
-    <h3 class="mt-16" style="display:flex;justify-content:space-between;align-items:center;font-size:14px">
-      <span>${targetSide}側權重分配 <span class="ink-3" style="font-size:11px;font-weight:400">(加總須 = 100%)</span></span>
-      <button id="btn-even" style="font-size:11px;padding:3px 8px">平均分配</button>
-    </h3>
-    <div id="tgt-weights">
-      ${targetProducts.map((p) => `
-        <div class="field-row" style="align-items:center;gap:8px;padding:4px 0">
-          <div style="flex:1;font-size:13px">${esc(p.name)} <span class="ink-3" style="font-size:11px">(${esc(p.id)})</span></div>
-          <input type="number" min="0" max="100" step="1" class="tgt-w" data-pid="${esc(p.id)}" value="${defaultTargetWeights[p.id] || 0}" style="width:80px" />
-          <span style="width:14px">%</span>
-        </div>
-      `).join("")}
-    </div>
-    <div class="weight-sum" id="tgt-sum" style="font-size:12px;padding:6px 0;text-align:right">合計:<span id="tgt-sum-val">0</span>%</div>
-
-    <div class="field mt-16">
-      <label>備註(選填)</label>
-      <textarea id="notes" rows="2" style="width:100%;resize:vertical" placeholder="例:5/15 起新增 10% ${targetSide}分流"></textarea>
-    </div>
-    <div class="modal-actions">
-      <button id="cancel">取消</button>
-      <button class="primary" id="save">套用</button>
-    </div>
-  `;
-  const dlg = modal.open(html);
-  const q = (sel) => dlg.querySelector(sel);
-  const qa = (sel) => [...dlg.querySelectorAll(sel)];
-
-  const refreshSum = () => {
-    const sum = qa(".tgt-w").reduce((s, el) => s + (Number(el.value) || 0), 0);
-    const el = q("#tgt-sum-val");
-    el.textContent = sum;
-    el.style.color = sum === 100 ? "var(--ok, #2a9d3c)" : "var(--bad, #c0392b)";
-  };
-  qa(".tgt-w").forEach((el) => { el.oninput = refreshSum; });
-  refreshSum();
-
-  q("#btn-even").onclick = () => {
-    const inputs = qa(".tgt-w");
-    const share = Math.floor(100 / inputs.length);
-    inputs.forEach((el, i) => {
-      el.value = i === 0 ? 100 - share * (inputs.length - 1) : share;
-    });
-    refreshSum();
-  };
-
-  q("#cancel").onclick = () => modal.close();
-  q("#save").onclick = () => {
-    const eff = q("#eff").value;
-    const pct = Number(q("#pct").value) || 0;
-    const notes = q("#notes").value.trim();
-    if (!eff) { toast("請選生效日", "bad"); return; }
-
-    // 收集目標側權重
-    const tgtWeights = {};
-    qa(".tgt-w").forEach((el) => {
-      const v = Number(el.value) || 0;
-      if (v > 0) tgtWeights[el.dataset.pid] = v;
-    });
-    const tgtSum = Object.values(tgtWeights).reduce((a, b) => a + b, 0);
-    if (Object.keys(tgtWeights).length === 0) {
-      toast(`請至少給一個${targetSide}產品設權重`, "bad");
-      return;
-    }
-    if (Math.abs(tgtSum - 100) > 0.01) {
-      toast(`${targetSide}側權重加總 ${tgtSum}% 不等於 100%`, "bad");
-      return;
+      if (!ok) return;
     }
 
-    let parentWeights, tVariantWeights, tVariantPct;
-    if (direction === "forward") {
-      // source = normal: parent 保留 source.weights,t-variant = 使用者填的破圈分配
-      parentWeights = { ...sourceWeights };
-      tVariantWeights = tgtWeights;
-      tVariantPct = pct;
-    } else {
-      // source = poquan: parent = 使用者填的一般分配,t-variant 沿用 source.weights
-      parentWeights = tgtWeights;
-      tVariantWeights = { ...sourceWeights };
-      tVariantPct = 100 - pct;  // 使用者填的是「一般占比」,t-variant 拿 100 − 一般
-    }
+    // 找同 chain 的所有段(改名 + 標 split_pair_id 用)
+    const sAll = getState();
+    const sameChain = collectChainSegments(sAll.ads || [], seg);
 
     let result;
     try {
-      result = buildPoquanSplit(seg, eff, { tVariantPct, parentWeights, tVariantWeights, notes });
-    } catch (e) {
-      toast(e.message, "bad");
-      return;
-    }
+      result = buildWeightAdjustWithAutoSplit(
+        sAll, seg, eff, newWeights, { notes, allSegsOfSource: sameChain }
+      );
+    } catch (e) { toast(e.message, "bad"); return; }
+
     update((st) => {
       const ad_snapshots = captureUndoSnapshot(st, [seg.id]);
-      const i = st.ads.findIndex((a) => a.id === seg.id);
-      if (i >= 0) st.ads[i] = result.closed;
-      st.ads.push(result.parentNewSeg, result.tVariantNewAd);
-      const added_ad_ids = [result.parentNewSeg.id, result.tVariantNewAd.id];
-      const targetSummary = Object.entries(tgtWeights)
-        .map(([pid, w]) => {
-          const nm = st.products.find((p) => p.id === pid)?.name || pid;
-          return `${nm} ${w}%`;
-        })
-        .join(" / ");
+      const added_ad_ids = [];
+
+      if (result.mode === "split") {
+        // 拆 t 流程:
+        // 1) 把 source 同 chain 所有段改名 → tVariantCode + 補 split_pair_id/role + code_at_creation
+        const renameTo = result.sourceRename.to;
+        const fromCode = result.sourceRename.from;
+        for (const oldSeg of result.segsToRename) {
+          const live = st.ads.find((a) => a.id === oldSeg.id);
+          if (!live) continue;
+          if (!live.code_at_creation) live.code_at_creation = live.ad_code;
+          live.ad_code = renameTo;
+          live.split_pair_id = result.pairId;
+          live.split_role = "t_variant";
+        }
+        // 2) 把 source 段(剛剛 trim 過的 closed 物件)寫回 state(已包含於 segsToRename,改名生效)
+        //    closed 物件在 result.closed 中,但 segsToRename 已涵蓋
+        // 3) push 破圈側新段 + 一般側新 ad
+        st.ads.push(result.sourceNewSeg);
+        added_ad_ids.push(result.sourceNewSeg.id);
+        st.ads.push(result.newGeneralAd);
+        added_ad_ids.push(result.newGeneralAd.id);
+      } else {
+        // 一般 / 已 in_pair 路徑
+        const i = st.ads.findIndex((a) => a.id === seg.id);
+        if (i >= 0) st.ads[i] = result.closed;
+        st.ads.push(...result.segments);
+        for (const ns of result.segments) added_ad_ids.push(ns.id);
+        // 若 in_pair,對 linked 同步 rebalance
+        if (result.mode === "in_pair") {
+          for (const ns of result.segments) {
+            const inAds = st.ads.find((a) => a.id === ns.id);
+            const rebal = inAds ? rebalanceSplitPair(st, inAds) : null;
+            if (rebal?.newLinkedSegId) added_ad_ids.push(rebal.newLinkedSegId);
+          }
+        }
+      }
+
       st.todos.push({
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
         action_type: "手動改權重",
-        description: `${seg.ad_code} 事後拆出${targetSide}分流:${eff} 起拆 ${pct}% 給 ${targetSummary}(新建 ${seg.ad_code}t)`,
+        description: buildTodoDesc(seg, newWeights, st.products, seg.weights)
+          + (result.mode === "split"
+            ? `\n\n⚙️ 自動拆 t:${result.sourceRename.from} → ${result.sourceRename.to}(同家族碰撞觸發)`
+            : ""),
         status: "pending",
         undo_payload: { ad_snapshots, added_ad_ids },
       });
-    }, `事後拆出${targetSide}分流: ${seg.ad_code} → +${seg.ad_code}t`);
+    });
     modal.close();
-    toast(`已拆分:${seg.ad_code} + ${seg.ad_code}t,已建立待辦`, "ok");
+    toast(
+      result.mode === "split"
+        ? `已套用權重調整 + 自動拆 t(${result.sourceRename.from} → ${result.sourceRename.to})`
+        : "已產生新段(權重調整),已建立待辦",
+      "ok"
+    );
   };
 }
 
-// 摺疊列上的 "⋯" 按鈕：展開更多動作
+// 取得「同一條 renewal chain」的所有段(往上 + 往下追 renewal_of)
+function collectChainSegments(allAds, seedSeg) {
+  if (!seedSeg) return [];
+  const byId = new Map(allAds.map((a) => [a.id, a]));
+  const visited = new Set();
+  const out = [];
+  // 往上爬
+  let cur = seedSeg;
+  while (cur && !visited.has(cur.id)) {
+    visited.add(cur.id);
+    out.push(cur);
+    cur = cur.renewal_of ? byId.get(cur.renewal_of) : null;
+  }
+  // 往下找(誰 renewal_of = 已收集的 id)
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const a of allAds) {
+      if (visited.has(a.id)) continue;
+      if (a.renewal_of && visited.has(a.renewal_of)) {
+        visited.add(a.id);
+        out.push(a);
+        changed = true;
+      }
+    }
+  }
+  return out;
+}
+
+
+// 摺疊列上的 "⋯" 按鈕：展開更多動作(2026-05 重整,§5.7)
+// 內含 續費 / 結束 / 鎖定狀態 / 淘汰;不再含「轉移到新代碼」與「拆出X分流」(後者已由自動拆 t 取代,§5.7.2)
 function openMoreMenu(seg) {
-  const s = getState();
   const lockState = seg.lock_full ? "full" : (seg.lock_perf_adjust ? "weight" : "free");
   const eliminated = !!seg.eliminated;
   const lockBtn = (id, icon, label, hint, isCurrent) => `
@@ -2212,40 +2059,14 @@ function openMoreMenu(seg) {
       ${icon} ${label}${isCurrent ? "（目前狀態）" : ""}
       <div class="ink-3" style="font-size:11px;font-weight:400;margin-top:2px">${hint}</div>
     </button>`;
-  // 只支援「單一產品 100%」的 ad 做轉移(常見場景)
-  const wKeys = Object.keys(seg.weights || {});
-  const isSingle100 = wKeys.length === 1 && Number(seg.weights[wKeys[0]]) === 100;
-  // 事後拆出破圈/一般分流配對(雙向):偵測 source 方向決定按鈕 label
-  const isPoquanProd = (pid) => !!(s.products || []).find((p) => p.id === pid)?.is_poquan;
-  const wKeysPos = wKeys.filter((k) => Number(seg.weights[k]) > 0);
-  const allPoquan = wKeysPos.length > 0 && wKeysPos.every(isPoquanProd);
-  const allNormal = wKeysPos.length > 0 && wKeysPos.every((k) => !isPoquanProd(k));
-  const hasPoquanProducts = (s.products || []).some((p) => p.is_poquan);
-  const hasNormalProducts = (s.products || []).some((p) => !p.is_poquan);
-  let canPoquanSplit = false;
-  let poquanSplitLabel = "＋ 拆出破圈分流";
-  let poquanSplitTitle = "";
-  if (seg.split_pair_id) {
-    poquanSplitTitle = "此廣告已是破圈分流配對,不需再拆";
-  } else if (!allPoquan && !allNormal) {
-    poquanSplitTitle = wKeysPos.length === 0 ? "權重為空" : "已混合一般/破圈,請用「權重調整」處理";
-  } else if (allNormal && !hasPoquanProducts) {
-    poquanSplitTitle = "尚未在「產品」頁建立任何破圈產品";
-  } else if (allPoquan && !hasNormalProducts) {
-    poquanSplitTitle = "沒有可選的一般產品";
-  } else {
-    canPoquanSplit = true;
-    poquanSplitLabel = allPoquan ? "＋ 拆出一般分流" : "＋ 拆出破圈分流";
-  }
   const html = `
     <h2>更多動作：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
     <p class="ink-2" style="font-size:13px">選擇要對此段執行的動作。</p>
     <div class="more-actions">
-      <button data-pick="weight">權重調整</button>
-      <button data-pick="transfer" ${isSingle100 ? "" : 'disabled title="只有「單一產品 100%」的廣告能轉移"'}>↪ 轉移到新代碼</button>
-      <button data-pick="poquan-split" ${canPoquanSplit ? "" : `disabled title="${esc(poquanSplitTitle)}"`}>${poquanSplitLabel}</button>
+      <button data-pick="renew">續費(開新段)</button>
+      <button data-pick="end" class="danger">結束(提前 end_date,不開新段)</button>
     </div>
-    <h3 style="margin-top:16px;font-size:13px">自動建議調整的鎖定設定</h3>
+    <h3 style="margin-top:16px;font-size:13px">🔒 自動建議的鎖定設定</h3>
     <p class="ink-3" style="font-size:11px;margin:0 0 8px">手動編輯權重永遠可用,這個設定只影響系統自動建議。</p>
     <div class="more-actions" style="display:flex;flex-direction:column;gap:6px">
       ${lockBtn("free",   "🔓", "自由",       "成效驅動 / 補空檔 都可動權重",            lockState === "free")}
@@ -2264,9 +2085,8 @@ function openMoreMenu(seg) {
     b.onclick = async () => {
       const pick = b.dataset.pick;
       modal.close();
-      if (pick === "weight") openWeightAdjust(seg);
-      else if (pick === "transfer") openTransfer(seg);
-      else if (pick === "poquan-split") openPoquanSplit(seg);
+      if (pick === "renew") openEditor(null, seg.id);
+      else if (pick === "end") openEndAd(seg);
       else if (pick === "lock-free" || pick === "lock-weight" || pick === "lock-full") {
         const newState = pick.split("-")[1];
         const labels = { free: "自由", weight: "鎖權重", full: "禁止挪動" };
@@ -2302,203 +2122,6 @@ function openMoreMenu(seg) {
   });
 }
 
-// 轉移到新代碼:原 ad 提前結束 + 新代碼新 ad 接收前段位置
-//  - 適用於「同代碼後台不能重複註冊」的場景(例:st100 XRK 退出 → 開 st100dh 給 AV9 接手)
-//  - 結構: 原 ad.end_date 改成提前結束日 + 新 ad renewal_of=原 ad.id, renewal_reason='權重調整',
-//    notes 記載「接收前段」資訊
-function openTransfer(seg) {
-  const state = getState();
-  const wKeys = Object.keys(seg.weights || {});
-  if (wKeys.length !== 1 || Number(seg.weights[wKeys[0]]) !== 100) {
-    toast("只有「單一產品 100%」的廣告能轉移", "bad");
-    return;
-  }
-  const origPid = wKeys[0];
-  // 預設新代碼 = 原 base + "dh";若原 code 已 endsWith "dh",改 +"dh2"(罕見)
-  const lowerCode = (seg.ad_code || "").toLowerCase();
-  let defaultNewCode = seg.ad_code + "dh";
-  if (lowerCode.endsWith("dh")) defaultNewCode = seg.ad_code + "2";
-  else if (lowerCode.endsWith("t")) defaultNewCode = seg.ad_code.slice(0, -1) + "dh";
-  // 預設提前結束日 = today(若 today > seg.end 用 seg.end)
-  const today = todayTaipei();
-  const defaultEnd = today < seg.end_date ? today : seg.end_date;
-  // 新段預設長度 = 原合約「剩下未跑的天數」(seg.end - defaultEnd);若 = 0 用原 amortize_days
-  const remaining = daysBetween(defaultEnd, seg.end_date);
-  const newSegLen = remaining > 0 ? remaining : Math.max(1, Number(seg.amortize_days) || 30);
-  const defaultNewEnd = addDays(defaultEnd, newSegLen);
-  const exchRate = Number(seg.exchange_rate) || 4.7;
-  const productOpts = state.products
-    .map((p) => `<option value="${esc(p.id)}" ${p.id === origPid ? "" : ""}>${esc(p.name)}（${esc(p.id)}）</option>`)
-    .join("");
-  const fieldStyle = "display:flex;flex-direction:column;gap:4px;font-size:13px";
-  const inputStyle = "width:100%;padding:6px 8px;border:1px solid #d4dae8;border-radius:4px;font-size:13px;font-family:inherit;box-sizing:border-box";
-  const labelTxt = "font-size:12px;color:var(--ink-2);font-weight:500";
-  const html = `
-    <h2 style="margin:0 0 4px">↪ 轉移到新代碼</h2>
-    <div class="ink-2" style="font-size:13px;margin-bottom:12px">
-      原廣告 <strong>${esc(seg.ad_code)}</strong> · ${esc(seg.ad_name)} · <span class="pill" style="font-size:11px">${esc(origPid)} 100%</span>
-    </div>
-    <details style="margin:0 0 14px;padding:8px 10px;background:#f7f9fc;border-radius:6px;font-size:12px;color:var(--ink-3)">
-      <summary style="cursor:pointer;font-weight:500">什麼時候用這個?</summary>
-      <div style="margin-top:6px;line-height:1.5">原 ad 提前結束,該位置由<strong>新代碼 + 接收方產品</strong>接手繼續跑。<br>適用於廠商後台「同代碼不能重複註冊」的情況。例:原 XRK 在 st100 上 100%,XRK 退掉後 AV9 接手,但 AV9 已在 st100 有自己的 100%,只能在 st100dh 重新註冊。</div>
-    </details>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:14px">
-      <div style="${fieldStyle};grid-column:1/-1;padding:10px;background:#fff7e6;border:1px solid #f3d894;border-radius:6px">
-        <span style="${labelTxt}">⏹ 原 ad 提前結束日</span>
-        <input id="tf-end-orig" type="date" value="${defaultEnd}" min="${seg.start_date}" max="${seg.end_date}" style="${inputStyle}" />
-        <span class="ink-3" style="font-size:11px">原期間 ${seg.start_date} ~ ${seg.end_date}</span>
-      </div>
-
-      <div style="${fieldStyle};grid-column:1/-1;padding:10px;background:#eef5ff;border:1px solid #b8d4f0;border-radius:6px">
-        <span style="${labelTxt};color:var(--accent);font-weight:600">▶ 接收段(新 ad)</span>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-top:4px">
-          <div style="${fieldStyle}">
-            <span style="${labelTxt}">新代碼</span>
-            <input id="tf-new-code" type="text" value="${esc(defaultNewCode)}" style="${inputStyle}" />
-          </div>
-          <div style="${fieldStyle}">
-            <span style="${labelTxt}">接收方產品</span>
-            <select id="tf-new-pid" style="${inputStyle}">${productOpts}</select>
-          </div>
-          <div style="${fieldStyle}">
-            <span style="${labelTxt}">起始日</span>
-            <input id="tf-new-start" type="date" value="${defaultEnd}" style="${inputStyle}" />
-          </div>
-          <div style="${fieldStyle}">
-            <span style="${labelTxt}">結束日</span>
-            <input id="tf-new-end" type="date" value="${defaultNewEnd}" style="${inputStyle}" />
-          </div>
-          <div style="${fieldStyle}">
-            <span style="${labelTxt}">金額(RMB)</span>
-            <input id="tf-cny" type="number" min="0" step="0.01" value="${Number(seg.amount_cny) || 0}" style="${inputStyle}" />
-          </div>
-          <div style="${fieldStyle}">
-            <span style="${labelTxt}">匯率</span>
-            <input id="tf-rate" type="number" min="0" step="0.01" value="${exchRate}" style="${inputStyle}" />
-          </div>
-          <div style="${fieldStyle};grid-column:1/-1">
-            <span style="${labelTxt}">攤提天數</span>
-            <input id="tf-new-am" type="number" min="1" step="1" value="${Math.max(1, daysBetween(defaultEnd, defaultNewEnd))}" style="${inputStyle};max-width:120px" />
-          </div>
-        </div>
-      </div>
-
-      <div style="${fieldStyle};grid-column:1/-1">
-        <span style="${labelTxt}">備註</span>
-        <textarea id="tf-notes" rows="2" style="${inputStyle};resize:vertical;min-height:48px">接收自 ${esc(seg.ad_code)} ${esc(origPid)} 100%(廠商後台需註冊 ${esc(defaultNewCode)})</textarea>
-      </div>
-
-      <label style="grid-column:1/-1;display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink-2);cursor:pointer">
-        <input id="tf-todo" type="checkbox" checked /> 建立待辦提醒「至廠商後台註冊新代碼」
-      </label>
-    </div>
-
-    <div class="modal-actions">
-      <button id="tf-cancel">取消</button>
-      <button class="primary" id="tf-ok">確認轉移</button>
-    </div>
-  `;
-  const dlg = modal.open(html);
-  const q = (sel) => dlg.querySelector(sel);
-  // 預選接收方產品 != 原產品(避免一鍵就同產品)
-  const pidSel = q("#tf-new-pid");
-  const altPid = state.products.find((p) => p.id !== origPid);
-  if (altPid) pidSel.value = altPid.id;
-  // 連動:提前結束日改變 → 新段起始 + 攤提天數
-  q("#tf-end-orig").oninput = () => {
-    const newDate = q("#tf-end-orig").value;
-    q("#tf-new-start").value = newDate;
-    const am = Math.max(1, daysBetween(newDate, q("#tf-new-end").value));
-    q("#tf-new-am").value = am;
-  };
-  q("#tf-new-end").oninput = () => {
-    const am = Math.max(1, daysBetween(q("#tf-new-start").value, q("#tf-new-end").value));
-    q("#tf-new-am").value = am;
-  };
-  // 新代碼變動 → 同步更新備註的提示文字(只在 notes 還沒被人改過時)
-  let notesTouched = false;
-  q("#tf-notes").oninput = () => { notesTouched = true; };
-  q("#tf-new-code").oninput = () => {
-    if (notesTouched) return;
-    q("#tf-notes").value = `接收自 ${seg.ad_code} ${origPid} 100%(廠商後台需註冊 ${q("#tf-new-code").value || "(新代碼)"})`;
-  };
-  q("#tf-cancel").onclick = () => modal.close();
-  q("#tf-ok").onclick = () => {
-    const endOrig = q("#tf-end-orig").value;
-    const newCode = q("#tf-new-code").value.trim();
-    const newPid = q("#tf-new-pid").value;
-    const cny = Number(q("#tf-cny").value) || 0;
-    const rate = Number(q("#tf-rate").value) || 0;
-    const newStart = q("#tf-new-start").value;
-    const newEnd = q("#tf-new-end").value;
-    const newAm = Number(q("#tf-new-am").value) || 30;
-    const notes = q("#tf-notes").value.trim();
-    const addTodo = q("#tf-todo").checked;
-    // validation
-    if (!endOrig || endOrig < seg.start_date || endOrig > seg.end_date) {
-      toast("提前結束日必須在原廣告期間內", "bad"); return;
-    }
-    if (!newCode) { toast("新代碼必填", "bad"); return; }
-    if (newCode === seg.ad_code) { toast("新代碼不可跟原代碼相同", "bad"); return; }
-    if (!newPid) { toast("接收方產品必填", "bad"); return; }
-    if (!newStart || !newEnd || newStart >= newEnd) {
-      toast("新段日期不正確", "bad"); return;
-    }
-    if (cny <= 0) { toast("金額必須 > 0", "bad"); return; }
-    if (rate <= 0) { toast("匯率必須 > 0", "bad"); return; }
-    const newAdId = uid("ad");
-    modal.close();
-    update((st) => {
-      const orig = st.ads.find((a) => a.id === seg.id);
-      if (!orig) return;
-      const ad_snapshots = captureUndoSnapshot(st, [orig.id]);
-      // 原 ad:提前結束
-      orig.end_date = endOrig;
-      // 重算原 ad daily_amort_twd(am 不變,只 end 變短;daily 不變因為 am 沒改)
-      // 新 ad
-      const newAmountTwd = Math.round(cny * rate);
-      const newDaily = newAm > 0 ? Math.round(newAmountTwd / newAm * 100) / 100 : 0;
-      const newAd = {
-        id: newAdId,
-        ad_code: newCode,
-        ad_name: orig.ad_name,
-        group: orig.group || "",
-        currency: orig.currency || "CNY",
-        amount_orig: cny,
-        currency_rate: 1,
-        amount_cny: Math.round(cny * 100) / 100,
-        exchange_rate: rate,
-        amount_twd: newAmountTwd,
-        start_date: newStart,
-        end_date: newEnd,
-        amortize_days: newAm,
-        daily_amort_twd: newDaily,
-        purchase_mode: "independent",
-        weights: { [newPid]: 100 },
-        renewal_of: orig.id,
-        renewal_reason: "權重調整",
-        lock_perf_adjust: false,
-        lock_full: false,
-        notes,
-        eliminated: false,
-      };
-      st.ads.push(newAd);
-      const todoDesc = `轉移:${orig.ad_code}(${origPid})→ ${newCode}(${newPid})  ${newStart}~${newEnd} / ${Math.round(cny).toLocaleString()} RMB`;
-      st.todos.push({
-        id: uid("todo"),
-        created_at: nowTaipeiStamp(),
-        action_type: "權重調整",
-        description: addTodo
-          ? `${todoDesc}\n👉 請至廠商後台註冊新代碼「${newCode}」`
-          : todoDesc,
-        status: "pending",
-        undo_payload: { ad_snapshots, added_ad_ids: [newAdId] },
-      });
-    }, `轉移 ${seg.ad_code} → ${newCode}`);
-    toast(`已轉移:${seg.ad_code} → ${newCode}`, "ok");
-  };
-}
 
 // 兩日期之間天數(end - start,以日為單位)
 function daysBetween(startStr, endStr) {

@@ -1,10 +1,13 @@
 import { uid } from "../state.js";
+import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes } from "./auto-split.js";
 
 // 共用：依 weights 內容判斷 purchase_mode
 function pickPurchaseMode(weights) {
   const keys = Object.keys(weights || {}).filter((k) => Number(weights[k]) > 0);
   return (keys.length === 1 && Number(weights[keys[0]]) === 100) ? "independent" : "shared";
 }
+
+function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
 // 將源段套上「於 effectiveDate 收尾」效果（不變動段以外資料）
 function trimEnd(source, effectiveDate) {
@@ -36,6 +39,8 @@ function spawnFrom(source, patch) {
     // 破圈分流配對(若源段有 split_pair_id 一併傳承,否則 undefined)
     split_pair_id: source.split_pair_id || undefined,
     split_role: source.split_role || undefined,
+    // 段建立當下的代碼(預設沿用 source.ad_code;caller 可在 patch 覆寫)
+    code_at_creation: source.ad_code,
     renewal_of: source.id,
     renewal_reason: "續費",
     ...patch,
@@ -59,103 +64,142 @@ export function buildWeightAdjust(source, effectiveDate, newWeights, notes) {
     end_date: source.end_date,
     weights: { ...newWeights },
     renewal_reason: "權重調整",
+    code_at_creation: source.ad_code,
   };
   if (notes != null && String(notes).trim()) patch.notes = String(notes).trim();
   const newSeg = spawnFrom(source, patch);
   return { closed, segments: [newSeg] };
 }
 
-// 事後拆出破圈/一般分流配對:對既有單支廣告(沒有 split_pair_id)在 effectiveDate 起拆成
-// parent (stXXX) + t-variant (stXXXt) 兩支,共用 split_pair_id,
-// 日後修改任一支權重會透過 rebalanceSplitPair 自動同步。
+// 自動拆 t / 配對(2026-05 新增,CLAUDE.md §5.7.2):
+// 對非配對的 source ad 做權重調整時,若新 weights 觸發同家族母+破圈碰撞,自動拆 pair。
 //
-// 雙向支援(parent 永遠是一般側、t-variant 永遠是破圈側,命名慣例不變):
-//   - Forward(source 為一般 100%):
-//     parentWeights = source.weights(保留),tVariantWeights = { 新破圈產品: 100 }
-//   - Reverse(source 為破圈 100%):
-//     parentWeights = { 新一般產品: 100 },tVariantWeights = source.weights(原破圈權重)
-// caller 決定方向,本函式只負責產出 segments + amount 比例分配。
+// 流程:
+//   1. source 整支廣告 ad_code 改名為 stXXXt(所有段 ad_code 跟著改;歷史段 code_at_creation 保留原代碼)
+//   2. source 開新段 5/14 起,weights = 破圈側
+//   3. 新建一般側 ad(stXXX),5/14 起,weights = 一般側
+//   4. 兩支共用新生 split_pair_id
 //
-// options:
-//   - tVariantPct (1~99):t-variant 那一支的金額占比(parent 拿 100 − pct)
-//   - parentWeights:parent 那一支的 weights({ pid: % },加總 = 100)
-//   - tVariantWeights:t-variant 那一支的 weights({ pid: % },加總 = 100)
-//   - notes (選填):parent 段的備註
+// 回傳:
+//   {
+//     mode: "split",
+//     pairId,
+//     sourceRename: { from, to },           // source ad 改名前後
+//     sourceClosedSeg: <trim 後的舊段>,      // 舊段內存物件已被 trim
+//     sourceNewSeg: <破圈側新段 ad 物件>,    // caller push 進 state.ads
+//     newGeneralAd: <一般側新 ad 物件>,      // caller push 進 state.ads
+//     sourceCodeUpdates: [...]              // source 同一 ad 鏈的所有歷史段需要改 ad_code 的清單
+//   }
 //
-// 回 { closed, parentNewSeg, tVariantNewAd, pairId }
-export function buildPoquanSplit(source, effectiveDate, options) {
-  const { tVariantPct, parentWeights, tVariantWeights, notes } = options || {};
-  if (source.split_pair_id) {
-    throw new Error("此廣告已是破圈分流配對,不能再拆");
-  }
+// 注意:caller 拿到 sourceCodeUpdates 後,要對 source 的所有歷史段(用 ad_code 比對)做 ad_code 更新
+//      + 設 code_at_creation 為原代碼(如果還沒設)
+export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, newWeights, options) {
+  const { notes, allSegsOfSource } = options || {};
   if (effectiveDate <= source.start_date || effectiveDate >= source.end_date) {
     throw new Error(`生效日 ${effectiveDate} 必須落在原段區間 (${source.start_date} ~ ${source.end_date}) 之間`);
   }
-  const pct = Number(tVariantPct);
-  if (!Number.isFinite(pct) || pct <= 0 || pct >= 100) {
-    throw new Error("拆分占比必須是 1~99 之間");
+  const products = state.products || [];
+  const detect = detectFamilyCollision(newWeights, products);
+  const isAlreadyPaired = !!source.split_pair_id;
+
+  // Case A: 已在 pair 內 → 走原本 buildWeightAdjust(後續 caller 仍要呼叫 rebalanceSplitPair)
+  if (isAlreadyPaired) {
+    const out = buildWeightAdjust(source, effectiveDate, newWeights, notes);
+    return { mode: "in_pair", ...out };
   }
-  const validWeights = (w) => {
-    if (!w || typeof w !== "object") return false;
-    const keys = Object.keys(w).filter((k) => Number(w[k]) > 0);
-    if (keys.length === 0) return false;
-    const sum = keys.reduce((s, k) => s + Number(w[k]), 0);
-    return Math.abs(sum - 100) <= 0.01;
-  };
-  if (!validWeights(parentWeights)) throw new Error("parent 權重必填且加總須 = 100%");
-  if (!validWeights(tVariantWeights)) throw new Error("t-variant 權重必填且加總須 = 100%");
 
+  // Case B: 沒在 pair + 沒碰撞 → 走原本 buildWeightAdjust
+  if (!detect.collision) {
+    const out = buildWeightAdjust(source, effectiveDate, newWeights, notes);
+    return { mode: "plain", ...out };
+  }
+
+  // Case C: 沒在 pair + 有碰撞 → 觸發拆 t
+  const { normal, poquan, normalSum, poquanSum } = splitWeightsByFamily(newWeights, products);
+  if (normalSum <= 0 || poquanSum <= 0) {
+    // 理論上 detectFamilyCollision === true 必然兩側都有,這是保險
+    const out = buildWeightAdjust(source, effectiveDate, newWeights, notes);
+    return { mode: "plain", ...out };
+  }
+
+  const { parentCode, tVariantCode } = deriveSplitCodes(source.ad_code);
   const pairId = `pair_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-  const parentRatio = (100 - pct) / 100;
-  const tVariantRatio = pct / 100;
-  const round2 = (n) => Math.round(n * 100) / 100;
-  const baseDaily = Number(source.daily_amort_twd) || (Number(source.amount_twd) / Number(source.amortize_days) || 0);
+  const totalSum = normalSum + poquanSum;
+  const generalRatio = normalSum / totalSum;
+  const poquanRatio = poquanSum / totalSum;
+  const baseDaily = Number(source.daily_amort_twd)
+    || (Number(source.amount_twd) / Number(source.amortize_days) || 0);
 
+  // 1) source 段 trim end → effectiveDate
   const closed = trimEnd(source, effectiveDate);
 
-  const parentNewSeg = spawnFrom(source, {
+  // 2) source 開新段:破圈側,代碼變 stXXXt
+  const sourceNewSeg = spawnFrom(source, {
+    ad_code: tVariantCode,
+    ad_name: source.ad_name,  // 名稱不自動加 t,避免污染(若使用者要 visually 區分可手動)
     start_date: effectiveDate,
     end_date: source.end_date,
-    amount_orig: round2((Number(source.amount_orig) || Number(source.amount_cny) || 0) * parentRatio),
-    amount_cny: round2((Number(source.amount_cny) || 0) * parentRatio),
-    amount_twd: (Number(source.amount_twd) || 0) * parentRatio,
-    daily_amort_twd: baseDaily * parentRatio,
-    weights: { ...parentWeights },
-    renewal_reason: "權重調整",
-    notes: (notes && String(notes).trim()) ? String(notes).trim() : "事後拆分破圈/一般分流配對",
+    amount_orig: round2((Number(source.amount_orig) || Number(source.amount_cny) || 0) * poquanRatio),
+    amount_cny: round2((Number(source.amount_cny) || 0) * poquanRatio),
+    amount_twd: (Number(source.amount_twd) || 0) * poquanRatio,
+    daily_amort_twd: baseDaily * poquanRatio,
+    weights: { ...poquan },
+    renewal_reason: "拆t改名",
+    notes: notes && String(notes).trim()
+      ? `${String(notes).trim()}(同家族碰撞,自動拆 t)`
+      : "權重含同家族母+破圈,自動拆 t 配對",
     split_pair_id: pairId,
-    split_role: "parent",
+    split_role: "t_variant",
+    code_at_creation: tVariantCode,
   });
 
-  const tvKeys = Object.keys(tVariantWeights).filter((k) => Number(tVariantWeights[k]) > 0);
-  const tvPurchaseMode = (tvKeys.length === 1 && Number(tVariantWeights[tvKeys[0]]) === 100) ? "independent" : "shared";
-
-  const tVariantNewAd = {
+  // 3) 新建一般側 ad(stXXX)
+  const newGeneralAd = {
     id: uid("ad"),
-    ad_code: source.ad_code + "t",
-    ad_name: (source.ad_name || "") + "t",
+    ad_code: parentCode,
+    ad_name: source.ad_name,
     group: source.group || "",
     currency: source.currency || "CNY",
-    amount_orig: round2((Number(source.amount_orig) || Number(source.amount_cny) || 0) * tVariantRatio),
+    amount_orig: round2((Number(source.amount_orig) || Number(source.amount_cny) || 0) * generalRatio),
     currency_rate: source.currency_rate || 1,
-    amount_cny: round2((Number(source.amount_cny) || 0) * tVariantRatio),
+    amount_cny: round2((Number(source.amount_cny) || 0) * generalRatio),
     exchange_rate: source.exchange_rate,
-    amount_twd: (Number(source.amount_twd) || 0) * tVariantRatio,
+    amount_twd: (Number(source.amount_twd) || 0) * generalRatio,
     start_date: effectiveDate,
     end_date: source.end_date,
     amortize_days: source.amortize_days,
-    daily_amort_twd: baseDaily * tVariantRatio,
-    purchase_mode: tvPurchaseMode,
-    weights: { ...tVariantWeights },
+    daily_amort_twd: baseDaily * generalRatio,
+    purchase_mode: pickPurchaseMode(normal),
+    weights: { ...normal },
     lock_perf_adjust: false,
     lock_full: false,
     eliminated: false,
     renewal_of: null,
     renewal_reason: "初始",
-    notes: `破圈分流配對(由 ${source.ad_code} 事後拆出 ${pct}%)`,
+    notes: `自動拆 t 配對(由 ${source.ad_code} 觸發,${effectiveDate} 起)`,
     split_pair_id: pairId,
-    split_role: "t_variant",
+    split_role: "parent",
+    code_at_creation: parentCode,
   };
 
-  return { closed, parentNewSeg, tVariantNewAd, pairId };
+  // 4) 收集 source 同代碼所有歷史段(需要改 ad_code stXXX → stXXXt)
+  // caller 提供 allSegsOfSource(同 ad_code + 同 renewal chain 的所有段)
+  // 沒提供時退而求其次:只改 source 自身
+  const segsToRename = Array.isArray(allSegsOfSource) && allSegsOfSource.length > 0
+    ? allSegsOfSource
+    : [source];
+
+  return {
+    mode: "split",
+    pairId,
+    sourceRename: { from: source.ad_code, to: tVariantCode },
+    closed,             // trim 過的 source 段(同物件)
+    sourceNewSeg,       // 破圈側新段(carrying split_pair_id + split_role='t_variant')
+    newGeneralAd,       // 一般側新 ad(carrying split_pair_id + split_role='parent')
+    segsToRename,       // 需要改 ad_code + 標 split_pair_id/role + 補 code_at_creation 的歷史段清單
+  };
 }
+
+// 注意:`buildPoquanSplit`(事後拆出破圈/一般分流)已於 2026-05 移除,改由
+// `buildWeightAdjustWithAutoSplit` 在「同家族母+破圈權重碰撞」時自動拆 pair。
+// 對於舊資料(已有 split_pair_id 的廣告),配對重平衡仍走 `rebalanceSplitPair`。
