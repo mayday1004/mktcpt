@@ -2518,3 +2518,110 @@ tr.family-member.family-last > td {
   padding-left: 8px;
   line-height: 1.5;
 }
+
+/* ===== 對帳報表(網格式,A4 直印剛好,一畫面截圖) ===== */
+.settlement-print-card {
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e5e5e5;
+  padding: 16px 20px 20px;
+  max-width: 760px;
+  margin: 0 auto;
+}
+.settlement-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding-bottom: 12px;
+  margin-bottom: 10px;
+  border-bottom: 2px solid #2a2a2a;
+}
+.settlement-title { font-size: 18px; font-weight: 700; color: #222; }
+.settlement-meta { font-size: 12px; color: #777; margin-top: 4px; }
+.settlement-balance { text-align: right; }
+.settlement-balance-label { font-size: 11px; color: #888; }
+.settlement-balance-value {
+  font-size: 22px; font-weight: 700; color: #222;
+  font-variant-numeric: tabular-nums;
+}
+.settlement-balance-value.neg { color: #c62828; }
+.settlement-balance-hint { font-size: 11px; color: #c62828; margin-top: 2px; }
+
+.settlement-grid {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  table-layout: fixed;
+}
+.settlement-grid th, .settlement-grid td {
+  border: 1px solid #d8d8d8;
+  padding: 4px 8px;
+  text-align: center;
+  white-space: nowrap;
+  height: 22px;
+  line-height: 1.2;
+}
+.settlement-grid thead th {
+  background: #fafafa;
+  font-weight: 600;
+  color: #444;
+  font-size: 12px;
+}
+.settlement-grid .col-date { width: 64px; background: #fff8f8; color: #555; }
+.settlement-grid .col-payment { width: 92px; background: #fcf3f3; }
+.settlement-grid .col-product-group { background: #f0f0f0; }
+.settlement-grid .col-product { width: auto; min-width: 64px; }
+.settlement-grid td.num { text-align: right; padding-right: 10px; }
+.settlement-grid td.cell-empty { color: #ccc; }
+.settlement-grid tr.row-opening td,
+.settlement-grid tr.row-totals td {
+  background: #f5d8d8;
+  font-weight: 600;
+  color: #333;
+}
+.settlement-grid tr.row-final td {
+  background: #f5d8d8;
+  font-weight: 700;
+  font-size: 13px;
+  color: #333;
+}
+.settlement-grid tr.row-final td.neg { color: #c62828; }
+.settlement-grid tr.row-today td {
+  background: #fff3a3 !important;
+  font-weight: 700;
+  color: #333;
+}
+.settlement-grid tr.row-future td { color: #b8b8b8; background: #fafafa; }
+.settlement-grid tr.row-future td.col-date { background: #fafafa; color: #b0b0b0; }
+.settlement-grid tr.row-future td.col-payment { background: #fdf6f6; }
+.settlement-grid tbody tr:not(.row-opening):not(.row-totals):not(.row-final):not(.row-today):hover td {
+  background: #fafbfd;
+}
+
+.settlement-footnote {
+  font-size: 11px;
+  color: #666;
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: #fafafa;
+  border-radius: 4px;
+  line-height: 1.5;
+}
+
+/* ===== 列印模式 ===== */
+@media print {
+  body { background: #fff; }
+  .sidebar, .no-print, #toast-host, dialog#modal,
+  .view-head, #f-pub, #f-month, #f-product-mode { display: none !important; }
+  main#view { padding: 0 !important; }
+  .settlement-print-card {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+  .settlement-grid { font-size: 11px; }
+  .settlement-grid th, .settlement-grid td { padding: 3px 6px; height: 20px; }
+  @page { size: A4; margin: 12mm 10mm; }
+}

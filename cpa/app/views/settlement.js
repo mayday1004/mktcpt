@@ -1,8 +1,19 @@
-// 對帳報表:站長 × 月份的 RMB 流水帳,給站長對帳用。
-// 全 RMB,不顯示 TWD;後結算站長剩餘可為負(代表應付給站長的金額)。
+// 對帳報表(站長視角):日期(列) × 產品(欄)矩陣,給站長對帳用,全程 RMB。
+// 設計:壓縮網格、A4 直印剛好、整個畫面截圖即可、今天列高亮、未來列淡灰。
+//
+// 結構:
+//   [日期]  [款/預付款]  [產品1]  [產品2]  ...
+//   上月總結  期初餘額
+//   5/1      該日打款    該日該產品結算 RMB ...
+//   ...
+//   5/14 (今天,高亮)
+//   ... 未來日期淡灰
+//   總計     期初+本期打款合計    產品結算合計 ...
+//   結算     (跨所有欄)期末餘額
 
 import { getState } from "../state.js";
 import { aggregateByPublisherMonth } from "../domain/billing.js";
+import { todayTaipei } from "../lib/dates.js";
 
 const VIEW_KEY = "cpa_settlement_view_v1";
 
@@ -27,19 +38,18 @@ export function render(root) {
   }
   saveViewState(view);
 
-  // 月份選項:近 12 個月
   const monthOptions = listMonths(12, currentMonth);
 
   root.innerHTML = `
-    <div class="view-head">
+    <div class="view-head no-print">
       <div>
         <h1>📄 對帳報表</h1>
-        <div class="desc">給站長對帳用,全程 RMB;後結算的「剩餘」為負 = 應付給站長</div>
+        <div class="desc">站長對帳用 · 全程 RMB · 按「列印 / 截圖」一畫面截下整張對帳單</div>
       </div>
     </div>
 
-    <div class="card">
-      <div class="row" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+    <div class="card no-print">
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
         <div class="field" style="flex:1;min-width:200px">
           <label>站長</label>
           <select id="f-pub">
@@ -50,6 +60,13 @@ export function render(root) {
           <label>月份</label>
           <select id="f-month">
             ${monthOptions.map((m) => `<option value="${m}" ${m === view.month ? "selected" : ""}>${m}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field" style="flex:1;min-width:140px">
+          <label>欄位</label>
+          <select id="f-product-mode">
+            <option value="active" ${view.product_mode === "active" ? "selected" : ""}>有跑過的產品</option>
+            <option value="all" ${view.product_mode === "all" ? "selected" : ""}>全部啟用產品</option>
           </select>
         </div>
         <div>
@@ -72,6 +89,11 @@ export function render(root) {
     saveViewState(view);
     renderReport(root, view);
   });
+  q("#f-product-mode")?.addEventListener("change", () => {
+    view.product_mode = q("#f-product-mode").value;
+    saveViewState(view);
+    renderReport(root, view);
+  });
   q("#btn-print")?.addEventListener("click", () => window.print());
 
   if (publishers.length === 0) {
@@ -91,149 +113,141 @@ function renderReport(root, view) {
   if (!pub) { panel.innerHTML = ""; return; }
 
   const r = aggregateByPublisherMonth(s, pub.id, view.month);
+  const today = todayTaipei();
+  const yearMonth = view.month;
+  const daysInMonth = lastDayOfMonth(yearMonth);
 
-  // 按 (date, product) 彙總到「日明細」表
-  const dayProductMap = new Map();
-  const productTotals = new Map();
+  // 決定要列哪些產品欄
+  const productsToShow = decideProducts(s, pub.id, r.daily_costs, view.product_mode || "active");
+
+  // 建 (date, product_id) → cost RMB lookup
+  const dailyByKey = new Map();
   for (const d of r.daily_costs) {
     const key = `${d.date}::${d.product_id}`;
-    if (!dayProductMap.has(key)) {
-      dayProductMap.set(key, {
-        date: d.date,
-        product_id: d.product_id,
-        product_name: d.product_name,
-        installs: 0,
-        price_rmb: d.price_rmb,
-        cost_rmb: 0,
-      });
-    }
-    const row = dayProductMap.get(key);
-    row.installs += d.installs_billed;
-    row.cost_rmb += d.cost_rmb;
-
-    if (!productTotals.has(d.product_id)) {
-      productTotals.set(d.product_id, { name: d.product_name, installs: 0, cost: 0 });
-    }
-    const pt = productTotals.get(d.product_id);
-    pt.installs += d.installs_billed;
-    pt.cost += d.cost_rmb;
+    dailyByKey.set(key, (dailyByKey.get(key) || 0) + d.cost_rmb);
   }
-  const dayProductRows = Array.from(dayProductMap.values()).sort((a, b) =>
-    a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name)
-  );
+  // 各產品月總計
+  const productTotals = new Map();
+  for (const d of r.daily_costs) {
+    productTotals.set(d.product_id, (productTotals.get(d.product_id) || 0) + d.cost_rmb);
+  }
+
+  // 各日打款金額
+  const paymentsByDate = new Map();
+  for (const p of r.payments_in_period) {
+    paymentsByDate.set(p.date, (paymentsByDate.get(p.date) || 0) + Number(p.amount_rmb || 0));
+  }
+
+  const productColCount = productsToShow.length;
+  const numericColCount = 1 + productColCount;  // 款 + 產品數
 
   panel.innerHTML = `
-    <div class="card" id="print-target">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+    <div class="settlement-print-card">
+      <div class="settlement-banner">
         <div>
-          <h2 style="margin:0">${esc(pub.name)} · ${esc(view.month)} 對帳單</h2>
-          <div class="ink-3" style="font-size:12px;margin-top:2px">
-            區間:${esc(r.from)} ~ ${esc(r.to)} · 結算模式:${pub.settlement_mode === "postpaid" ? "後結算" : "預付款"}
+          <div class="settlement-title">${esc(pub.name)} · ${esc(view.month)} 對帳單</div>
+          <div class="settlement-meta">
+            ${pub.settlement_mode === "postpaid" ? "後結算" : "預付款"} ·
+            預設單價 ¥${Number(pub.default_cpa_price_rmb || 0).toFixed(2)} ·
+            ${productColCount} 個產品在跑
+            ${r.shortfall_rmb > 0 ? ` · <span style="color:#d32f2f">⚠️ 有 ¥${formatNum(r.shortfall_rmb)} 結算未對應到打款批次</span>` : ""}
           </div>
         </div>
-        <div style="text-align:right">
-          <div class="ink-3" style="font-size:11px">剩餘金額(RMB)</div>
-          <div style="font-size:24px;font-weight:700;color:${r.closing_balance_rmb < 0 ? "#d32f2f" : "#333"}">
+        <div class="settlement-balance">
+          <div class="settlement-balance-label">期末餘額(RMB)</div>
+          <div class="settlement-balance-value ${r.closing_balance_rmb < 0 ? "neg" : ""}">
             ${formatRmb(r.closing_balance_rmb)}
           </div>
-          ${r.closing_balance_rmb < 0 ? '<div class="ink-3" style="font-size:11px;color:#d32f2f">應付給站長</div>' : ""}
+          ${r.closing_balance_rmb < 0 ? '<div class="settlement-balance-hint">應付給站長</div>' : ""}
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0">
-        ${kpi("期初餘額", r.opening_balance_rmb)}
-        ${kpi("本期打款", r.total_paid_in_period_rmb, "ok")}
-        ${kpi("本期結算", r.total_settled_rmb, "danger")}
-        ${kpi("期末餘額", r.closing_balance_rmb, r.closing_balance_rmb < 0 ? "danger" : "")}
-      </div>
+      <table class="settlement-grid">
+        <thead>
+          <tr>
+            <th rowspan="2" class="col-date">日期</th>
+            <th rowspan="2" class="col-payment">款/預付款</th>
+            ${productColCount === 0 ? "" : `<th colspan="${productColCount}" class="col-product-group">${esc(pub.name)}</th>`}
+          </tr>
+          <tr>
+            ${productsToShow.map((p) => `<th class="col-product">${esc(p.name)}</th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="row-opening">
+            <td class="col-date">上月總結</td>
+            <td class="col-payment num">${formatNum(r.opening_balance_rmb, true)}</td>
+            ${productsToShow.map(() => `<td class="cell-empty"></td>`).join("")}
+          </tr>
 
-      ${r.shortfall_rmb > 0 ? `
-        <div style="background:#fff8e1;border-left:3px solid #ff9800;padding:8px 12px;border-radius:6px;margin:8px 0;font-size:13px">
-          ⚠️ 期間內有 ${formatRmb(r.shortfall_rmb)} 的結算費用沒對應到打款批次,匯率走預設值(僅影響內部 TWD 報表,RMB 對帳不變)
+          ${Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => {
+            const ymd = `${yearMonth}-${String(day).padStart(2, "0")}`;
+            const isToday = ymd === today;
+            const isFuture = ymd > today;
+            const payment = paymentsByDate.get(ymd) || 0;
+            const cls = isToday ? "row-today" : (isFuture ? "row-future" : "");
+            return `
+              <tr class="${cls}">
+                <td class="col-date">${day}日</td>
+                <td class="col-payment num ${payment > 0 ? "" : "cell-empty"}">${payment > 0 ? formatNum(payment) : ""}</td>
+                ${productsToShow.map((p) => {
+                  const val = dailyByKey.get(`${ymd}::${p.id}`) || 0;
+                  return `<td class="num ${val > 0 ? "" : "cell-empty"}">${val > 0 ? formatNum(val) : ""}</td>`;
+                }).join("")}
+              </tr>
+            `;
+          }).join("")}
+
+          <tr class="row-totals">
+            <td class="col-date">總計</td>
+            <td class="col-payment num">${formatNum(r.opening_balance_rmb + r.total_paid_in_period_rmb, true)}</td>
+            ${productsToShow.map((p) => {
+              const t = productTotals.get(p.id) || 0;
+              return `<td class="num ${t > 0 ? "" : "cell-empty"}">${t > 0 ? formatNum(t) : ""}</td>`;
+            }).join("")}
+          </tr>
+
+          <tr class="row-final">
+            <td class="col-date">結算</td>
+            <td colspan="${numericColCount}" class="num ${r.closing_balance_rmb < 0 ? "neg" : ""}">
+              ${formatRmb(r.closing_balance_rmb)}
+              ${r.closing_balance_rmb < 0 ? "(應付給站長)" : ""}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      ${r.payments_in_period.length > 0 ? `
+        <div class="settlement-footnote">
+          本期打款明細:${r.payments_in_period.map((p) =>
+            `${p.date.slice(5)} ¥${formatNum(p.amount_rmb)}${p.notes ? `(${esc(p.notes)})` : ""}`
+          ).join(" · ")}
         </div>
       ` : ""}
-
-      <h3 style="margin:14px 0 6px;font-size:14px">本期打款記錄(${r.payments_in_period.length} 筆)</h3>
-      ${r.payments_in_period.length === 0 ? `
-        <p class="ink-3" style="margin:0;font-size:13px">本期內無打款</p>
-      ` : `
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>日期</th><th class="num">RMB 金額</th><th>匯率</th><th>備註</th></tr>
-            </thead>
-            <tbody>
-              ${r.payments_in_period.map((p) => `
-                <tr>
-                  <td>${esc(p.date)}</td>
-                  <td class="num">${formatRmb(p.amount_rmb)}</td>
-                  <td class="num">${Number(p.exchange_rate || 0).toFixed(2)}</td>
-                  <td class="ink-3" style="font-size:12px">${esc(p.notes || "")}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-      `}
-
-      <h3 style="margin:14px 0 6px;font-size:14px">產品結算小計</h3>
-      ${productTotals.size === 0 ? `
-        <p class="ink-3" style="margin:0;font-size:13px">本期內無計費紀錄</p>
-      ` : `
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>產品</th><th class="num">廠商安裝(總)</th><th class="num">結算金額(RMB)</th></tr>
-            </thead>
-            <tbody>
-              ${Array.from(productTotals.entries()).map(([pid, pt]) => `
-                <tr>
-                  <td>${esc(pt.name)}</td>
-                  <td class="num">${numFmt(pt.installs)}</td>
-                  <td class="num">${formatRmb(pt.cost)}</td>
-                </tr>
-              `).join("")}
-              <tr style="font-weight:700;background:#f7f7f7">
-                <td>合計</td>
-                <td class="num">${numFmt(Array.from(productTotals.values()).reduce((a, b) => a + b.installs, 0))}</td>
-                <td class="num">${formatRmb(r.total_settled_rmb)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      `}
-
-      <h3 style="margin:14px 0 6px;font-size:14px">日明細(${dayProductRows.length} 列)</h3>
-      ${dayProductRows.length === 0 ? `
-        <p class="ink-3" style="margin:0;font-size:13px">本期內無計費紀錄</p>
-      ` : `
-        <div class="table-wrap" style="max-height:500px;overflow:auto">
-          <table>
-            <thead>
-              <tr>
-                <th>日期</th>
-                <th>產品</th>
-                <th class="num">廠商安裝</th>
-                <th class="num">單價(RMB)</th>
-                <th class="num">小計(RMB)</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${dayProductRows.map((d) => `
-                <tr>
-                  <td>${esc(d.date)}</td>
-                  <td>${esc(d.product_name)}</td>
-                  <td class="num">${numFmt(d.installs)}</td>
-                  <td class="num">${Number(d.price_rmb).toFixed(2)}</td>
-                  <td class="num">${formatRmb(d.cost_rmb)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-      `}
     </div>
   `;
+}
+
+// 哪些產品要列為欄
+function decideProducts(state, publisherId, dailyCosts, mode) {
+  const products = state.products || [];
+  if (mode === "all") {
+    return products.filter((p) => p.cpa_enabled !== false);
+  }
+  // active 模式:這站長有跑過的產品(install_data 有對應)
+  const myChannelIds = new Set((state.channels || []).filter((c) => c.publisher_id === publisherId).map((c) => c.id));
+  const seenProductIds = new Set();
+  for (const d of state.install_data || []) {
+    if (myChannelIds.has(d.channel_id)) seenProductIds.add(d.product_id);
+  }
+  // 也納入「本月有結算」的產品(冗餘安全網)
+  for (const d of dailyCosts) seenProductIds.add(d.product_id);
+  return products.filter((p) => seenProductIds.has(p.id));
+}
+
+function lastDayOfMonth(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(y, m, 0).getDate();
 }
 
 function nowYm() {
@@ -251,16 +265,6 @@ function listMonths(count, fromYm) {
   return out;
 }
 
-function kpi(label, value, tone = "") {
-  const color = tone === "danger" ? "#d32f2f" : tone === "ok" ? "#2e7d32" : "#333";
-  return `
-    <div style="background:#fafafa;border-radius:6px;padding:8px 10px">
-      <div class="ink-3" style="font-size:11px">${esc(label)}</div>
-      <div style="font-size:18px;font-weight:600;color:${color};margin-top:2px">${formatRmb(value)}</div>
-    </div>
-  `;
-}
-
 function formatRmb(v) {
   if (v == null || !Number.isFinite(Number(v))) return "—";
   const n = Number(v);
@@ -268,9 +272,15 @@ function formatRmb(v) {
   return `${sign}¥${Math.abs(n).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function numFmt(v) {
-  if (v == null || !Number.isFinite(Number(v))) return "—";
-  return Number(v).toLocaleString("zh-TW");
+// 對帳網格內 cell 用:整數顯示(節省空間),保留 1 位小數於必要
+function formatNum(v, allowZero = false) {
+  if (v == null || !Number.isFinite(Number(v))) return "";
+  const n = Number(v);
+  if (!allowZero && n === 0) return "";
+  if (Math.abs(n) >= 100 || Number.isInteger(n)) {
+    return Math.round(n).toLocaleString("zh-TW");
+  }
+  return n.toLocaleString("zh-TW", { maximumFractionDigits: 1 });
 }
 
 function esc(s) {
