@@ -2873,3 +2873,54 @@ tr.family-member.family-last > td {
 }
 .rates-table td.num { text-align: right; }
 .rates-table td input { padding: 4px 8px; font-size: 12px; border: 1px solid #d8d8d8; border-radius: 3px; }
+
+/* ===== 對帳單 Layout B:雙週並排 ===== */
+.settlement-biweek { max-width: 1300px; }
+.settlement-biweek .biweek-wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.settlement-biweek .biweek-title {
+  font-size: 11px;
+  color: #999;
+  margin: 4px 0 4px;
+  text-align: center;
+}
+.settlement-biweek .grand-total {
+  margin-top: 10px;
+  padding: 10px 14px;
+  background: #f5d8d8;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.settlement-biweek .grand-total .gt-row {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+}
+.settlement-biweek .grand-total .gt-prod {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.settlement-biweek .grand-total .gt-prod strong {
+  font-size: 15px;
+  font-weight: 700;
+  color: #2a2a2a;
+}
+.settlement-biweek .grand-total .gt-amt {
+  font-size: 12px;
+  color: #777;
+}
+.settlement-biweek .grand-total .gt-final {
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #2a2a2a;
+}
+.settlement-biweek .grand-total .gt-final.neg { color: #c62828; }

@@ -136,8 +136,61 @@ function renderReport(root, view) {
   const productColCount = productsToShow.length;
   const numericColCount = 1 + productColCount;
 
+  // Layout B 渲染:雙週並排(上半月 1-15 / 下半月 16-31)
+  const renderDayCell = (ymd, day, isToday, isFuture, paymentVal) => {
+    const cls = isToday ? "row-today" : (isFuture ? "row-future" : "");
+    return `
+      <tr class="${cls}">
+        <td class="col-date">${day}日</td>
+        <td class="col-payment num ${paymentVal > 0 ? "" : "cell-empty"}">${paymentVal > 0 ? formatNum(paymentVal) : ""}</td>
+        ${productsToShow.map((p) => {
+          const v = dailyByKey.get(`${ymd}::${p.id}`);
+          if (!v || v.installs === 0) return `<td class="num cell-empty"></td>`;
+          return `<td class="num cell-inline">
+            <span class="cell-installs">${formatNum(v.installs)}</span><span class="cell-amount">¥${formatNum(v.cost)}</span>
+          </td>`;
+        }).join("")}
+      </tr>
+    `;
+  };
+
+  const renderHalf = (startDay, endDay, includeOpening) => {
+    const colCount = 2 + productsToShow.length;
+    return `
+      <table class="settlement-grid">
+        <thead>
+          <tr>
+            <th class="col-date">日期</th>
+            <th class="col-payment">款/预付</th>
+            ${productsToShow.map((p) => `<th class="col-product"><div>${esc(p.name)}</div><div class="col-product-sub">安装 / 金额</div></th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          ${includeOpening ? `
+            <tr class="row-opening">
+              <td class="col-date">上月</td>
+              <td class="col-payment num">${formatNum(r.opening_balance_rmb, true)}</td>
+              ${productsToShow.map(() => `<td class="cell-empty"></td>`).join("")}
+            </tr>
+          ` : ""}
+          ${Array.from({ length: endDay - startDay + 1 }, (_, i) => startDay + i).map((day) => {
+            const ymd = `${yearMonth}-${String(day).padStart(2, "0")}`;
+            return renderDayCell(ymd, day, ymd === today, ymd > today, paymentsByDate.get(ymd) || 0);
+          }).join("")}
+        </tbody>
+      </table>
+    `;
+  };
+
+  // 月總計(底部 grand-total)
+  const grandTotalCells = productsToShow.map((p) => {
+    const t = productTotals.get(p.id);
+    if (!t || t.installs === 0) return `<span class="gt-prod">${esc(p.name)} <span class="ink-3">—</span></span>`;
+    return `<span class="gt-prod">${esc(p.name)} <strong>${formatNum(t.installs)}</strong> <span class="gt-amt">¥${formatNum(t.cost)}</span></span>`;
+  }).join(" · ");
+
   panel.innerHTML = `
-    <div class="settlement-print-card">
+    <div class="settlement-print-card settlement-biweek">
       <div class="settlement-banner">
         <div>
           <div class="settlement-title">${esc(pub.name)} · ${esc(view.month)} 对账单</div>
@@ -157,70 +210,21 @@ function renderReport(root, view) {
         </div>
       </div>
 
-      <table class="settlement-grid">
-        <thead>
-          <tr>
-            <th rowspan="2" class="col-date">日期</th>
-            <th rowspan="2" class="col-payment">款/预付款</th>
-            ${productColCount === 0 ? "" : `<th colspan="${productColCount}" class="col-product-group">${esc(pub.name)}</th>`}
-          </tr>
-          <tr>
-            ${productsToShow.map((p) => `<th class="col-product"><div>${esc(p.name)}</div><div class="col-product-sub">安装 / 金额</div></th>`).join("")}
-          </tr>
-        </thead>
-        <tbody>
-          <tr class="row-opening">
-            <td class="col-date">上月</td>
-            <td class="col-payment num">${formatNum(r.opening_balance_rmb, true)}</td>
-            ${productsToShow.map(() => `<td class="cell-empty"></td>`).join("")}
-          </tr>
+      <div class="biweek-wrap">
+        <div>
+          <div class="biweek-title">上半月(1 ~ 15 日)</div>
+          ${renderHalf(1, 15, true)}
+        </div>
+        <div>
+          <div class="biweek-title">下半月(16 ~ ${daysInMonth} 日)</div>
+          ${renderHalf(16, daysInMonth, false)}
+        </div>
+      </div>
 
-          ${Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => {
-            const ymd = `${yearMonth}-${String(day).padStart(2, "0")}`;
-            const isToday = ymd === today;
-            const isFuture = ymd > today;
-            const payment = paymentsByDate.get(ymd) || 0;
-            const cls = isToday ? "row-today" : (isFuture ? "row-future" : "");
-            return `
-              <tr class="${cls}">
-                <td class="col-date">${day}日</td>
-                <td class="col-payment num ${payment > 0 ? "" : "cell-empty"}">${payment > 0 ? formatNum(payment) : ""}</td>
-                ${productsToShow.map((p) => {
-                  const v = dailyByKey.get(`${ymd}::${p.id}`);
-                  if (!v || v.installs === 0) {
-                    return `<td class="num cell-empty"></td>`;
-                  }
-                  return `<td class="num cell-inline">
-                    <span class="cell-installs">${formatNum(v.installs)}</span><span class="cell-amount">¥${formatNum(v.cost)}</span>
-                  </td>`;
-                }).join("")}
-              </tr>
-            `;
-          }).join("")}
-
-          <tr class="row-totals">
-            <td class="col-date">总计</td>
-            <td class="col-payment num">${formatNum(r.opening_balance_rmb + r.total_paid_in_period_rmb, true)}</td>
-            ${productsToShow.map((p) => {
-              const t = productTotals.get(p.id);
-              if (!t || t.installs === 0) {
-                return `<td class="num cell-empty"></td>`;
-              }
-              return `<td class="num cell-inline">
-                <span class="cell-installs">${formatNum(t.installs)}</span><span class="cell-amount">¥${formatNum(t.cost)}</span>
-              </td>`;
-            }).join("")}
-          </tr>
-
-          <tr class="row-final">
-            <td class="col-date">结算</td>
-            <td colspan="${numericColCount}" class="num ${r.closing_balance_rmb < 0 ? "neg" : ""}">
-              ${formatRmb(r.closing_balance_rmb)}
-              ${r.closing_balance_rmb < 0 ? "(应付给站长)" : ""}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="grand-total">
+        <div class="gt-row">${grandTotalCells} · 本期打款 <strong>¥${formatNum(r.total_paid_in_period_rmb)}</strong></div>
+        <div class="gt-final ${r.closing_balance_rmb < 0 ? "neg" : ""}">结算 ${formatRmb(r.closing_balance_rmb)}${r.closing_balance_rmb < 0 ? "(应付给站长)" : ""}</div>
+      </div>
 
       ${r.payments_in_period.length > 0 ? `
         <div class="settlement-footnote">

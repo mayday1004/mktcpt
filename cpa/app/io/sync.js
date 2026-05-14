@@ -60,8 +60,40 @@ export function resetSyncMeta() {
 }
 
 // ===== fingerprint:把資料 row 序列化成穩定字串供比對 =====
-export function fingerprintDataRow(dataRow) {
-  return dataRow.map((v) => {
+//
+// Google Sheets 會把 "2026-05" 這種 YYYY-MM 字串自動轉成日期物件,讀回來
+// 變成 "2026-05-01" 或 ISO 時戳。為避免 client 推 "2026-05" 後讀回 "2026-05-01"
+// 永遠 fingerprint 不對 → 死循環衝突,在 fingerprint 階段把 YYYY-MM 值 canonicalize。
+//
+// 規則:
+//   1. 看 header 包含 "(YYYY-MM)" → 該 cell 取前 7 字
+//   2. 設定表 (key=current_month) → value 也取前 7 字
+//   3. ISO 8601 timestamp "YYYY-MM-DDT..." → 取前 10 字(YYYY-MM-DD,主要給 created_at 用)
+function canonicalizeForFingerprint(headers, dataRow, _id) {
+  if (!headers || headers.length === 0) return dataRow;
+  return dataRow.map((v, i) => {
+    if (v == null) return v;
+    const h = String(headers[i] || "");
+    let s = (v instanceof Date) ? v.toISOString() : String(v);
+    // 1. 月份欄(YYYY-MM)— Sheets 會把 "2026-05" 自動補成 "2026-05-01"
+    if (h.includes("(YYYY-MM)") && /^\d{4}-\d{2}-?\d{0,2}/.test(s)) {
+      return s.slice(0, 7);
+    }
+    // 2. 設定表特殊欄
+    if (h === "value" && _id === "current_month" && /^\d{4}-\d{2}-?\d{0,2}/.test(s)) {
+      return s.slice(0, 7);
+    }
+    // 3. ISO timestamp → date-only
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
+      return s.slice(0, 10);
+    }
+    return s;
+  });
+}
+
+export function fingerprintDataRow(dataRow, headers, _id) {
+  const row = canonicalizeForFingerprint(headers, dataRow, _id);
+  return row.map((v) => {
     if (v == null) return "";
     if (typeof v === "number" && !Number.isFinite(v)) return "";
     if (v instanceof Date) return v.toISOString();
@@ -152,7 +184,7 @@ export function onConflictResolved(update) {
     _version: typeof _version === "number" ? _version : (existing._version || 0),
     fingerprint: forcePush
       ? "__force_push__"  // 跟任何本機 fingerprint 都不同 → 下次 sync 必推
-      : (update.dataRow ? fingerprintDataRow(update.dataRow) : existing.fingerprint),
+      : (update.dataRow ? fingerprintDataRow(update.dataRow, update.dataHeaders, entityId) : existing.fingerprint),
   };
   saveMeta(meta);
   logInfo("conflict.metaUpdated", { sheet: sheetName, id: entityId, version: _version, forcePush: !!forcePush });
@@ -220,7 +252,7 @@ export async function syncOnce(onProgress, options = {}) {
         const serverIds = new Set(serverRecords.filter((r) => !r._deleted).map((r) => r._id));
         applySync((st) => {
           for (const sr of serverRecords) {
-            const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow) : null;
+            const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow, spec.dataHeaders, sr._id) : null;
             const knownFP = sheetMeta[sr._id]?.fingerprint;
             const localDirty = localFP != null && localFP !== knownFP && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__";
             const serverChanged = !knownFP || sr._updated_at > (sheetMeta[sr._id]?._updated_at || "");
@@ -267,7 +299,7 @@ export async function syncOnce(onProgress, options = {}) {
         // 重設 meta:跟 server 對齊(被加入衝突的 row 不更新 meta,等使用者解完再更新)
         const conflictedIds = new Set();
         for (const sr of serverRecords) {
-          const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow) : null;
+          const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow, spec.dataHeaders, sr._id) : null;
           const knownFP = sheetMeta[sr._id]?.fingerprint;
           if (localFP != null && localFP !== knownFP && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__"
               && (!knownFP || sr._updated_at > (sheetMeta[sr._id]?._updated_at || ""))
@@ -280,7 +312,7 @@ export async function syncOnce(onProgress, options = {}) {
           if (conflictedIds.has(sr._id)) continue;
           meta[spec.sheetName][sr._id] = sr._deleted
             ? { _updated_at: sr._updated_at, _version: sr._version, fingerprint: TOMBSTONE_FP }
-            : { _updated_at: sr._updated_at, _version: sr._version, fingerprint: fingerprintDataRow(sr.dataRow) };
+            : { _updated_at: sr._updated_at, _version: sr._version, fingerprint: fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) };
         }
       } else if (serverWins) {
         // server 是 empty / legacy / no-headers — 不動 local 也不動 meta
@@ -293,7 +325,7 @@ export async function syncOnce(onProgress, options = {}) {
             if (!isNewerOrFirst) continue;
 
             // 偵測本機 dirty:server 比 meta 新,且本機跟 meta fingerprint 不同
-            const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow) : null;
+            const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow, spec.dataHeaders, sr._id) : null;
             const knownFP = known?.fingerprint;
             const localDirty = localFP != null && knownFP && localFP !== knownFP
                               && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__";
@@ -336,7 +368,7 @@ export async function syncOnce(onProgress, options = {}) {
           const known = sheetMeta[sr._id];
           const isNewerOrFirst = !known || (sr._updated_at && sr._updated_at > (known._updated_at || ""));
           if (!isNewerOrFirst) continue;
-          const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow) : null;
+          const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow, spec.dataHeaders, sr._id) : null;
           const knownFP = known?.fingerprint;
           const localDirty = localFP != null && knownFP && localFP !== knownFP
                             && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__";
@@ -346,7 +378,7 @@ export async function syncOnce(onProgress, options = {}) {
           }
           meta[spec.sheetName][sr._id] = sr._deleted
             ? { _updated_at: sr._updated_at, _version: sr._version, fingerprint: TOMBSTONE_FP }
-            : { _updated_at: sr._updated_at, _version: sr._version, fingerprint: fingerprintDataRow(sr.dataRow) };
+            : { _updated_at: sr._updated_at, _version: sr._version, fingerprint: fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) };
         }
       }
     }
@@ -388,7 +420,7 @@ export async function syncOnce(onProgress, options = {}) {
       const known = sheetMeta[lr._id];
       const expectedVersion = known?._version || 0;
       if (!needsPush) {
-        const fp = fingerprintDataRow(lr.dataRow);
+        const fp = fingerprintDataRow(lr.dataRow, dataHeaders, lr._id);
         const isForcePush = known?.fingerprint === "__force_push__";
         needsPush = !known || known.fingerprint !== fp || isForcePush;
       }
@@ -445,7 +477,7 @@ export async function syncOnce(onProgress, options = {}) {
           meta[spec.sheetName][a._id] = {
             _updated_at: a._updated_at,
             _version: a._version,
-            fingerprint: fingerprintDataRow(lr.dataRow),
+            fingerprint: fingerprintDataRow(lr.dataRow, dataHeaders, lr._id),
           };
         }
       }
@@ -467,7 +499,7 @@ export async function syncOnce(onProgress, options = {}) {
         mine: {
           dataRow: lr.dataRow,
           dataHeaders: dataHeaders,
-          fingerprint: fingerprintDataRow(lr.dataRow),
+          fingerprint: fingerprintDataRow(lr.dataRow, dataHeaders, lr._id),
           knownVersion: sheetMeta[c._id]?._version || 0,
         },
         theirs: {
