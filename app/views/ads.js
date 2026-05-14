@@ -956,9 +956,9 @@ function actionButtons(seg, compact) {
       ? `<span class="lock-icon" title="🔒 鎖權重">🔒</span>`
       : "");
   // 2026-05 按鈕 layout 重整(§5.7):[編輯][權重調整][⋯]
-  // 在 split_pair 配對內的廣告 → 「權重調整」改用家族列的整體視角按鈕(§5.7.2)
+  // 在 split_pair 配對內的廣告 → 「權重調整」按鈕完全不顯示,改用家族列整體視角入口(§5.7.2)
   const weightBtn = seg.split_pair_id
-    ? `<span class="ink-3" style="font-size:11px;padding:0 8px" title="此廣告屬於分流配對,請從家族列權重調整(整體合約視角)">↑ 家族</span>`
+    ? ""
     : `<button data-act="weight" data-id="${id}" title="權重調整">權重調整</button>`;
   return `
     ${lockIcon}
@@ -2101,11 +2101,7 @@ function openFamilyWeightAdjust(pairId) {
   const isPoquanPid = (pid) => !!s.products.find((p) => p.id === pid)?.is_poquan;
 
   const html = `
-    <h2>權重調整(整體合約視角):${esc(parentSeg.ad_code)} / ${esc(tVariantSeg.ad_code)}</h2>
-    <p class="ink-2" style="font-size:13px">
-      合約總額 <strong>${Math.round(totalAmt).toLocaleString()} RMB</strong>(<code>${esc(parentSeg.ad_code)}</code> ${Math.round(parentAmt).toLocaleString()} + <code>${esc(tVariantSeg.ad_code)}</code> ${Math.round(tvAmt).toLocaleString()})。
-      下方權重以「占整體合約 %」表達,加總須 = 100%;系統自動拆破圈進 t-variant、一般留 parent。
-    </p>
+    <h2>權重調整:${esc(parentSeg.ad_code)} / ${esc(tVariantSeg.ad_code)}</h2>
     <div class="field"><label>生效日</label><input id="eff" type="date" value="${defEff}" min="${parentSeg.start_date}" max="${parentSeg.end_date}" /></div>
 
     <h3 class="mt-16">各產品在整體合約的權重</h3>
