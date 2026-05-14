@@ -106,10 +106,12 @@ export function render(root) {
   //   1. 未淘汰
   //   2. short_url_type 不為空(= 採用 L1/L3/L5,「不採用」會是空字串)
   //   3. 未過期(end_date > 今天;end_date 不含當日,所以 end_date = 今天時已經是最後一天無效)
+  //   4. 家族配對只顯示 parent(一般側)作為代表 — 一般 + 破圈是同一份合約共用一條鏈結
   const ads = (s.ads || []).filter((a) =>
     !a.eliminated &&
     !!a.short_url_type &&
-    (!a.end_date || a.end_date > today)
+    (!a.end_date || a.end_date > today) &&
+    a.split_role !== "t_variant"
   );
 
   // 同代碼多段:取最新一段(start_date 最大)
