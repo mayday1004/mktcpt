@@ -112,6 +112,9 @@ export function defaultState() {
       monthly_rates: {},
       sheets_webapp_url: "",
       sheets_token: "",
+      // 縮網址前綴對應(2026-05,§5.7.x):業務 slot L1/L3/L5 → 實際 URL 子網域前綴
+      // 預設值 = 同名(slot id 就是前綴);使用者可在縮網址頁修改
+      short_url_prefix_map: { L1: "L1", L3: "L3", L5: "L5" },
     },
     products: [],
     // monthly_budgets[product_id][YYYY-MM] = budget_twd.

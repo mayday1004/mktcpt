@@ -261,6 +261,9 @@ export const TABLES = [
       ["usd_to_twd_rate", s.settings.usd_to_twd_rate ?? 32],
       ["short_url_new_domain", s.settings.short_url_new_domain || ""],
       ["short_url_old_domain", s.settings.short_url_old_domain || ""],
+      ["short_url_prefix_L1", s.settings.short_url_prefix_map?.L1 || "L1"],
+      ["short_url_prefix_L3", s.settings.short_url_prefix_map?.L3 || "L3"],
+      ["short_url_prefix_L5", s.settings.short_url_prefix_map?.L5 || "L5"],
     ],
   },
   {
@@ -506,6 +509,7 @@ export function assembleFromTables(raw) {
     sheets_token: "",
     short_url_new_domain: "",
     short_url_old_domain: "",
+    short_url_prefix_map: { L1: "L1", L3: "L3", L5: "L5" },
   };
   const setT = pick("設定");
   setT.rows.forEach((r) => {
@@ -518,6 +522,9 @@ export function assembleFromTables(raw) {
     else if (o.key === "usd_to_twd_rate") settings.usd_to_twd_rate = Number(v) || 32;
     else if (o.key === "short_url_new_domain") settings.short_url_new_domain = String(v || "");
     else if (o.key === "short_url_old_domain") settings.short_url_old_domain = String(v || "");
+    else if (o.key === "short_url_prefix_L1") settings.short_url_prefix_map.L1 = String(v || "L1").trim() || "L1";
+    else if (o.key === "short_url_prefix_L3") settings.short_url_prefix_map.L3 = String(v || "L3").trim() || "L3";
+    else if (o.key === "short_url_prefix_L5") settings.short_url_prefix_map.L5 = String(v || "L5").trim() || "L5";
   });
 
   // 報表自訂欄位（公式跨裝置共享；hidden_metrics 是裝置端設定，不在這裡）

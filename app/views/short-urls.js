@@ -1,13 +1,23 @@
 import { getState, update } from "../state.js";
 
 const TYPE_LABEL = { L1: "權重", L3: "APK", L5: "小島" };
+const DEFAULT_PREFIX_MAP = { L1: "L1", L3: "L3", L5: "L5" };
 
-// 構造完整 URL: https://{type-lowercased}.{domain}/{param}
-function buildUrl(type, domain, param) {
-  if (!type || !domain || !param) return "";
+// 取得 slot 對應的實際前綴(2026-05,§5.7.x):
+//   settings.short_url_prefix_map[slotId] → 實際前綴(預設與 slot 同名)
+function prefixOf(state, slotType) {
+  const map = state?.settings?.short_url_prefix_map || DEFAULT_PREFIX_MAP;
+  return map[slotType] || slotType || "";
+}
+
+// 構造完整 URL: https://{actualPrefix-lowercased}.{domain}/{param}
+//   slotType = "L1"/"L3"/"L5" 業務 slot;實際前綴由 settings.short_url_prefix_map 決定
+function buildUrl(slotType, domain, param, state) {
+  if (!slotType || !domain || !param) return "";
   const cleanDomain = String(domain).trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
   if (!cleanDomain) return "";
-  return `https://${type.toLowerCase()}.${cleanDomain}/${param}`;
+  const prefix = prefixOf(state || getState(), slotType);
+  return `https://${prefix.toLowerCase()}.${cleanDomain}/${param}`;
 }
 
 // 顯示模型(2026-05 修):
@@ -57,8 +67,8 @@ function groupByContact(rows) {
 function buildGroupCopyText(ads, s) {
   const adBlocks = ads.map((a) => {
     const dom = effectiveDomains(s, a);
-    const oldUrl = buildUrl(a.short_url_type, dom.oldDomain, a.short_url_param);
-    const newUrl = buildUrl(a.short_url_type, dom.newDomain, a.short_url_param);
+    const oldUrl = buildUrl(a.short_url_type, dom.oldDomain, a.short_url_param, s);
+    const newUrl = buildUrl(a.short_url_type, dom.newDomain, a.short_url_param, s);
     const lines = [];
     if (a.ad_name) lines.push(`[${a.ad_name}]`);
     if (a.ad_copy) lines.push(`文案：  ${a.ad_copy}`);
@@ -100,6 +110,9 @@ export function render(root) {
         <div class="desc" style="max-width:760px;line-height:1.6">
           記錄正在使用中的連結,並通知站長更換。「全站當前網址」即為新網址;套用後<strong>現有廣告</strong>會把當下新網址 snapshot 為自己的舊網址,<strong>新增的廣告</strong>則無舊網址(直接視為新合作)。同站長(聯繫資料相同)的廣告自動分組,一次複製、一次標記已通知。
         </div>
+      </div>
+      <div class="view-actions">
+        <button id="su-prefix" class="link-btn" style="font-size:13px;padding:6px 14px;border:1px solid var(--line);border-radius:6px;background:#fff">🔧 縮網址前綴</button>
       </div>
     </div>
 
@@ -166,6 +179,10 @@ export function render(root) {
       `}
     </div>
   `;
+
+  // 縮網址前綴設定彈窗(§5.7.x)
+  const prefixBtn = document.getElementById("su-prefix");
+  if (prefixBtn) prefixBtn.onclick = () => openPrefixMapModal();
 
   // 套用「當前網址」:cascade + 重置通知狀態
   const applyBtn = document.getElementById("su-apply");
@@ -300,8 +317,8 @@ function renderGroupHeader(group, s) {
 
 function renderRow(a, s, { inGroup = false } = {}) {
   const dom = effectiveDomains(s, a);
-  const oldUrl = buildUrl(a.short_url_type, dom.oldDomain, a.short_url_param);
-  const newUrl = buildUrl(a.short_url_type, dom.newDomain, a.short_url_param);
+  const oldUrl = buildUrl(a.short_url_type, dom.oldDomain, a.short_url_param, s);
+  const newUrl = buildUrl(a.short_url_type, dom.newDomain, a.short_url_param, s);
   const typeLabel = a.short_url_type
     ? `<span class="pill">${esc(a.short_url_type)}${TYPE_LABEL[a.short_url_type] ? `(${TYPE_LABEL[a.short_url_type]})` : ""}</span>`
     : "<span class='ink-3'>—</span>";
@@ -353,6 +370,70 @@ function renderRow(a, s, { inGroup = false } = {}) {
   `;
 }
 
+// 縮網址前綴對應彈窗(2026-05):編輯 settings.short_url_prefix_map
+// 業務 slot 永遠是 L1/L3/L5,實際 URL 子網域前綴可以另外設定(例如 L1 → L7)
+function openPrefixMapModal() {
+  const s = getState();
+  const map = { ...DEFAULT_PREFIX_MAP, ...(s.settings.short_url_prefix_map || {}) };
+  const domainSample = s.settings.short_url_new_domain || "abc.com";
+  const html = `
+    <h2>🔧 縮網址前綴</h2>
+    <p class="ink-2" style="font-size:13px;line-height:1.6">
+      <strong>業務 slot</strong>(L1/L3/L5)是辨識用途的固定標籤,新增廣告時用它選類別。<br>
+      <strong>實際前綴</strong>是 URL 子網域,可以另設(例如 L1 改成 L7),儲存後所有對應 slot 的廣告 URL 立刻換新前綴,廣告資料不動。
+    </p>
+    <div class="field">
+      <label>L1 (權重)</label>
+      <input id="pf-L1" type="text" value="${esc(map.L1)}" />
+      <div class="hint">範例 URL:https://<strong id="pf-L1-preview">${esc(map.L1).toLowerCase()}</strong>.${esc(domainSample)}/foo</div>
+    </div>
+    <div class="field mt-8">
+      <label>L3 (APK)</label>
+      <input id="pf-L3" type="text" value="${esc(map.L3)}" />
+      <div class="hint">範例 URL:https://<strong id="pf-L3-preview">${esc(map.L3).toLowerCase()}</strong>.${esc(domainSample)}/foo</div>
+    </div>
+    <div class="field mt-8">
+      <label>L5 (小島)</label>
+      <input id="pf-L5" type="text" value="${esc(map.L5)}" />
+      <div class="hint">範例 URL:https://<strong id="pf-L5-preview">${esc(map.L5).toLowerCase()}</strong>.${esc(domainSample)}/foo</div>
+    </div>
+    <div class="modal-actions">
+      <button id="pf-cancel">取消</button>
+      <button class="primary" id="pf-save">儲存</button>
+    </div>
+  `;
+  const dlg = window.modal.open(html);
+  const q = (sel) => dlg.querySelector(sel);
+  ["L1", "L3", "L5"].forEach((slot) => {
+    const inp = q(`#pf-${slot}`);
+    const pv = q(`#pf-${slot}-preview`);
+    if (!inp || !pv) return;
+    inp.oninput = () => {
+      pv.textContent = (inp.value.trim() || slot).toLowerCase();
+    };
+  });
+  q("#pf-cancel").onclick = () => window.modal.close();
+  q("#pf-save").onclick = () => {
+    const newMap = {
+      L1: (q("#pf-L1").value.trim() || "L1"),
+      L3: (q("#pf-L3").value.trim() || "L3"),
+      L5: (q("#pf-L5").value.trim() || "L5"),
+    };
+    // 簡易驗證:前綴不能含 . / / 或空白
+    for (const [slot, v] of Object.entries(newMap)) {
+      if (/[.\/\s]/.test(v)) {
+        window.toast(`${slot} 前綴格式錯誤(不可含 . / 或空白)`, "bad");
+        return;
+      }
+    }
+    update((st) => {
+      st.settings.short_url_prefix_map = newMap;
+    }, "更新縮網址前綴對應");
+    window.modal.close();
+    window.toast(`已儲存:L1→${newMap.L1} / L3→${newMap.L3} / L5→${newMap.L5}`, "ok");
+  };
+}
+
 function openOverrideModal(adCode) {
   const s = getState();
   const segs = (s.ads || []).filter((a) => a.ad_code === adCode);
@@ -361,8 +442,8 @@ function openOverrideModal(adCode) {
   const ad = segs[0];
   const globalNew = s.settings.short_url_new_domain || "";
   const dom = effectiveDomains(s, ad);
-  const oldUrl = buildUrl(ad.short_url_type, dom.oldDomain, ad.short_url_param);
-  const newUrl = buildUrl(ad.short_url_type, dom.newDomain, ad.short_url_param);
+  const oldUrl = buildUrl(ad.short_url_type, dom.oldDomain, ad.short_url_param, s);
+  const newUrl = buildUrl(ad.short_url_type, dom.newDomain, ad.short_url_param, s);
   const html = `
     <h2>編輯網域覆寫:${esc(adCode)} ${esc(ad.ad_name || "")}</h2>
     <p class="ink-2" style="font-size:13px;line-height:1.6">
