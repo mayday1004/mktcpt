@@ -88,7 +88,7 @@ function openEditor(publisherId) {
   const s = getState();
   const isNew = !publisherId;
   const p = isNew
-    ? { id: uid("pub"), name: "", default_cpa_price_rmb: 2.0, contact_info: "", settlement_mode: "prepaid" }
+    ? { id: uid("pub"), name: "", default_cpa_price_rmb: 2.5, contact_info: "", settlement_mode: "prepaid" }
     : s.publishers.find((x) => x.id === publisherId);
   if (!p) return;
 
@@ -119,6 +119,7 @@ function openEditor(publisherId) {
     <div class="field mt-8">
       <label>聯絡方式</label>
       <input id="f-contact" type="text" value="${esc(p.contact_info || "")}" placeholder="例:@telegram_id / email / 微信" />
+      <div class="ink-3" style="font-size:11px;margin-top:4px">同站長的線路在「縮網址」頁會分一組批次通知</div>
     </div>
     <div class="modal-actions">
       <button id="btn-cancel">取消</button>
