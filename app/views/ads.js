@@ -533,6 +533,20 @@ function renderFamily(fam, products) {
   const baseName = generalMember.segs[generalMember.segs.length - 1].ad_name || "";
   const totalLabel = hasPoquan ? "總額" : "合計";
 
+  // 家族列「權重調整」按鈕(§5.7.2):
+  // 只當家族裡有 split_pair 配對成員(parent + t-variant 同時存在)才顯示。
+  // 兄弟廣告(stXXX + stXXXdh,各自獨立 split_pair_id=null)走 per-ad 按鈕,不需家族視角。
+  let familyPairId = "";
+  if (hasPoquan) {
+    const parentMember = members.find((g) => familyRoleOf(g.code) === "一般");
+    const parentLast = parentMember
+      ? parentMember.segs.slice().reverse().find((s) => s.split_pair_id) : null;
+    if (parentLast) familyPairId = parentLast.split_pair_id;
+  }
+  const familyWeightBtn = familyPairId
+    ? `<button class="family-weight-btn" data-fam-weight-pair="${esc(familyPairId)}" title="整體合約視角編輯權重(parent + t-variant 一次調)">權重調整</button>`
+    : "";
+
   const familyHeader = `
     <tr class="family-head-row">
       <td colspan="9">
@@ -544,6 +558,7 @@ function renderFamily(fam, products) {
           <span class="family-roles">
             ${members.map((g) => `<span class="family-role-pill family-role-${familyRoleOf(g.code) === "一般" ? "normal" : familyRoleOf(g.code) === "破圈" ? "poquan" : "secondary"}">${esc(g.code)} <span class="family-role-tag">${familyRoleOf(g.code)}</span></span>`).join("")}
           </span>
+          ${familyWeightBtn ? `<span class="family-actions">${familyWeightBtn}</span>` : ""}
         </div>
       </td>
     </tr>
@@ -941,11 +956,14 @@ function actionButtons(seg, compact) {
       ? `<span class="lock-icon" title="🔒 鎖權重">🔒</span>`
       : "");
   // 2026-05 按鈕 layout 重整(§5.7):[編輯][權重調整][⋯]
-  // ⋯ 內含 續費 / 結束 / 鎖定狀態 / 淘汰
+  // 在 split_pair 配對內的廣告 → 「權重調整」改用家族列的整體視角按鈕(§5.7.2)
+  const weightBtn = seg.split_pair_id
+    ? `<span class="ink-3" style="font-size:11px;padding:0 8px" title="此廣告屬於分流配對,請從家族列權重調整(整體合約視角)">↑ 家族</span>`
+    : `<button data-act="weight" data-id="${id}" title="權重調整">權重調整</button>`;
   return `
     ${lockIcon}
     <button data-edit="${id}">編輯</button>
-    <button data-act="weight" data-id="${id}" title="權重調整(可觸發自動拆 t)">權重調整</button>
+    ${weightBtn}
     <button data-act="more" data-id="${id}" title="更多動作(續費 / 結束 / 鎖定 / 淘汰)">⋯</button>
   `;
 }
@@ -1067,6 +1085,10 @@ function bindHandlers(root, s) {
       else if (act === "more") openMoreMenu(seg);
       else if (act === "eliminate") openEliminate(seg);
     };
+  });
+  // 家族列「權重調整」按鈕(2026-05,§5.7.2 整體合約視角編輯)
+  root.querySelectorAll("[data-fam-weight-pair]").forEach((el) => {
+    el.onclick = () => openFamilyWeightAdjust(el.dataset.famWeightPair);
   });
 
   // 即將到期清單：續費 / 淘汰
@@ -2016,6 +2038,285 @@ function openWeightAdjust(seg) {
         : "已產生新段(權重調整),已建立待辦",
       "ok"
     );
+  };
+}
+
+// 家族視角權重調整(§5.7.2):對 split_pair 的 parent + t-variant 一次編輯
+// 使用者以「整體合約 %」視角填權重(加總 = 100,跨 parent + t-variant);
+// 系統自動拆 normal/poquan、重算雙方 amount + 內部 weights(canonical form)。
+function openFamilyWeightAdjust(pairId) {
+  const s = getState();
+  // 找出 pair 兩支廣告的最新段(latest by start_date)
+  const pairAds = (s.ads || []).filter((a) => a.split_pair_id === pairId);
+  if (pairAds.length === 0) { toast("找不到此配對", "bad"); return; }
+  const byCode = new Map();
+  for (const a of pairAds) {
+    if (!byCode.has(a.ad_code)) byCode.set(a.ad_code, []);
+    byCode.get(a.ad_code).push(a);
+  }
+  const latestOf = (segs) =>
+    segs.slice().sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""))[0];
+  const parentSeg = [...byCode.values()]
+    .map((segs) => latestOf(segs))
+    .find((seg) => seg.split_role === "parent");
+  const tVariantSeg = [...byCode.values()]
+    .map((segs) => latestOf(segs))
+    .find((seg) => seg.split_role === "t_variant");
+  if (!parentSeg || !tVariantSeg) { toast("配對結構不完整(找不到 parent 或 t-variant)", "bad"); return; }
+
+  const parentAmt = Number(parentSeg.amount_cny) || 0;
+  const tvAmt = Number(tVariantSeg.amount_cny) || 0;
+  const totalAmt = parentAmt + tvAmt;
+  if (totalAmt <= 0) { toast("合約總額為 0,無法調整", "bad"); return; }
+
+  // 計算「整體合約視角」當前權重 = parent.weights × (parentAmt/total) + tvariant.weights × (tvAmt/total)
+  // parent 內部 weights sum=100 對應 parentShare%;同理 t-variant
+  const integralWeights = {};
+  const parentShare = parentAmt / totalAmt;
+  const tvShare = tvAmt / totalAmt;
+  for (const [pid, w] of Object.entries(parentSeg.weights || {})) {
+    integralWeights[pid] = (integralWeights[pid] || 0) + Number(w) * parentShare;
+  }
+  for (const [pid, w] of Object.entries(tVariantSeg.weights || {})) {
+    integralWeights[pid] = (integralWeights[pid] || 0) + Number(w) * tvShare;
+  }
+  // 四捨五入到整數 %(largest-remainder 避免漂移)
+  const roundedIntegral = (() => {
+    const entries = Object.entries(integralWeights)
+      .filter(([, v]) => v > 0)
+      .map(([pid, v]) => ({ pid, val: v, floor: Math.floor(v), rem: v - Math.floor(v) }));
+    if (entries.length === 0) return {};
+    let assigned = entries.reduce((sum, e) => sum + e.floor, 0);
+    let deficit = 100 - assigned;
+    entries.sort((a, b) => b.rem - a.rem);
+    for (let i = 0; i < entries.length && deficit > 0; i++) { entries[i].floor += 1; deficit--; }
+    const out = {};
+    for (const e of entries) if (e.floor > 0) out[e.pid] = e.floor;
+    return out;
+  })();
+
+  const today = todayTaipei();
+  const defEff = today > parentSeg.start_date && today < parentSeg.end_date ? today : parentSeg.start_date;
+  const newWeights = { ...roundedIntegral };
+  const isPoquanPid = (pid) => !!s.products.find((p) => p.id === pid)?.is_poquan;
+
+  const html = `
+    <h2>權重調整(整體合約視角):${esc(parentSeg.ad_code)} / ${esc(tVariantSeg.ad_code)}</h2>
+    <p class="ink-2" style="font-size:13px">
+      合約總額 <strong>${Math.round(totalAmt).toLocaleString()} RMB</strong>(<code>${esc(parentSeg.ad_code)}</code> ${Math.round(parentAmt).toLocaleString()} + <code>${esc(tVariantSeg.ad_code)}</code> ${Math.round(tvAmt).toLocaleString()})。
+      下方權重以「占整體合約 %」表達,加總須 = 100%;系統自動拆破圈進 t-variant、一般留 parent。
+    </p>
+    <div class="field"><label>生效日</label><input id="eff" type="date" value="${defEff}" min="${parentSeg.start_date}" max="${parentSeg.end_date}" /></div>
+
+    <h3 class="mt-16">各產品在整體合約的權重</h3>
+    <div id="weights"></div>
+    <div class="weight-sum" id="weight-sum">合計：<span id="wsum-val">0</span>%</div>
+
+    <div id="fam-preview" class="ink-2" style="font-size:12px;padding:8px 10px;margin-top:8px;background:#f7f9fc;border-radius:6px"></div>
+
+    <div class="field mt-16">
+      <label>備註(選填)</label>
+      <textarea id="f-notes" rows="2" style="width:100%;resize:vertical"></textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button id="cancel">取消</button>
+      <button class="primary" id="save">套用</button>
+    </div>
+  `;
+  const dlg = modal.open(html);
+  const q = (sel) => dlg.querySelector(sel);
+
+  const renderWeights = () => {
+    q("#weights").innerHTML = s.products.map((p) => `
+      <div class="weight-grid">
+        <div>${esc(p.name)} <span class="ink-3 mono" style="font-size:11px">${esc(p.id)}${p.is_poquan ? " · 破圈" : ""}</span></div>
+        <input type="number" min="0" max="100" step="1" data-pid="${esc(p.id)}" value="${newWeights[p.id] ?? ""}" placeholder="0" />
+      </div>
+    `).join("");
+    q("#weights").querySelectorAll("input[data-pid]").forEach((inp) => {
+      inp.oninput = () => {
+        const v = inp.value === "" ? 0 : Number(inp.value);
+        if (v > 0) newWeights[inp.dataset.pid] = v;
+        else delete newWeights[inp.dataset.pid];
+        recalcSum();
+      };
+    });
+    recalcSum();
+  };
+  const recalcSum = () => {
+    const sum = Object.values(newWeights).reduce((x, y) => x + Number(y || 0), 0);
+    const sumEl = q("#weight-sum");
+    const ok = Math.abs(sum - 100) < 0.01;
+    sumEl.classList.toggle("ok", ok);
+    sumEl.classList.toggle("bad", !ok && sum > 0);
+    sumEl.innerHTML = `合計:<strong>${sum}</strong>%${ok ? " ✓" : ""}`;
+    // 預覽:依當前 weights 算 parent / t-variant 結構
+    let normalSum = 0, poquanSum = 0;
+    for (const [pid, w] of Object.entries(newWeights)) {
+      if (isPoquanPid(pid)) poquanSum += Number(w);
+      else normalSum += Number(w);
+    }
+    const newParentAmt = Math.round(totalAmt * normalSum / 100);
+    const newTvAmt = Math.round(totalAmt * poquanSum / 100);
+    q("#fam-preview").innerHTML = `
+      預覽結構:<br>
+      <code>${esc(parentSeg.ad_code)}</code> 一般 ${normalSum}% · ${newParentAmt.toLocaleString()} RMB<br>
+      <code>${esc(tVariantSeg.ad_code)}</code> 破圈 ${poquanSum}% · ${newTvAmt.toLocaleString()} RMB
+    `;
+  };
+  renderWeights();
+
+  q("#cancel").onclick = () => modal.close();
+  q("#save").onclick = () => {
+    const eff = q("#eff").value;
+    if (!eff) { toast("請選生效日", "bad"); return; }
+    const sum = Object.values(newWeights).reduce((x, y) => x + Number(y || 0), 0);
+    if (Math.abs(sum - 100) > 0.01) { toast(`整體權重加總須 = 100%,目前 ${sum}%`, "bad"); return; }
+    const notes = q("#f-notes").value.trim();
+
+    // 拆 normal / poquan
+    const normalW = {}, poquanW = {};
+    for (const [pid, w] of Object.entries(newWeights)) {
+      if (isPoquanPid(pid)) poquanW[pid] = Number(w);
+      else normalW[pid] = Number(w);
+    }
+    const normalSum = Object.values(normalW).reduce((s, v) => s + v, 0);
+    const poquanSum = Object.values(poquanW).reduce((s, v) => s + v, 0);
+
+    // 邊角:一側 = 0%(全在另一側)→ 這超出本 modal 設計範圍,提示使用者用 per-ad
+    if (normalSum === 0 || poquanSum === 0) {
+      toast("整體權重全在一側時,請從 per-ad 編輯該支廣告(本 modal 用於 split pair 兩側都有權重的情境)", "bad");
+      return;
+    }
+
+    // 重算雙方 amount + 內部 weights(canonical form,各側內部歸一到 100)
+    const newParentAmount = Math.round(totalAmt * normalSum / 100 * 100) / 100;
+    const newTvAmount = Math.round(totalAmt * poquanSum / 100 * 100) / 100;
+    const normalize = (w, totalPct) => {
+      const out = {};
+      for (const [pid, v] of Object.entries(w)) out[pid] = Math.round(v / totalPct * 100);
+      // largest-remainder fix 加總 = 100
+      const sumOut = Object.values(out).reduce((s, v) => s + v, 0);
+      if (sumOut !== 100 && Object.keys(out).length > 0) {
+        const fixPid = Object.entries(w).sort((a, b) => Number(b[1]) - Number(a[1]))[0][0];
+        out[fixPid] += (100 - sumOut);
+      }
+      return out;
+    };
+    const newParentInternal = normalize(normalW, normalSum);
+    const newTvInternal = normalize(poquanW, poquanSum);
+
+    if (eff <= parentSeg.start_date || eff >= parentSeg.end_date) {
+      toast(`生效日 ${eff} 必須落在 parent 段區間 (${parentSeg.start_date} ~ ${parentSeg.end_date}) 之間`, "bad");
+      return;
+    }
+    if (eff <= tVariantSeg.start_date || eff >= tVariantSeg.end_date) {
+      toast(`生效日 ${eff} 必須落在 t-variant 段區間 (${tVariantSeg.start_date} ~ ${tVariantSeg.end_date}) 之間`, "bad");
+      return;
+    }
+
+    update((st) => {
+      const ad_snapshots = captureUndoSnapshot(st, [parentSeg.id, tVariantSeg.id]);
+      const added_ad_ids = [];
+      const rate = Number(parentSeg.exchange_rate) || Number(tVariantSeg.exchange_rate) || 1;
+
+      // parent 開新段
+      const pIdx = st.ads.findIndex((a) => a.id === parentSeg.id);
+      if (pIdx >= 0) {
+        const liveParent = st.ads[pIdx];
+        liveParent.end_date = eff;  // trim
+        const pNew = {
+          id: uid("ad"),
+          ad_code: liveParent.ad_code,
+          ad_name: liveParent.ad_name,
+          group: liveParent.group || "",
+          currency: liveParent.currency || "CNY",
+          amount_orig: liveParent.amount_orig != null
+            ? Math.round((liveParent.amount_orig / parentAmt) * newParentAmount * 100) / 100
+            : newParentAmount,
+          currency_rate: liveParent.currency_rate || 1,
+          amount_cny: newParentAmount,
+          exchange_rate: liveParent.exchange_rate,
+          amount_twd: newParentAmount * rate,
+          start_date: eff,
+          end_date: parentSeg.end_date,
+          amortize_days: liveParent.amortize_days,
+          daily_amort_twd: (Number(liveParent.amortize_days) > 0)
+            ? (newParentAmount * rate / liveParent.amortize_days) : 0,
+          purchase_mode: (Object.keys(newParentInternal).length === 1 && Object.values(newParentInternal)[0] === 100)
+            ? "independent" : "shared",
+          weights: newParentInternal,
+          lock_perf_adjust: !!liveParent.lock_perf_adjust,
+          lock_full: !!liveParent.lock_full,
+          eliminated: !!liveParent.eliminated,
+          split_pair_id: pairId,
+          split_role: "parent",
+          code_at_creation: liveParent.ad_code,
+          renewal_of: liveParent.id,
+          renewal_reason: "權重調整",
+          notes: notes ? `${notes}(家族整體視角調整)` : "家族整體視角權重調整",
+        };
+        st.ads.push(pNew);
+        added_ad_ids.push(pNew.id);
+      }
+
+      // t-variant 開新段
+      const tIdx = st.ads.findIndex((a) => a.id === tVariantSeg.id);
+      if (tIdx >= 0) {
+        const liveTv = st.ads[tIdx];
+        liveTv.end_date = eff;
+        const tNew = {
+          id: uid("ad"),
+          ad_code: liveTv.ad_code,
+          ad_name: liveTv.ad_name,
+          group: liveTv.group || "",
+          currency: liveTv.currency || "CNY",
+          amount_orig: liveTv.amount_orig != null
+            ? Math.round((liveTv.amount_orig / tvAmt) * newTvAmount * 100) / 100
+            : newTvAmount,
+          currency_rate: liveTv.currency_rate || 1,
+          amount_cny: newTvAmount,
+          exchange_rate: liveTv.exchange_rate,
+          amount_twd: newTvAmount * rate,
+          start_date: eff,
+          end_date: tVariantSeg.end_date,
+          amortize_days: liveTv.amortize_days,
+          daily_amort_twd: (Number(liveTv.amortize_days) > 0)
+            ? (newTvAmount * rate / liveTv.amortize_days) : 0,
+          purchase_mode: (Object.keys(newTvInternal).length === 1 && Object.values(newTvInternal)[0] === 100)
+            ? "independent" : "shared",
+          weights: newTvInternal,
+          lock_perf_adjust: !!liveTv.lock_perf_adjust,
+          lock_full: !!liveTv.lock_full,
+          eliminated: !!liveTv.eliminated,
+          split_pair_id: pairId,
+          split_role: "t_variant",
+          code_at_creation: liveTv.ad_code,
+          renewal_of: liveTv.id,
+          renewal_reason: "權重調整",
+          notes: notes ? `${notes}(家族整體視角調整)` : "家族整體視角權重調整",
+        };
+        st.ads.push(tNew);
+        added_ad_ids.push(tNew.id);
+      }
+
+      const nameOf = (pid) => st.products.find((p) => p.id === pid)?.name || pid;
+      const desc = Object.entries(newWeights)
+        .sort(([, a], [, b]) => Number(b) - Number(a))
+        .map(([pid, w]) => `${nameOf(pid)} ${w}%`)
+        .join("、");
+      st.todos.push({
+        id: uid("todo"),
+        created_at: nowTaipeiStamp(),
+        action_type: "手動改權重",
+        description: `${parentSeg.ad_code} / ${tVariantSeg.ad_code} 整體視角調整｜${desc}｜請至連結後台調整權重`,
+        status: "pending",
+        undo_payload: { ad_snapshots, added_ad_ids },
+      });
+    });
+    modal.close();
+    toast(`已套用整體視角調整(${parentSeg.ad_code} + ${tVariantSeg.ad_code})`, "ok");
   };
 }
 

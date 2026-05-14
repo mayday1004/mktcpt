@@ -2352,6 +2352,19 @@ pre.code {
 .family-role-poquan { border-color: #f4cc8a; background: #fff8e6; }
 .family-role-secondary { border-color: #c9c3e8; background: #f4f1ff; }
 
+/* 家族列「權重調整」按鈕(2026-05,§5.7.2) — 整體合約視角編輯 */
+.family-actions {
+  display: inline-flex; gap: 6px;
+}
+.family-weight-btn {
+  font-size: 12px; padding: 4px 12px;
+  background: #fff; border: 1px solid #cfd9ef; border-radius: 4px;
+  color: var(--accent); font-weight: 500; cursor: pointer;
+}
+.family-weight-btn:hover {
+  background: #eef5ff; border-color: var(--accent);
+}
+
 /* 卡片內角色 badge(在代碼旁) */
 .seg-badge.family-role-poquan { background: #fff8e6; color: #a06b00; }
 .seg-badge.family-role-secondary { background: #f4f1ff; color: #5b4a99; }
