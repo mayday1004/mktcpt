@@ -91,9 +91,26 @@ function buildGroupCopyText(ads, s) {
   return greeting + "\n" + adBlocks.join("\n\n");
 }
 
+// 取今天的台北日期(YYYY-MM-DD)
+function todayYmd() {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+  });
+  return fmt.format(new Date());
+}
+
 export function render(root) {
   const s = getState();
-  const ads = (s.ads || []).filter((a) => !a.eliminated && (a.short_url_type || a.short_url_param));
+  const today = todayYmd();
+  // 過濾條件(2026-05):
+  //   1. 未淘汰
+  //   2. short_url_type 不為空(= 採用 L1/L3/L5,「不採用」會是空字串)
+  //   3. 未過期(end_date > 今天;end_date 不含當日,所以 end_date = 今天時已經是最後一天無效)
+  const ads = (s.ads || []).filter((a) =>
+    !a.eliminated &&
+    !!a.short_url_type &&
+    (!a.end_date || a.end_date > today)
+  );
 
   // 同代碼多段:取最新一段(start_date 最大)
   const byCode = new Map();
