@@ -200,6 +200,90 @@ export function summarizeAllPublishers(state, asOf) {
   });
 }
 
+// 線路 × 月份 metrics 矩陣,用於線路頁的成效視圖
+//
+// 回傳 Map<channel_id, {
+//   channel, publisher_id,
+//   total: { installs_raw, installs_billed, installs_unique, cost_rmb },
+//   by_product: Map<product_id, { product_name, installs_raw, installs_billed, installs_unique, cost_rmb }>,
+// }>
+export function buildChannelMonthMatrix(state, yearMonth) {
+  const from = `${yearMonth}-01`;
+  const [y, m] = yearMonth.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const to = `${yearMonth}-${String(lastDay).padStart(2, "0")}`;
+
+  const channels = state.channels || [];
+  const products = state.products || [];
+  const chById = Object.fromEntries(channels.map((c) => [c.id, c]));
+  const prById = Object.fromEntries(products.map((p) => [p.id, p]));
+
+  const matrix = new Map();
+  const ensure = (channelId) => {
+    if (!matrix.has(channelId)) {
+      const ch = chById[channelId];
+      matrix.set(channelId, {
+        channel: ch,
+        publisher_id: ch?.publisher_id,
+        total: { installs_raw: 0, installs_billed: 0, installs_unique: 0, cost_rmb: 0 },
+        by_product: new Map(),
+      });
+    }
+    return matrix.get(channelId);
+  };
+
+  for (const d of state.install_data || []) {
+    if (d.date < from || d.date > to) continue;
+    const ch = chById[d.channel_id];
+    const pr = prById[d.product_id];
+    if (!ch || !pr) continue;
+
+    const row = ensure(ch.id);
+    if (!row.by_product.has(pr.id)) {
+      row.by_product.set(pr.id, {
+        product_id: pr.id,
+        product_name: pr.name,
+        installs_raw: 0,
+        installs_billed: 0,
+        installs_unique: 0,
+        cost_rmb: 0,
+      });
+    }
+    const pe = row.by_product.get(pr.id);
+    const installsRaw = Number(d["廠商安裝"] || 0);
+    const installsRounded = Math.round(installsRaw);
+    const unique = Number(d["不重複安裝數"] || 0);
+    const billable = isChannelBillableOn(ch, d.date);
+    const cpaOn = pr.cpa_enabled !== false;
+    const billed = billable && cpaOn ? installsRounded : 0;
+    const price = getEffectivePrice(state, ch.id);
+    const cost = billed * price;
+
+    pe.installs_raw += installsRaw;
+    pe.installs_billed += billed;
+    pe.installs_unique += unique;
+    pe.cost_rmb += cost;
+
+    row.total.installs_raw += installsRaw;
+    row.total.installs_billed += billed;
+    row.total.installs_unique += unique;
+    row.total.cost_rmb += cost;
+  }
+
+  // 沒有 install_data 的 channel 也加進 matrix(讓線路頁顯示全部)
+  for (const ch of channels) {
+    if (!matrix.has(ch.id)) {
+      matrix.set(ch.id, {
+        channel: ch,
+        publisher_id: ch.publisher_id,
+        total: { installs_raw: 0, installs_billed: 0, installs_unique: 0, cost_rmb: 0 },
+        by_product: new Map(),
+      });
+    }
+  }
+  return matrix;
+}
+
 // 將 dailyCosts 依 publisher × month 彙總,用於對帳報表
 export function aggregateByPublisherMonth(state, publisherId, yearMonth) {
   const from = `${yearMonth}-01`;
