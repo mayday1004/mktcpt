@@ -170,7 +170,7 @@ function renderReport(root, view) {
         </thead>
         <tbody>
           <tr class="row-opening">
-            <td class="col-date">上月总结</td>
+            <td class="col-date">上月</td>
             <td class="col-payment num">${formatNum(r.opening_balance_rmb, true)}</td>
             ${productsToShow.map(() => `<td class="cell-empty"></td>`).join("")}
           </tr>

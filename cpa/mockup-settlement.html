@@ -94,36 +94,39 @@
   .stmt-balance-value.neg { color: var(--bad); }
   .stmt-balance-hint { font-size: 10px; color: var(--bad); margin-top: 1px; }
 
-  /* 緊湊網格(共用) */
+  /* 緊湊網格(共用)— 寬度寬、行高超緊湊以滿足 950px 上限 */
   table.grid {
     border-collapse: collapse;
-    width: auto;
-    margin: 0 auto;
+    width: 100%;
     font-size: 13px;
     font-variant-numeric: tabular-nums;
+    table-layout: fixed;
   }
   table.grid th, table.grid td {
     border: 1px solid var(--line-light);
-    padding: 3px 8px;
+    padding: 0 12px;
     text-align: center;
-    line-height: 1.2;
+    line-height: 1.1;
+    height: 20px;
+    white-space: nowrap;
   }
   table.grid thead th {
     background: #fafafa;
     font-weight: 600;
     color: #444;
     font-size: 13px;
-    padding: 6px 10px;
+    padding: 4px 12px;
+    height: auto;
   }
-  table.grid .col-date { width: 64px; background: var(--pink-soft); color: var(--ink-2); font-size: 13px; }
-  table.grid .col-payment { width: 96px; background: var(--pink-soft); font-size: 13px; }
-  table.grid .col-product { width: 130px; }
+  table.grid .col-date { width: 52px; background: var(--pink-soft); color: var(--ink-2); font-size: 12px; padding: 0 4px; }
+  table.grid .col-payment { width: 80px; background: var(--pink-soft); font-size: 13px; }
   table.grid td.num { text-align: center; }
   table.grid td.cell-inline {
-    padding: 3px 10px;
-    line-height: 1.25;
+    padding: 0 12px;
+    line-height: 1.1;
     white-space: nowrap;
     text-align: center;
+    height: 20px;
   }
   table.grid td.cell-inline .cell-installs { font-weight: 600; font-size: 14px; }
   table.grid td.cell-inline .cell-amount { font-size: 11.5px; color: #777; margin-left: 6px; }
@@ -137,7 +140,16 @@
     background: var(--pink);
     font-weight: 700;
     font-size: 15px;
-    padding: 6px 10px;
+    padding: 4px 12px;
+    height: 26px;
+  }
+  table.grid tr.row-opening td,
+  table.grid tr.row-totals td {
+    padding: 2px 12px;
+    height: 24px;
+  }
+  table.grid tr.row-today td {
+    height: 24px;
   }
   table.grid tr.row-final td.neg { color: var(--bad); }
   table.grid tr.row-today td {
@@ -176,7 +188,7 @@
   }
 
   /* Layout A — 緊湊矩陣 */
-  .layout-A .stmt-card { width: fit-content; min-width: 480px; }
+  .layout-A .stmt-card { max-width: 920px; }
 
   /* Layout B — 雙週並排 */
   .layout-B .stmt-card { max-width: 1300px; }
@@ -468,7 +480,7 @@
         </tr>
       </thead><tbody>
         <tr class="row-opening">
-          <td class="col-date">上月总结</td>
+          <td class="col-date">上月</td>
           <td class="col-payment num">${fmtN(OPENING)}</td>
           ${PRODUCTS.map(() => '<td class="cell-empty"></td>').join("")}
         </tr>

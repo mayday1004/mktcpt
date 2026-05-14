@@ -2525,8 +2525,7 @@ tr.family-member.family-last > td {
   border-radius: 8px;
   border: 1px solid #e5e5e5;
   padding: 14px 18px 16px;
-  width: fit-content;
-  min-width: 520px;
+  max-width: 920px;
   margin: 0 auto;
 }
 .settlement-banner {
@@ -2550,29 +2549,30 @@ tr.family-member.family-last > td {
 
 .settlement-grid {
   border-collapse: collapse;
-  width: auto;
-  margin: 0 auto;
+  width: 100%;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+  table-layout: fixed;
 }
 .settlement-grid th, .settlement-grid td {
   border: 1px solid #ececec;
-  padding: 3px 10px;
+  padding: 0 12px;
   text-align: center;
   white-space: nowrap;
-  line-height: 1.25;
+  line-height: 1.1;
+  height: 20px;
 }
 .settlement-grid thead th {
   background: #fafafa;
   font-weight: 600;
   color: #444;
   font-size: 13px;
-  padding: 6px 10px;
+  padding: 4px 12px;
+  height: auto;
 }
-.settlement-grid .col-date { width: 64px; background: #fcf3f3; color: #555; font-size: 13px; }
-.settlement-grid .col-payment { width: 96px; background: #fcf3f3; font-size: 13px; }
+.settlement-grid .col-date { width: 52px; background: #fcf3f3; color: #555; font-size: 12px; padding: 0 4px; }
+.settlement-grid .col-payment { width: 80px; background: #fcf3f3; font-size: 13px; }
 .settlement-grid .col-product-group { background: #f0f0f0; }
-.settlement-grid .col-product { min-width: 110px; }
 .settlement-grid td.num { text-align: center; }
 .settlement-grid td.cell-empty { color: #d0d0d0; }
 .settlement-grid tr.row-opening td,
@@ -2580,13 +2580,17 @@ tr.family-member.family-last > td {
   background: #f5d8d8;
   font-weight: 600;
   color: #333;
+  padding: 1px 12px;
+  height: 22px;
 }
+.settlement-grid tr.row-today td { height: 22px; }
 .settlement-grid tr.row-final td {
   background: #f5d8d8;
   font-weight: 700;
-  font-size: 15px;
+  font-size: 14px;
   color: #333;
-  padding: 6px 10px;
+  padding: 2px 12px;
+  height: 24px;
 }
 .settlement-grid tr.row-final td.neg { color: #c62828; }
 .settlement-grid tr.row-today td {
@@ -2798,10 +2802,11 @@ tr.family-member.family-last > td {
   margin-top: 2px;
 }
 .settlement-grid td.cell-inline {
-  padding: 3px 10px;
-  line-height: 1.25;
+  padding: 0 12px;
+  line-height: 1.1;
   text-align: center;
   white-space: nowrap;
+  height: 20px;
 }
 .settlement-grid td.cell-inline .cell-installs {
   font-weight: 600;
