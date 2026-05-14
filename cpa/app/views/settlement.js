@@ -190,9 +190,8 @@ function renderReport(root, view) {
                   if (!v || v.installs === 0) {
                     return `<td class="num cell-empty"></td>`;
                   }
-                  return `<td class="num cell-stack">
-                    <div class="cell-installs">${formatNum(v.installs)}</div>
-                    <div class="cell-amount">¥${formatNum(v.cost)}</div>
+                  return `<td class="num cell-inline">
+                    <span class="cell-installs">${formatNum(v.installs)}</span><span class="cell-amount">¥${formatNum(v.cost)}</span>
                   </td>`;
                 }).join("")}
               </tr>
@@ -207,9 +206,8 @@ function renderReport(root, view) {
               if (!t || t.installs === 0) {
                 return `<td class="num cell-empty"></td>`;
               }
-              return `<td class="num cell-stack">
-                <div class="cell-installs">${formatNum(t.installs)}</div>
-                <div class="cell-amount">¥${formatNum(t.cost)}</div>
+              return `<td class="num cell-inline">
+                <span class="cell-installs">${formatNum(t.installs)}</span><span class="cell-amount">¥${formatNum(t.cost)}</span>
               </td>`;
             }).join("")}
           </tr>

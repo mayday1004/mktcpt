@@ -2524,20 +2524,21 @@ tr.family-member.family-last > td {
   background: #fff;
   border-radius: 8px;
   border: 1px solid #e5e5e5;
-  padding: 16px 20px 20px;
-  max-width: 760px;
+  padding: 14px 18px 16px;
+  width: fit-content;
+  min-width: 520px;
   margin: 0 auto;
 }
 .settlement-banner {
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
-  padding-bottom: 12px;
+  padding-bottom: 10px;
   margin-bottom: 10px;
   border-bottom: 2px solid #2a2a2a;
 }
 .settlement-title { font-size: 18px; font-weight: 700; color: #222; }
-.settlement-meta { font-size: 12px; color: #777; margin-top: 4px; }
+.settlement-meta { font-size: 12px; color: #777; margin-top: 3px; }
 .settlement-balance { text-align: right; }
 .settlement-balance-label { font-size: 11px; color: #888; }
 .settlement-balance-value {
@@ -2549,31 +2550,31 @@ tr.family-member.family-last > td {
 
 .settlement-grid {
   border-collapse: collapse;
-  width: 100%;
-  font-size: 12px;
+  width: auto;
+  margin: 0 auto;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
-  table-layout: fixed;
 }
 .settlement-grid th, .settlement-grid td {
-  border: 1px solid #d8d8d8;
-  padding: 4px 8px;
+  border: 1px solid #ececec;
+  padding: 3px 10px;
   text-align: center;
   white-space: nowrap;
-  height: 22px;
-  line-height: 1.2;
+  line-height: 1.25;
 }
 .settlement-grid thead th {
   background: #fafafa;
   font-weight: 600;
   color: #444;
-  font-size: 12px;
+  font-size: 13px;
+  padding: 6px 10px;
 }
-.settlement-grid .col-date { width: 64px; background: #fff8f8; color: #555; }
-.settlement-grid .col-payment { width: 92px; background: #fcf3f3; }
+.settlement-grid .col-date { width: 64px; background: #fcf3f3; color: #555; font-size: 13px; }
+.settlement-grid .col-payment { width: 96px; background: #fcf3f3; font-size: 13px; }
 .settlement-grid .col-product-group { background: #f0f0f0; }
-.settlement-grid .col-product { width: auto; min-width: 64px; }
-.settlement-grid td.num { text-align: right; padding-right: 10px; }
-.settlement-grid td.cell-empty { color: #ccc; }
+.settlement-grid .col-product { min-width: 110px; }
+.settlement-grid td.num { text-align: center; }
+.settlement-grid td.cell-empty { color: #d0d0d0; }
 .settlement-grid tr.row-opening td,
 .settlement-grid tr.row-totals td {
   background: #f5d8d8;
@@ -2583,8 +2584,9 @@ tr.family-member.family-last > td {
 .settlement-grid tr.row-final td {
   background: #f5d8d8;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 15px;
   color: #333;
+  padding: 6px 10px;
 }
 .settlement-grid tr.row-final td.neg { color: #c62828; }
 .settlement-grid tr.row-today td {
@@ -2788,34 +2790,36 @@ tr.family-member.family-last > td {
 .su-group-copy-btn { padding: 4px 10px; font-size: 12px; }
 .su-row-copy-btn { padding: 3px 8px; font-size: 11px; }
 
-/* ===== 對帳單 cell 雙值樣式(2026-05 update)===== */
+/* ===== 對帳單 cell 雙值樣式(2026-05 update,inline 並排版)===== */
 .settlement-grid .col-product-sub {
   font-size: 10px;
-  color: #999;
+  color: #aaa;
   font-weight: 400;
   margin-top: 2px;
 }
-.settlement-grid td.cell-stack {
-  padding: 3px 8px;
+.settlement-grid td.cell-inline {
+  padding: 3px 10px;
   line-height: 1.25;
+  text-align: center;
+  white-space: nowrap;
 }
-.settlement-grid td.cell-stack .cell-installs {
+.settlement-grid td.cell-inline .cell-installs {
   font-weight: 600;
   color: #2a2a2a;
-  font-size: 12px;
+  font-size: 14px;
 }
-.settlement-grid td.cell-stack .cell-amount {
-  font-size: 10.5px;
-  color: #888;
-  margin-top: 1px;
+.settlement-grid td.cell-inline .cell-amount {
+  font-size: 11.5px;
+  color: #777;
+  margin-left: 6px;
 }
-.settlement-grid tr.row-totals td.cell-stack .cell-installs,
-.settlement-grid tr.row-totals td.cell-stack .cell-amount {
-  color: #333;
+.settlement-grid tr.row-totals td.cell-inline .cell-installs,
+.settlement-grid tr.row-totals td.cell-inline .cell-amount {
+  color: #2a2a2a;
 }
-.settlement-grid tr.row-future td.cell-stack .cell-installs,
-.settlement-grid tr.row-future td.cell-stack .cell-amount {
-  color: #c5c5c5;
+.settlement-grid tr.row-future td.cell-inline .cell-installs,
+.settlement-grid tr.row-future td.cell-inline .cell-amount {
+  color: #c8c8c8;
 }
 
 /* ===== 設定頁分頁 ===== */

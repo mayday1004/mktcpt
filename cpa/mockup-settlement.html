@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>CPA 對帳單 3 種 layout 預覽</title>
+<style>
+  :root {
+    --bg: #f0f2f5;
+    --card-bg: #fff;
+    --line: #d8d8d8;
+    --line-light: #ececec;
+    --ink: #2a2a2a;
+    --ink-2: #555;
+    --ink-3: #999;
+    --pink: #f5d8d8;
+    --pink-soft: #fcf3f3;
+    --yellow: #fff3a3;
+    --primary: #2a82c8;
+    --bad: #c62828;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    margin: 0;
+    padding: 16px 20px;
+    color: var(--ink);
+  }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  .intro {
+    max-width: 1400px;
+    margin: 0 auto 16px;
+    color: var(--ink-2);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .tabs {
+    max-width: 1400px;
+    margin: 0 auto 12px;
+    display: flex;
+    gap: 6px;
+  }
+  .tab {
+    padding: 10px 18px;
+    background: var(--card-bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all .15s;
+  }
+  .tab:hover { background: #f7f7f7; }
+  .tab.active {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+  }
+  .meta {
+    max-width: 1400px;
+    margin: 0 auto 12px;
+    font-size: 12px;
+    color: var(--ink-3);
+  }
+  .meta strong { color: var(--ink); }
+  .layout {
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  .layout[hidden] { display: none; }
+
+  /* 共用對帳單卡片 */
+  .stmt-card {
+    background: var(--card-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 18px 16px;
+    margin: 0 auto;
+  }
+  .stmt-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    border-bottom: 2px solid #2a2a2a;
+  }
+  .stmt-title { font-size: 17px; font-weight: 700; }
+  .stmt-meta { font-size: 11px; color: var(--ink-3); margin-top: 3px; }
+  .stmt-balance { text-align: right; }
+  .stmt-balance-label { font-size: 10px; color: var(--ink-3); }
+  .stmt-balance-value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stmt-balance-value.neg { color: var(--bad); }
+  .stmt-balance-hint { font-size: 10px; color: var(--bad); margin-top: 1px; }
+
+  /* 緊湊網格(共用) */
+  table.grid {
+    border-collapse: collapse;
+    width: auto;
+    margin: 0 auto;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  table.grid th, table.grid td {
+    border: 1px solid var(--line-light);
+    padding: 3px 8px;
+    text-align: center;
+    line-height: 1.2;
+  }
+  table.grid thead th {
+    background: #fafafa;
+    font-weight: 600;
+    color: #444;
+    font-size: 13px;
+    padding: 6px 10px;
+  }
+  table.grid .col-date { width: 64px; background: var(--pink-soft); color: var(--ink-2); font-size: 13px; }
+  table.grid .col-payment { width: 96px; background: var(--pink-soft); font-size: 13px; }
+  table.grid .col-product { width: 130px; }
+  table.grid td.num { text-align: center; }
+  table.grid td.cell-inline {
+    padding: 3px 10px;
+    line-height: 1.25;
+    white-space: nowrap;
+    text-align: center;
+  }
+  table.grid td.cell-inline .cell-installs { font-weight: 600; font-size: 14px; }
+  table.grid td.cell-inline .cell-amount { font-size: 11.5px; color: #777; margin-left: 6px; }
+  table.grid td.cell-empty { color: #d0d0d0; }
+  table.grid tr.row-opening td,
+  table.grid tr.row-totals td {
+    background: var(--pink);
+    font-weight: 600;
+  }
+  table.grid tr.row-final td {
+    background: var(--pink);
+    font-weight: 700;
+    font-size: 15px;
+    padding: 6px 10px;
+  }
+  table.grid tr.row-final td.neg { color: var(--bad); }
+  table.grid tr.row-today td {
+    background: var(--yellow) !important;
+    font-weight: 700;
+  }
+  table.grid tr.row-future td {
+    color: #c8c8c8;
+    background: #fafafa;
+  }
+  table.grid tr.row-future td.col-date { background: #fafafa; color: #bbb; }
+  table.grid tr.row-future td.col-payment { background: #fdf6f6; }
+  table.grid .col-product-sub {
+    font-size: 10px;
+    color: #aaa;
+    font-weight: 400;
+    margin-top: 2px;
+  }
+  table.grid tr.row-totals td.cell-inline .cell-installs,
+  table.grid tr.row-totals td.cell-inline .cell-amount {
+    color: var(--ink);
+  }
+  table.grid tr.row-future td.cell-inline .cell-installs,
+  table.grid tr.row-future td.cell-inline .cell-amount {
+    color: #c8c8c8;
+  }
+
+  .stmt-footnote {
+    font-size: 10.5px;
+    color: var(--ink-2);
+    margin-top: 8px;
+    padding: 6px 10px;
+    background: #fafafa;
+    border-radius: 4px;
+    line-height: 1.5;
+  }
+
+  /* Layout A — 緊湊矩陣 */
+  .layout-A .stmt-card { width: fit-content; min-width: 480px; }
+
+  /* Layout B — 雙週並排 */
+  .layout-B .stmt-card { max-width: 1300px; }
+  .layout-B .biweek-wrap {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .layout-B .biweek-title {
+    font-size: 11px;
+    color: var(--ink-3);
+    margin: 4px 0 4px;
+    text-align: center;
+  }
+  .layout-B .grand-total {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--pink);
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .layout-B .grand-total .gt-final {
+    margin-top: 4px;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--bad);
+  }
+
+  /* Layout C — 摘要 + 明細 */
+  .layout-C .stmt-card { max-width: 1100px; }
+  .layout-C .col-wrap {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    gap: 14px;
+  }
+  .layout-C .summary-col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .layout-C .kpi {
+    background: #fafafa;
+    border-radius: 6px;
+    padding: 8px 12px;
+    border-left: 3px solid var(--line);
+  }
+  .layout-C .kpi-label { font-size: 11px; color: var(--ink-3); }
+  .layout-C .kpi-value {
+    font-size: 18px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    margin-top: 2px;
+  }
+  .layout-C .kpi.final {
+    background: var(--pink);
+    border-left-color: var(--bad);
+  }
+  .layout-C .kpi.final .kpi-value { color: var(--bad); font-size: 22px; }
+  .layout-C .kpi.final .kpi-hint { font-size: 10px; color: var(--bad); margin-top: 2px; }
+  .layout-C .payments-box {
+    margin-top: 6px;
+    padding: 8px 12px;
+    background: #fafafa;
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--ink-2);
+    line-height: 1.5;
+  }
+  .layout-C .stmt-final-row {
+    margin-top: 8px;
+    padding: 8px 14px;
+    background: var(--pink);
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: 700;
+    text-align: center;
+    color: var(--bad);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 高度量尺(右側) */
+  .ruler {
+    position: fixed;
+    top: 80px;
+    right: 8px;
+    width: 4px;
+    background: linear-gradient(180deg, rgba(0,128,0,.3) 0%, rgba(0,128,0,.3) 90%, rgba(255,0,0,.3) 90%, rgba(255,0,0,.3) 100%);
+    pointer-events: none;
+    z-index: 100;
+  }
+  .ruler-label {
+    position: fixed;
+    right: 14px;
+    font-size: 10px;
+    color: var(--ink-3);
+    pointer-events: none;
+    background: rgba(255,255,255,.85);
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+  .ruler-950 { top: 870px; }
+  .ruler-1080 { top: 1000px; color: var(--bad); }
+</style>
+</head>
+<body>
+  <div class="intro">
+    <h1>📄 CPA 對帳單 layout 預覽</h1>
+    三個 layout 都裝同一份資料(站長「张三」/ 2026-05 / 3 個產品 / 上月餘 ¥1,419 / 應付 -¥6,913)。<br>
+    右側量尺標出 950px 高度線(綠 / 紅交界)— 三種設計都做到一畫面內收尾。
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="A">A · 緊湊矩陣(壓縮)</button>
+    <button class="tab" data-tab="B">B · 雙週並排</button>
+    <button class="tab" data-tab="C">C · 摘要 + 明細</button>
+  </div>
+
+  <div class="meta">
+    <span id="height-readout">量測中…</span>
+  </div>
+
+  <!-- ───────────── Layout A ───────────── -->
+  <div id="layout-A" class="layout layout-A">
+    <div class="stmt-card">
+      <div class="stmt-banner">
+        <div>
+          <div class="stmt-title">张三 · 2026-05 对账单</div>
+          <div class="stmt-meta">预付款 · 默认单价 ¥2.50 · 3 个产品在跑</div>
+        </div>
+        <div class="stmt-balance">
+          <div class="stmt-balance-label">期末余额(RMB)</div>
+          <div class="stmt-balance-value neg">-¥6,913.00</div>
+          <div class="stmt-balance-hint">应付给站长</div>
+        </div>
+      </div>
+      <table class="grid" id="grid-A"></table>
+      <div class="stmt-footnote">本期打款明细:(本月无打款)</div>
+    </div>
+  </div>
+
+  <!-- ───────────── Layout B ───────────── -->
+  <div id="layout-B" class="layout layout-B" hidden>
+    <div class="stmt-card">
+      <div class="stmt-banner">
+        <div>
+          <div class="stmt-title">张三 · 2026-05 对账单</div>
+          <div class="stmt-meta">预付款 · 默认单价 ¥2.50 · 3 个产品在跑</div>
+        </div>
+        <div class="stmt-balance">
+          <div class="stmt-balance-label">期末余额(RMB)</div>
+          <div class="stmt-balance-value neg">-¥6,913.00</div>
+          <div class="stmt-balance-hint">应付给站长</div>
+        </div>
+      </div>
+      <div class="biweek-wrap">
+        <div>
+          <div class="biweek-title">上半月(1 ~ 15 日)</div>
+          <table class="grid" id="grid-B-1"></table>
+        </div>
+        <div>
+          <div class="biweek-title">下半月(16 ~ 31 日)</div>
+          <table class="grid" id="grid-B-2"></table>
+        </div>
+      </div>
+      <div class="grand-total">
+        <div>月总计 · 安装 / 金额</div>
+        <div style="margin-top:4px">AV9 <strong>503 / ¥1,257.50</strong> · JK <strong>3,262 / ¥8,155.00</strong> · HYC <strong>0 / ¥0</strong> · 本期打款 <strong>¥0</strong></div>
+        <div class="gt-final">结算 -¥6,913.00 (应付给站长)</div>
+      </div>
+      <div class="stmt-footnote">本期打款明细:(本月无打款)</div>
+    </div>
+  </div>
+
+  <!-- ───────────── Layout C ───────────── -->
+  <div id="layout-C" class="layout layout-C" hidden>
+    <div class="stmt-card">
+      <div class="stmt-banner">
+        <div>
+          <div class="stmt-title">张三 · 2026-05 对账单</div>
+          <div class="stmt-meta">预付款 · 默认单价 ¥2.50 · 3 个产品</div>
+        </div>
+        <div style="font-size:11px;color:var(--ink-3)">联系 @zhangsan_tg</div>
+      </div>
+      <div class="col-wrap">
+        <div class="summary-col">
+          <div class="kpi">
+            <div class="kpi-label">期初余额</div>
+            <div class="kpi-value">¥1,419.00</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">本期收款</div>
+            <div class="kpi-value">¥0.00</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">本期结算</div>
+            <div class="kpi-value">¥8,332.00</div>
+          </div>
+          <div class="kpi final">
+            <div class="kpi-label">期末余额</div>
+            <div class="kpi-value">-¥6,913.00</div>
+            <div class="kpi-hint">⚠ 应付给站长</div>
+          </div>
+          <div class="payments-box">
+            <strong>本期打款明细:</strong><br>
+            (本月无打款)
+          </div>
+        </div>
+        <div>
+          <table class="grid" id="grid-C"></table>
+        </div>
+      </div>
+      <div class="stmt-final-row">结算 -¥6,913.00(应付给站长)</div>
+    </div>
+  </div>
+
+  <div class="ruler" id="ruler"></div>
+  <div class="ruler-label ruler-950">— 950px(目標上限)</div>
+  <div class="ruler-label ruler-1080">— 1080px(螢幕高)</div>
+
+<script>
+  // ── 樣本資料 ──
+  const PRODUCTS = [
+    { code: "AV9", name: "AV9", price: 2.5 },
+    { code: "JK",  name: "JK",  price: 2.5 },
+    { code: "HYC", name: "HYC", price: 2.5 },
+  ];
+  // 1-14 為已過去(14 為今天),15-31 未來空白
+  const DAILY = [
+    { d: 1,  inst: { AV9: 50, JK: 369, HYC: 0 } },
+    { d: 2,  inst: { AV9: 47, JK: 364, HYC: 0 } },
+    { d: 3,  inst: { AV9: 53, JK: 361, HYC: 0 } },
+    { d: 4,  inst: { AV9: 58, JK: 329, HYC: 0 } },
+    { d: 5,  inst: { AV9: 42, JK: 275, HYC: 0 } },
+    { d: 6,  inst: { AV9: 38, JK: 232, HYC: 0 } },
+    { d: 7,  inst: { AV9: 33, JK: 250, HYC: 0 } },
+    { d: 8,  inst: { AV9: 28, JK: 228, HYC: 0 } },
+    { d: 9,  inst: { AV9: 39, JK: 199, HYC: 0 } },
+    { d: 10, inst: { AV9: 38, JK: 288, HYC: 0 } },
+    { d: 11, inst: { AV9: 22, JK: 156, HYC: 0 } },
+    { d: 12, inst: { AV9: 18, JK: 145, HYC: 0 } },
+    { d: 13, inst: { AV9: 24, JK: 167, HYC: 0 } },
+    { d: 14, inst: { AV9: 13, JK: 89,  HYC: 0 }, today: true },
+  ];
+  const OPENING = 1419;
+  const PAYMENTS = 0;
+
+  // ── helpers ──
+  const fmtN = (n) => {
+    if (!Number.isFinite(n) || n === 0) return "";
+    if (Math.abs(n) >= 100 || Number.isInteger(n)) return Math.round(n).toLocaleString("zh-CN");
+    return n.toLocaleString("zh-CN", { maximumFractionDigits: 1 });
+  };
+  const fmtYen = (n) => "¥" + (n).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  function cellStack(inst, price) {
+    if (!inst) return `<td class="num cell-empty"></td>`;
+    const amt = inst * price;
+    return `<td class="num cell-inline">
+      <span class="cell-installs">${fmtN(inst)}</span><span class="cell-amount">${fmtYen(amt)}</span>
+    </td>`;
+  }
+  function getInst(d) {
+    const r = DAILY.find((x) => x.d === d);
+    return r ? r.inst : null;
+  }
+  function totalsByProduct() {
+    const tot = { AV9: 0, JK: 0, HYC: 0 };
+    DAILY.forEach((r) => Object.keys(r.inst).forEach((k) => tot[k] += r.inst[k]));
+    return tot;
+  }
+  const TOTAL = totalsByProduct();
+  const TOTAL_RMB = PRODUCTS.reduce((s, p) => s + TOTAL[p.code] * p.price, 0);
+
+  // ── Layout A:每日一列,1-31 ──
+  function renderA() {
+    const colCount = PRODUCTS.length;
+    let html = `
+      <thead>
+        <tr>
+          <th rowspan="2" class="col-date">日期</th>
+          <th rowspan="2" class="col-payment">款/预付款</th>
+          <th colspan="${colCount}" style="background:#f0f0f0">张三 旗下产品</th>
+        </tr>
+        <tr>
+          ${PRODUCTS.map((p) => `<th>${p.name}<div class="col-product-sub">安装 / 金额</div></th>`).join("")}
+        </tr>
+      </thead><tbody>
+        <tr class="row-opening">
+          <td class="col-date">上月总结</td>
+          <td class="col-payment num">${fmtN(OPENING)}</td>
+          ${PRODUCTS.map(() => '<td class="cell-empty"></td>').join("")}
+        </tr>
+    `;
+    for (let d = 1; d <= 31; d++) {
+      const inst = getInst(d);
+      const isToday = DAILY.find((x) => x.d === d && x.today);
+      const isFuture = d > 14;
+      const cls = isToday ? "row-today" : (isFuture ? "row-future" : "");
+      html += `<tr class="${cls}">
+        <td class="col-date">${d}日</td>
+        <td class="col-payment num cell-empty"></td>
+        ${PRODUCTS.map((p) => cellStack(inst ? inst[p.code] : 0, p.price)).join("")}
+      </tr>`;
+    }
+    html += `
+      <tr class="row-totals">
+        <td class="col-date">总计</td>
+        <td class="col-payment num">${fmtN(OPENING + PAYMENTS)}</td>
+        ${PRODUCTS.map((p) => cellStack(TOTAL[p.code], p.price)).join("")}
+      </tr>
+      <tr class="row-final">
+        <td class="col-date">结算</td>
+        <td colspan="${1 + colCount}" class="num neg">-${fmtYen(6913)}(应付给站长)</td>
+      </tr>
+      </tbody>
+    `;
+    document.getElementById("grid-A").innerHTML = html;
+  }
+
+  // ── Layout B:雙週並排 ──
+  function renderBHalf(target, startDay, endDay, includeOpening) {
+    const colCount = PRODUCTS.length;
+    let html = `
+      <thead>
+        <tr>
+          <th rowspan="2" class="col-date">日期</th>
+          <th rowspan="2" class="col-payment">款</th>
+          ${PRODUCTS.map((p) => `<th>${p.name}<div class="col-product-sub">安装 / 金额</div></th>`).join("")}
+        </tr>
+        <tr style="display:none"></tr>
+      </thead><tbody>
+    `;
+    if (includeOpening) {
+      html += `<tr class="row-opening">
+        <td class="col-date">上月</td>
+        <td class="col-payment num">${fmtN(OPENING)}</td>
+        ${PRODUCTS.map(() => '<td class="cell-empty"></td>').join("")}
+      </tr>`;
+    }
+    for (let d = startDay; d <= endDay; d++) {
+      const inst = getInst(d);
+      const isToday = DAILY.find((x) => x.d === d && x.today);
+      const isFuture = d > 14;
+      const cls = isToday ? "row-today" : (isFuture ? "row-future" : "");
+      html += `<tr class="${cls}">
+        <td class="col-date">${d}日</td>
+        <td class="col-payment num cell-empty"></td>
+        ${PRODUCTS.map((p) => cellStack(inst ? inst[p.code] : 0, p.price)).join("")}
+      </tr>`;
+    }
+    html += `</tbody>`;
+    document.getElementById(target).innerHTML = html;
+  }
+
+  // ── Layout C:緊湊明細(no 款 column,因 KPI 已在左) ──
+  function renderC() {
+    const colCount = PRODUCTS.length;
+    let html = `
+      <thead>
+        <tr>
+          <th rowspan="2" class="col-date">日期</th>
+          ${PRODUCTS.map((p) => `<th>${p.name}<div class="col-product-sub">安装 / 金额</div></th>`).join("")}
+        </tr>
+        <tr style="display:none"></tr>
+      </thead><tbody>
+    `;
+    for (let d = 1; d <= 31; d++) {
+      const inst = getInst(d);
+      const isToday = DAILY.find((x) => x.d === d && x.today);
+      const isFuture = d > 14;
+      const cls = isToday ? "row-today" : (isFuture ? "row-future" : "");
+      html += `<tr class="${cls}">
+        <td class="col-date">${d}日</td>
+        ${PRODUCTS.map((p) => cellStack(inst ? inst[p.code] : 0, p.price)).join("")}
+      </tr>`;
+    }
+    html += `
+      <tr class="row-totals">
+        <td class="col-date">月总计</td>
+        ${PRODUCTS.map((p) => cellStack(TOTAL[p.code], p.price)).join("")}
+      </tr>
+      </tbody>
+    `;
+    document.getElementById("grid-C").innerHTML = html;
+  }
+
+  renderA();
+  renderBHalf("grid-B-1", 1, 15, true);
+  renderBHalf("grid-B-2", 16, 31, false);
+  renderC();
+
+  // ── tabs ──
+  document.querySelectorAll(".tab").forEach((t) => {
+    t.onclick = () => {
+      document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === t));
+      document.querySelectorAll(".layout").forEach((l) => {
+        l.hidden = l.id !== `layout-${t.dataset.tab}`;
+      });
+      measureHeight();
+    };
+  });
+
+  // ── ruler 高度量測 ──
+  const ruler = document.getElementById("ruler");
+  function setRuler() {
+    ruler.style.height = (window.innerHeight - 80) + "px";
+  }
+  setRuler();
+  window.addEventListener("resize", setRuler);
+
+  function measureHeight() {
+    const active = document.querySelector(".layout:not([hidden]) .stmt-card");
+    if (!active) return;
+    const rect = active.getBoundingClientRect();
+    const h = Math.round(rect.height);
+    const w = Math.round(rect.width);
+    document.getElementById("height-readout").innerHTML =
+      `當前 layout 卡片實測:<strong>${h}px 高 × ${w}px 寬</strong> · ` +
+      (h <= 950 ? `<span style="color:#2e7d32">✓ 在 950 上限內</span>` : `<span style="color:#c62828">✗ 超出 950 上限 ${h - 950}px</span>`);
+  }
+  setTimeout(measureHeight, 100);
+</script>
+</body>
+</html>
