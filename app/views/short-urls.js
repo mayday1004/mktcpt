@@ -114,13 +114,18 @@ export function render(root) {
     a.split_role !== "t_variant"
   );
 
-  // 同代碼多段:取最新一段(start_date 最大)
-  const byCode = new Map();
+  // 同代碼同參數多段:取最新一段(start_date 最大)
+  // 用 (ad_code, short_url_param) 當 key:
+  //   - 同代碼但不同產品的獨立採買(例:70 同時 AV9/JK/PJ8/ZFB/MYS 各 100%),
+  //     若大家共用同一個縮網址參數 → 視為同一條鏈結,只顯示一列
+  //   - 若縮網址參數不同 → 視為不同鏈結,各自獨立顯示
+  const byKey = new Map();
   for (const a of ads) {
-    const cur = byCode.get(a.ad_code);
-    if (!cur || (a.start_date || "") > (cur.start_date || "")) byCode.set(a.ad_code, a);
+    const key = `${a.ad_code}|${a.short_url_param || ""}`;
+    const cur = byKey.get(key);
+    if (!cur || (a.start_date || "") > (cur.start_date || "")) byKey.set(key, a);
   }
-  const rows = [...byCode.values()];
+  const rows = [...byKey.values()];
   const groups = groupByContact(rows);
   const totalCount = rows.length;
   const notifiedCount = rows.filter((a) => a.short_url_notified).length;
