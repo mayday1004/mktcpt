@@ -1304,7 +1304,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
 
     ${!id && !renewFrom && s.products.some((p) => p.is_poquan) ? `
     <div class="hint mt-8" style="padding:8px 10px;background:#f0f7ff;border:1px solid #cfe1f5;border-radius:6px;font-size:12px;line-height:1.5">
-      💡 <strong>自動拆 t 配對</strong>:若上方權重同時含「某家族母 + 破圈」(例 AV9 + 愛威奶破圈),儲存時系統會自動建立 <code>stXXX</code> + <code>stXXXt</code> 兩支廣告並 split_pair 連動。純破圈 / 跨家族不撞母則維持單支不加 t。
+      💡 若上方權重同時含「一般 + 破圈」,儲存時系統會自動建立 <code>stXXX</code> + <code>stXXXt</code> 兩支廣告並關聯。純破圈 / 跨產品不撞一般則維持單支不加 t(例 <code>stXXX 愛威奶破圈 100% → stXXX 健康破圈 100%</code>)。
     </div>
     ` : ""}
 
