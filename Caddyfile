@@ -6,7 +6,19 @@
 :{$PORT:8080} {
 	root * /srv
 	encode gzip zstd
-	file_server
+
+	# /config.js 動態從 env var 組:Caddy 啟動時把 {$SHEETS_WEBAPP_URL} / {$SHEETS_TOKEN}
+	# 替換進 body。Railway 改 env var 會重啟 container → Caddy 重讀 env → 立刻生效。
+	# 不需要重 build / 不需要 push commit。
+	# 注意:{$VAR} 是「Caddyfile parse 時」展開,不是每 request 重讀 — 但因為 Railway
+	# 在 env 變動時會重啟 container,所以效果跟 runtime 讀一樣。
+	handle /config.js {
+		header Content-Type "application/javascript; charset=utf-8"
+		header Cache-Control "no-cache"
+		# Caddy 的 `{` `}` 是 placeholder 起訖,JSON 的大括號要寫 `{{` `}}` 跳脫。
+		# `{$VAR}` 是 Caddy env 替換,只在 Caddyfile parse 時展開一次(container 啟動時)。
+		respond `globalThis.__BUYADS_CONFIG__={{"sheetsWebappUrl":"{$SHEETS_WEBAPP_URL}","sheetsToken":"{$SHEETS_TOKEN}"}};` 200
+	}
 
 	@html path *.html
 	header @html Cache-Control "no-cache"
@@ -14,10 +26,9 @@
 	@assets path *.js *.css
 	header @assets Cache-Control "public, max-age=3600"
 
-	@config path /config.js
-	header @config Cache-Control "no-cache"
-
 	# version.txt:長 tab 偵測新 deploy 用,必須讀到最新內容
 	@version path /version.txt
 	header @version Cache-Control "no-cache"
+
+	file_server
 }
