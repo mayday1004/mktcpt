@@ -468,8 +468,11 @@ function bindHandlers(root) {
 
   bind("#btn-export-json", () => {
     const s2 = getState();
-    downloadText(`buyads_${s2.settings.current_month}.json`, JSON.stringify(s2, null, 2), "application/json");
-    toast("已匯出 JSON", "ok");
+    // 把裝置相關 settings 拿掉,避免別人匯入後本機的 Apps Script URL/token 被覆寫掉
+    const { sheets_webapp_url, sheets_token, ...sharedSettings } = s2.settings || {};
+    const exportData = { ...s2, settings: sharedSettings };
+    downloadText(`buyads_${s2.settings.current_month}.json`, JSON.stringify(exportData, null, 2), "application/json");
+    toast("已匯出 JSON(不含本機 Apps Script URL/token)", "ok");
   });
 
   bind("#btn-import-json", () => {
@@ -488,9 +491,14 @@ function bindHandlers(root) {
           okText: "覆寫", danger: true,
         });
         if (!ok) return;
+        // 保留本機的 Apps Script URL/token,免得匯入別人的 JSON 後同步失效
+        const localSettings = getState().settings || {};
+        data.settings = data.settings || {};
+        data.settings.sheets_webapp_url = localSettings.sheets_webapp_url || "";
+        data.settings.sheets_token = localSettings.sheets_token || "";
         replaceState(data, "匯入 JSON");
         clearConflicts();
-        toast("已匯入", "ok");
+        toast("已匯入(本機 Apps Script URL/token 保留不變)", "ok");
       } catch (e) { toast(`失敗：${e.message}`, "bad"); }
     };
     inp.click();
