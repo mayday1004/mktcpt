@@ -2,6 +2,7 @@ import { getState, update, replaceState, resetAll } from "../state.js";
 import { pushToSheets, pullFromSheets, pingSheets } from "../io/sheets.js";
 import { showSyncBanner, markSyncDone } from "../lib/sync-banner.js";
 import { manualSync, resetSyncMeta } from "../io/sync.js";
+import { clearConflicts } from "../io/conflict-store.js";
 import { downloadText } from "../lib/csv.js";
 import { getExpenseRate, getIncomeRate, getRateSource, getUsdtToCnyRate, getUsdToTwdRate } from "../schema.js";
 import { nowTaipeiStamp } from "../lib/dates.js";
@@ -450,6 +451,8 @@ function bindHandlers(root) {
       if (progText) progText.textContent = `✓ 完成（${r.tables} 個分頁）`;
       // 強制覆寫後 sync_meta 失效，下次 sync 會重建
       resetSyncMeta();
+      // 強制覆寫 = 已採用 server 版,清掉所有待處理衝突
+      clearConflicts();
       markSyncDone(doneMsg, "ok");
       toast("已從 Sheets 強制覆寫本地", "ok");
     } catch (e) {
@@ -486,6 +489,7 @@ function bindHandlers(root) {
         });
         if (!ok) return;
         replaceState(data, "匯入 JSON");
+        clearConflicts();
         toast("已匯入", "ok");
       } catch (e) { toast(`失敗：${e.message}`, "bad"); }
     };

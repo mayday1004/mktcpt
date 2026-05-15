@@ -56,6 +56,64 @@ function diffFields(mineObj, theirsObj, dataHeaders) {
   return out;
 }
 
+// 根據分頁類型把 entityId(內部 _id)轉成使用者看得懂的標籤。
+// 找不到對應實體就 fallback 回 id 本身。
+function friendlyLabel(sheetName, entityId, theirsObj) {
+  const st = getState();
+  const pickName = (obj, ...keys) => {
+    for (const k of keys) {
+      const v = obj?.[k];
+      if (v != null && String(v).trim() !== "") return String(v);
+    }
+    return "";
+  };
+  switch (sheetName) {
+    case "廣告": {
+      const ad = (st.ads || []).find((a) => a.id === entityId);
+      const name = ad?.ad_name || theirsObj?.["廣告名稱"] || "";
+      const code = ad?.ad_code || theirsObj?.["廣告代碼"] || "";
+      if (name || code) return `${name}${code ? ` (${code})` : ""}`.trim();
+      break;
+    }
+    case "廣告權重": {
+      const adId = theirsObj?.["廣告ID"] || theirsObj?.ad_id;
+      const pid = theirsObj?.["產品ID"] || theirsObj?.product_id;
+      const ad = (st.ads || []).find((a) => a.id === adId);
+      const prod = (st.products || []).find((p) => p.id === pid);
+      const adLabel = ad ? `${ad.ad_name || ""}${ad.ad_code ? ` (${ad.ad_code})` : ""}` : adId;
+      const prodLabel = prod?.name || pid || "";
+      if (adLabel || prodLabel) return `${adLabel} × ${prodLabel}`.trim();
+      break;
+    }
+    case "產品":
+    case "產品月預算":
+    case "產品日預算":
+    case "成效目標": {
+      const prod = (st.products || []).find((p) => p.id === entityId || p.id === theirsObj?.["產品ID"]);
+      const name = prod?.name || pickName(theirsObj, "產品名稱", "名稱", "目標名稱");
+      if (name) return name;
+      break;
+    }
+    case "成效資料": {
+      const adId = theirsObj?.["廣告ID"] || theirsObj?.ad_id;
+      const ad = (st.ads || []).find((a) => a.id === adId);
+      const adLabel = ad ? `${ad.ad_name || ""}${ad.ad_code ? ` (${ad.ad_code})` : ""}` : adId;
+      const period = [theirsObj?.["期間起"], theirsObj?.["期間迄"]].filter(Boolean).join("~");
+      if (adLabel || period) return `${adLabel}${period ? ` ${period}` : ""}`.trim();
+      break;
+    }
+    case "待辦": {
+      const desc = pickName(theirsObj, "描述", "標題", "action_type", "類型");
+      if (desc) return desc.length > 40 ? desc.slice(0, 40) + "…" : desc;
+      break;
+    }
+    case "設定": {
+      return pickName(theirsObj, "key", "鍵") || entityId;
+    }
+  }
+  return entityId;
+}
+
 function esc(v) {
   return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -151,11 +209,13 @@ function applyMerge(conflict, perFieldChoices, onMetaUpdate) {
 // === Modal 渲染 ===
 
 function renderConflictBlock(conflict, idx) {
+  const theirsObj = rowToObj(conflict.theirs.dataRow, conflict.theirs.dataHeaders);
   const fields = diffFields(
     rowToObj(conflict.mine.dataRow, conflict.mine.dataHeaders),
-    rowToObj(conflict.theirs.dataRow, conflict.theirs.dataHeaders),
+    theirsObj,
     conflict.mine.dataHeaders,
   );
+  const label = friendlyLabel(conflict.sheetName, conflict.entityId, theirsObj);
 
   // 衝突欄位的 radio(預設選「我的」)
   const fieldRows = fields.length === 0
@@ -179,7 +239,8 @@ function renderConflictBlock(conflict, idx) {
           ${conflict.source === "push" ? "推送被拒" : "拉取衝突"}
         </span>
         <strong>${esc(conflict.sheetName)}</strong>
-        <span class="ink-2 mono">${esc(conflict.entityId)}</span>
+        <span class="ink-1">${esc(label)}</span>
+        ${label !== conflict.entityId ? `<span class="ink-3 mono" style="font-size:11px">${esc(conflict.entityId)}</span>` : ""}
         <span class="ink-3" style="margin-left:auto;font-size:11px">
           偵測 ${esc(conflict.detectedAt.slice(11, 19))} ·
           對方版本 v${esc(conflict.theirs.version)}(${esc((conflict.theirs.updatedAt || "").slice(11, 19))})
