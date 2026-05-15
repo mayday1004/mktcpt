@@ -15,9 +15,10 @@
 	handle /config.js {
 		header Content-Type "application/javascript; charset=utf-8"
 		header Cache-Control "no-cache"
-		# Caddy 的 `{` `}` 是 placeholder 起訖,JSON 的大括號要寫 `{{` `}}` 跳脫。
-		# `{$VAR}` 是 Caddy env 替換,只在 Caddyfile parse 時展開一次(container 啟動時)。
-		respond `globalThis.__BUYADS_CONFIG__={{"sheetsWebappUrl":"{$SHEETS_WEBAPP_URL}","sheetsToken":"{$SHEETS_TOKEN}"}};` 200
+		# 用 Object.create(null) 然後逐欄賦值,整段 JS 不含 `{` `}`,避免跟 Caddy
+		# placeholder 語法 `{...}` 撞到、不用煩惱跳脫。`{$VAR}` 是 Caddy env 替換,
+		# Caddyfile parse 時(=container 啟動時)展開一次。
+		respond `globalThis.__BUYADS_CONFIG__=Object.create(null);globalThis.__BUYADS_CONFIG__.sheetsWebappUrl="{$SHEETS_WEBAPP_URL}";globalThis.__BUYADS_CONFIG__.sheetsToken="{$SHEETS_TOKEN}";` 200
 	}
 
 	@html path *.html
