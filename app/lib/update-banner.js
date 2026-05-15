@@ -41,5 +41,8 @@ export function showUpdateBanner({ runningBuild, serverBuild, onReload }) {
     bannerEl?.remove();
     bannerEl = null;
   });
-  document.body.appendChild(bannerEl);
+  // 用 __mountBanner 而不是直接 appendChild 到 body — 若此刻 modal 正開著,
+  // 會掛進 modal 內讓 banner 跟著進 top-layer,不被 backdrop 模糊化(main.js)
+  if (window.__mountBanner) window.__mountBanner(bannerEl);
+  else document.body.appendChild(bannerEl);
 }

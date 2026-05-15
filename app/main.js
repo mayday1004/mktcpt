@@ -174,15 +174,37 @@ window.toast = (msg, kind = "") => {
   setTimeout(() => el.remove(), 2600);
 };
 
+// Banner 容器:modal 沒開時掛在 body 下,modal 一開就搬進 modal 內,
+// 讓 banner 跟著進 browser top-layer,不會被 modal backdrop 模糊化也不會被 modal 蓋掉。
+// (跟 toast 同套機制 — 詳見上面 window.toast)
+function relocateBannersToModal(dlg) {
+  const banners = document.querySelectorAll(".update-banner, .conflict-banner");
+  banners.forEach((b) => dlg.appendChild(b));
+}
+function relocateBannersToBody() {
+  const dlg = document.getElementById("modal");
+  if (!dlg) return;
+  const banners = dlg.querySelectorAll(".update-banner, .conflict-banner");
+  banners.forEach((b) => document.body.appendChild(b));
+}
+// 給 banner 自己用:剛建立 banner 時呼叫,若 modal 正開著就直接掛進去
+window.__mountBanner = function (el) {
+  const dlg = document.getElementById("modal");
+  if (dlg && dlg.open) dlg.appendChild(el);
+  else document.body.appendChild(el);
+};
+
 window.modal = {
   open(html) {
     const dlg = document.getElementById("modal");
     dlg.innerHTML = `<div class="modal-inner">${html}</div>`;
     dlg.showModal();
+    relocateBannersToModal(dlg);
     return dlg;
   },
   close() {
     const dlg = document.getElementById("modal");
+    relocateBannersToBody();  // 在清 innerHTML 之前先把 banner 救出來
     if (dlg.open) dlg.close();
     dlg.innerHTML = "";
   },
