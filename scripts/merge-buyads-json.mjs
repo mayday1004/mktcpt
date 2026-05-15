@@ -42,12 +42,19 @@ for (const a of onlyInBase) {
   console.log(`  - ${a.id}  ${a.ad_code}  ${a.ad_name}  ${a.start_date}~${a.end_date}  ${a.renewal_reason || ""}`);
 }
 
+// 清掉裝置相關 settings:webapp_url / token 一律走 deploy 環境(/config.js),
+// 本機不再 cache。匯入後 state 載入時也會自動 strip(state.js 在 deploy 模式下的行為)
+const cleanedSettings = { ...(base.settings || {}) };
+delete cleanedSettings.sheets_webapp_url;
+delete cleanedSettings.sheets_token;
+
 const merged = {
   ...base,
+  settings: cleanedSettings,
   ads: [...(base.ads || []), ...onlyInDelta],
 };
 
 writeFileSync(outPath, JSON.stringify(merged, null, 2), "utf8");
-console.log(`\n✓ 已輸出 ${outPath}(共 ${merged.ads.length} 支 ad)`);
+console.log(`\n✓ 已輸出 ${outPath}(共 ${merged.ads.length} 支 ad,已清掉 sheets_webapp_url / sheets_token)`);
 console.log("→ 到 設定頁 → 匯入 JSON 把這個檔案丟進去覆寫本地");
 console.log("→ 接著按「☁️ 從本地強制覆寫 Sheets」把這份完整資料推回雲端,再清掉所有衝突");

@@ -1,6 +1,7 @@
 import { VERSION, defaultState } from "./schema.js";
 import { nowTaipeiTime } from "./lib/dates.js";
 import { runColdStartGate } from "./lib/version-gate.js";
+import { isDeployManaged } from "./lib/deploy-config.js";
 
 const KEY = "buyads_state_v1";
 const UNDO_KEY = "buyads_undo_v1";
@@ -130,11 +131,23 @@ function migrate(st) {
     }
   }
   st.version = VERSION;
+  // 部署模式下,本機絕不快取 sheets_webapp_url / sheets_token,
+  // 一律走 DEPLOY_SHEETS_URL/TOKEN(避免 JSON 匯入、舊版 cache、別台機器留下的 placeholder 污染)
+  if (isDeployManaged() && st.settings) {
+    st.settings.sheets_webapp_url = "";
+    st.settings.sheets_token = "";
+  }
   return st;
 }
 
 function persist() {
-  localStorage.setItem(KEY, JSON.stringify(state));
+  let toSave = state;
+  if (isDeployManaged() && state.settings &&
+      (state.settings.sheets_webapp_url || state.settings.sheets_token)) {
+    // 任何途徑(舊 cache / 匯入 / migrate)塞進 state 的本機 URL/token,持久化前清掉
+    toSave = { ...state, settings: { ...state.settings, sheets_webapp_url: "", sheets_token: "" } };
+  }
+  localStorage.setItem(KEY, JSON.stringify(toSave));
 }
 
 function persistUndo() {
