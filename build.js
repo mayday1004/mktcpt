@@ -1,6 +1,7 @@
 import esbuild from "esbuild";
 import JavaScriptObfuscator from "javascript-obfuscator";
 import crypto from "node:crypto";
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -13,6 +14,20 @@ const t0 = Date.now();
 const deploySheetsUrl = process.env.SHEETS_WEBAPP_URL || "";
 const deploySheetsToken = process.env.SHEETS_TOKEN || "";
 
+// Build identifier:用 git short SHA(Railway 會把 commit SHA 帶進 env);
+// 沒 git / 不在 CI 時 fallback 用 timestamp。每次 deploy 改變就會觸發前端版本 gate。
+function resolveBuildId() {
+  const env = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_SHA || process.env.COMMIT_SHA;
+  if (env) return env.slice(0, 10);
+  try {
+    return execSync("git rev-parse --short=10 HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString().trim();
+  } catch {
+    return Date.now().toString(36);
+  }
+}
+const buildId = resolveBuildId();
+
 const result = await esbuild.build({
   entryPoints: ["app/main.js"],
   bundle: true,
@@ -24,6 +39,7 @@ const result = await esbuild.build({
   define: {
     __BUYADS_SHEETS_URL__: JSON.stringify(deploySheetsUrl),
     __BUYADS_SHEETS_TOKEN__: JSON.stringify(deploySheetsToken),
+    __BUYADS_BUILD__: JSON.stringify(buildId),
   },
 });
 const bundled = result.outputFiles[0].text;
@@ -77,8 +93,11 @@ html = html.replace(
 );
 fs.writeFileSync(path.join(dist, "index.html"), html);
 
+// version.txt:給長 tab 偵測用。長 tab 每 30 秒 fetch 一次,內容跟 build id 對不上就 banner 提示重整。
+fs.writeFileSync(path.join(dist, "version.txt"), buildId + "\n");
+
 const finalSize = Buffer.byteLength(finalCode);
 const deployTag = deploySheetsUrl ? "deploy-config: ON" : "deploy-config: OFF";
 console.log(
-  `built in ${Date.now() - t0}ms — bundle ${(bundledSize / 1024).toFixed(1)}kb → ${shouldObfuscate ? "obfuscated" : "minified"} ${(finalSize / 1024).toFixed(1)}kb · ${deployTag}`,
+  `built in ${Date.now() - t0}ms — bundle ${(bundledSize / 1024).toFixed(1)}kb → ${shouldObfuscate ? "obfuscated" : "minified"} ${(finalSize / 1024).toFixed(1)}kb · ${deployTag} · build ${buildId}`,
 );

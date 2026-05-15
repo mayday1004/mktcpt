@@ -676,6 +676,28 @@ for APP 產品 X:
 - **暫停 auto-sync**:衝突佇列非空時 orchestrator 跳過,使用者解完佇列歸零後自動恢復
 - **錯誤 logging**:同步層所有事件(push 成功/失敗、衝突發生、pull 衝突、網路錯誤、retry)都進 console + in-memory ring buffer。DevTools 打 `__buyadsLog()` 看最近 200 筆 — 給「我明明儲存了卻又被改回去」這類抱怨除錯用([app/lib/sync-log.js](app/lib/sync-log.js))
 
+### 7.2.2 部署版本 gate(2026-05 新增)
+
+問題:同事的瀏覽器在我們 deploy 完之後第一次打開,有兩種情境會推爛資料到雲端 —
+(a) **冷啟動**:抓到新 JS 但 localStorage 還是舊版 build 寫的 shape,新邏輯誤判 → 推錯;
+(b) **長 tab**:同事的分頁本來就開著沒 refresh,持續用 in-memory 的舊 JS。
+
+對應兩道檢查([app/lib/version-gate.js](app/lib/version-gate.js)):
+
+| 檢查 | 觸發時機 | 行為 |
+|---|---|---|
+| **A. 冷啟動 gate** (`runColdStartGate`) | [app/state.js](app/state.js) load 之前同步執行 | 比對 `localStorage.buyads_build` vs build-time 注入的 `__BUYADS_BUILD__`,不同 → 清掉 `buyads_state_v1` / `buyads_sync_meta_v1` / `buyads_server_version_v1` / `buyads_undo_v1` / `buyads_conflicts_v1`,sessionStorage 留訊息給 toast |
+| **B. 長 tab watch** (`initLongTabWatch`) | DOMContentLoaded 後啟動,5 秒後第一次跑、之後每 30 秒 | fetch `/version.txt`,server build ≠ 自己的 BUILD → 右下角 banner「🔄 偵測到新版本 → 立即重整 / 稍後」,**不自動 reload**(避免吞掉沒推的改動) |
+
+**build id 來源**:[build.js](build.js) 依序試 `process.env.RAILWAY_GIT_COMMIT_SHA` → `GIT_SHA` → `COMMIT_SHA` → `git rev-parse --short=10 HEAD` → `Date.now().toString(36)`(全跑光的 fallback)。同次 commit 重建會有同 id → 不會誤觸發 gate;不同 commit 則 id 變動。
+
+**注入機制**:
+- 走 esbuild `define: { __BUYADS_BUILD__: JSON.stringify(buildId) }`,值會被 bake 進 bundle
+- 同時寫 `dist/version.txt`(內容就是 buildId)給長 tab fetch
+- [app/lib/build-info.js](app/lib/build-info.js):`BUILD` 常數讀 `__BUYADS_BUILD__`,dev(raw modules 沒走 bundle)fallback 為 `"dev"`,gate 自動跳過
+
+**Caddy 快取規則**:`version.txt` 跟 `*.html` 一樣設 `Cache-Control: no-cache`(Caddyfile)。`*.js`/`*.css` 維持 1 小時快取,但 build.js 早就在 `<script src="app.js?v=<hash>">` 加 hash query 強制 cache-bust,所以 deploy 完同事一 refresh 就會抓到新 JS。
+
 ### 7.3 試算表結構(正規化)
 單一資料來源,後端只存正規化資料,人工瀏覽用衍生報表。
 

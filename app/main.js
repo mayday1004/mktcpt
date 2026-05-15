@@ -2,6 +2,7 @@ import { getState, subscribe, canUndo, peekUndo, undo } from "./state.js";
 import { getExpenseRate, getIncomeRate, getRateSource } from "./schema.js";
 import { initSyncOrchestrator, onConflictResolved } from "./io/sync.js";
 import { initConflictBanner } from "./io/conflict-resolver.js";
+import { initLongTabWatch, showColdStartGateToast } from "./lib/version-gate.js";
 import "./lib/sync-log.js";  // 註冊 window.__buyadsLog 給 DevTools 用
 import * as Dashboard from "./views/dashboard.js";
 import * as Products from "./views/products.js";
@@ -98,6 +99,10 @@ window.addEventListener("DOMContentLoaded", () => {
   initSyncOrchestrator();
   // 衝突 banner:有衝突時釘在右下角,點擊開 resolver
   initConflictBanner(onConflictResolved);
+  // 冷啟動版本 gate 訊息(state.js load 前若清過資料就會留訊息在 sessionStorage)
+  showColdStartGateToast();
+  // 長 tab 偵測:每 30 秒 fetch /version.txt,看 server 有沒有新 deploy → banner 提示重整
+  initLongTabWatch();
 });
 subscribe(() => {
   renderSidebar();

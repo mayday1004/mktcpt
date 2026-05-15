@@ -42,6 +42,12 @@ const SYNC_PAIRS = [
     .replace(/__BUYADS_SHEETS_TOKEN__/g, `__CPA_SHEETS_TOKEN__`),
   ],
   ["app/lib/dates.js",            "cpa/app/lib/dates.js"],
+  // update-banner.js:UI 元件,無 namespace 差異
+  ["app/lib/update-banner.js",    "cpa/app/lib/update-banner.js"],
+  // 注意:version-gate.js 跟 build-info.js 不在這裡同步:
+  //   - build-info.js:CPT 由 esbuild `define` 在 bundle 時注入;CPA 由 build-version.cjs 產生。
+  //   - version-gate.js:CPT 走 `buyads_*` namespace、CPA 走 `cpa_*` namespace,
+  //     兩邊各自維護;若改邏輯記得兩邊一起改。
   ["apps-script/Code.gs",         "cpa/apps-script/Code.gs"],
 ];
 

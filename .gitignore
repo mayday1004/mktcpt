@@ -30,3 +30,8 @@ buyads_*fixed*.json
 # 打包輸出
 node_modules/
 dist/
+
+# CPA 後台:還在本機開發中,還沒準備好上 GitHub。
+# 之後完工要部署正式機器時,會把整個 cpa/ 搬離這個專案資料夾再獨立部署。
+cpa/
+cpa.md

@@ -1,10 +1,16 @@
 import { VERSION, defaultState } from "./schema.js";
 import { nowTaipeiTime } from "./lib/dates.js";
+import { runColdStartGate } from "./lib/version-gate.js";
 
 const KEY = "buyads_state_v1";
 const UNDO_KEY = "buyads_undo_v1";
 const MAX_UNDO = 8;
 const listeners = new Set();
+
+// 部署版本 gate:本機 state 若是舊版 build 寫的就在 load 前清掉,
+// 避免舊 shape 餵給新版邏輯 → 推爛資料到雲端。詳見 app/lib/version-gate.js。
+runColdStartGate();
+
 let state = load();
 let undoStack = loadUndo();
 

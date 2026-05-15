@@ -16,4 +16,8 @@
 
 	@config path /config.js
 	header @config Cache-Control "no-cache"
+
+	# version.txt:長 tab 偵測新 deploy 用,必須讀到最新內容
+	@version path /version.txt
+	header @version Cache-Control "no-cache"
 }
