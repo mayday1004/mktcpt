@@ -13,6 +13,12 @@ ARG SHEETS_WEBAPP_URL=""
 ARG SHEETS_TOKEN=""
 ENV SHEETS_WEBAPP_URL=$SHEETS_WEBAPP_URL
 ENV SHEETS_TOKEN=$SHEETS_TOKEN
+# 把 commit SHA 傳進 build 階段,讓 build.js 用真正的 commit id 當 build identifier。
+# 沒傳就會 fallback 到 Date.now().toString(36) → 每次 deploy(即使 code 沒變)都生不同 id,
+# 前端 cold-start gate 觸發 → 清掉本機資料(尤其 JSON 匯入後 reload 會看到資料消失)。
+# Railway 預設注入 RAILWAY_GIT_COMMIT_SHA;其他 CI 可改傳 GIT_SHA / COMMIT_SHA。
+ARG RAILWAY_GIT_COMMIT_SHA=""
+ENV RAILWAY_GIT_COMMIT_SHA=$RAILWAY_GIT_COMMIT_SHA
 RUN npm run build
 
 FROM caddy:2-alpine

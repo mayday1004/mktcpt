@@ -16,8 +16,14 @@ const BUILD_KEY = "buyads_build";
 const LAST_GATE_MSG_KEY = "buyads_version_gate_msg";
 
 // 要在版本 mismatch 時清掉的 key 清單。新增 localStorage namespace 時記得補進來。
+//
+// **不清** buyads_state_v1 — 使用者資料(產品/廣告/成效),由 state.js 的 migrate() 函式
+// handle 跨版本 shape 演進,直接清掉會吃掉剛匯入或剛改的資料。原本的設計過度保護
+// (「舊 shape 餵新版邏輯會推爛資料」這個顧慮 migrate() 早就涵蓋)。
+//
+// 清的是「跟程式碼版本緊密綁定的 metadata」:sync 版本號、undo 快照、衝突佇列。
+// 這些在 schema 改變時直接清掉比較安全,使用者資料則一律走 migrate()。
 const PURGE_KEYS = [
-  "buyads_state_v1",
   "buyads_undo_v1",
   "buyads_sync_meta_v1",
   "buyads_server_version_v1",
