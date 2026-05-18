@@ -361,8 +361,8 @@ function renderChurnCard(state, productFilter, filterStart, filterEnd) {
   return `
     <div class="card churn-card" style="margin-bottom:12px">
       <div class="card-head">
-        <h2>📊 廣告 churn <span class="ink-3" style="font-size:12px;font-weight:400">${esc(scopeLabel)} · ${esc(rangeLabel)}</span></h2>
-        <div class="ink-3" style="font-size:11px">隨上方產品分類 / 日期區間連動</div>
+        <h2>📊 廣告狀態 <span class="ink-3" style="font-size:12px;font-weight:400">${esc(scopeLabel)} · ${esc(rangeLabel)}</span></h2>
+        <div class="ink-3" style="font-size:11px">隨下方產品分類 / 日期區間連動</div>
       </div>
       <div class="churn-grid">
         <div class="churn-stat" title="${esc(newTitle)}">
