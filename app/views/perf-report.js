@@ -169,7 +169,7 @@ function renderImportCard() {
       <div class="card-head">
         <h2>📥 成效資料匯入</h2>
         <div class="ink-3" style="font-size:12px">
-          從 Sheets「成效輸入」分頁同步本週資料
+          每週貼一週資料到 Sheets「成效輸入」分頁,例 4/26~5/2 一批、5/3~5/9 一批
         </div>
       </div>
       <div class="perf-import-body">
@@ -177,7 +177,7 @@ function renderImportCard() {
         <div id="perf-import-status" class="sync-status"></div>
       </div>
       <div class="perf-import-note">
-        匯入規則：依 (廣告代碼 × 產品 × 期間) 去重；同一基本碼支援 dh 前綴與英文字尾變體的模糊比對。若分頁尚未建立，按下匯入時會提示自動建立。
+        匯入規則:依 (廣告代碼 × 產品 × 期間) 去重;不同週的資料會並存。依產品瀏覽會把最近 2 週指標相加,依廣告瀏覽會比對「上週 vs 上上週」。同一基本碼支援 dh 前綴與英文字尾變體的模糊比對。
       </div>
     </div>
   `;
@@ -222,17 +222,38 @@ function renderProductReport(s, product) {
   const customMetrics = cfg.custom_metrics;
   const targets = product.performance_targets || [];
 
-  // 同 (ad_code) 多週時只保留 period_end 最大那筆 — 避免一次匯入多週導致同產品列出兩倍
+  // 同 (ad_code) 取最近 2 個 period_end,把 14 個指標相加成單列
+  // period 顯示用「最早 start ~ 最晚 end」,公式以加總值計算
   const allForProduct = (s.performance_data || []).filter((r) => r.product_id === product.id);
-  const latestByCode = new Map();
+  const byCode = new Map();
   for (const r of allForProduct) {
     const code = r.ad_code || "";
-    const cur = latestByCode.get(code);
-    if (!cur || (r.period_end || "") > (cur.period_end || "")) {
-      latestByCode.set(code, r);
-    }
+    if (!byCode.has(code)) byCode.set(code, []);
+    byCode.get(code).push(r);
   }
-  const perfData = [...latestByCode.values()].sort((a, b) => {
+  const perfData = [];
+  for (const [, recs] of byCode) {
+    const sorted = recs.slice().sort((a, b) => (b.period_end || "").localeCompare(a.period_end || ""));
+    const top = sorted.slice(0, 2);
+    const latest = top[0];
+    const agg = {
+      ad_id: latest.ad_id,
+      ad_code: latest.ad_code,
+      ad_name: latest.ad_name,
+      product_id: latest.product_id,
+      group: latest.group,
+    };
+    for (const m of METRICS) {
+      agg[m] = top.reduce((sum, r) => sum + (Number(r[m]) || 0), 0);
+    }
+    const starts = top.map((r) => r.period_start).filter(Boolean).sort();
+    const ends = top.map((r) => r.period_end).filter(Boolean).sort();
+    agg.period_start = starts[0] || "";
+    agg.period_end = ends[ends.length - 1] || "";
+    agg.__period_count = top.length;
+    perfData.push(agg);
+  }
+  perfData.sort((a, b) => {
     const k1 = (a.period_end || "") + (a.ad_code || "");
     const k2 = (b.period_end || "") + (b.ad_code || "");
     return k1 < k2 ? 1 : k1 > k2 ? -1 : 0;  // 最新在上
@@ -725,8 +746,9 @@ function renderAdView(state) {
   if (periods.length === 0) {
     return `<div class="card"><p class="ink-3">尚無成效資料。請先匯入。</p></div>`;
   }
-  const thisWeek = periods[0];
-  const lastWeek = periods[1] || null;
+  // 命名沿用 thisWeek / lastWeek 但語意 = 「上週」/「上上週」(periods[0] 是 performance_data 中最新的週)
+  const thisWeek = periods[0];      // 上週(最新一週資料)
+  const lastWeek = periods[1] || null;  // 上上週
 
   const islandProducts = (state.products || []).filter((p) => p.type === "island");
   const appProducts = (state.products || []).filter((p) => p.type === "app");
@@ -751,9 +773,17 @@ function renderAdView(state) {
       a.start_date <= thisWeek.end && a.end_date > thisWeek.start
     );
     if (overlapping.length === 0) continue;
-    const rep = overlapping.slice().sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""))[0];
-    const hasIsland = islandProducts.some((p) => Number(rep.weights?.[p.id]) > 0);
-    if (!hasIsland) continue;
+    const latest = overlapping.slice().sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""))[0];
+    // 獨立採買(§2.3):同 ad_code 有多支獨立 Ad,各自 100% 不同產品。
+    // 取最新一段當 rep,但 weights 用 overlapping 全部段的聯集,避免漏掉另一支獨立段的產品。
+    const mergedWeights = {};
+    for (const seg of overlapping) {
+      for (const [pid, w] of Object.entries(seg.weights || {})) {
+        const n = Number(w) || 0;
+        if (n > 0) mergedWeights[pid] = Math.max(mergedWeights[pid] || 0, n);
+      }
+    }
+    const rep = { ...latest, weights: mergedWeights };
     rows.push(buildAdRowData(state, code, rep, segs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today));
   }
 
@@ -1018,11 +1048,11 @@ function fmtRate(v) {
 
 function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, weekRange) {
   if (rows.length === 0) {
-    return `<div class="card"><p class="ink-3">資料期間 ${thisWeek.start}~${thisWeek.end} 內沒有任何含小島權重的廣告。</p></div>`;
+    return `<div class="card"><p class="ink-3">上週 ${thisWeek.start}~${thisWeek.end} 沒有匹配到任何廣告。</p></div>`;
   }
   const lastNote = lastWeek
-    ? `vs 上週 ${lastWeek.start}~${lastWeek.end}`
-    : `上週無資料`;
+    ? `vs 上上週 ${lastWeek.start}~${lastWeek.end}`
+    : `上上週無資料`;
 
   const islandHeaders = islandProducts.map((p) =>
     `<th class="num" title="${esc(p.name)} CPC = 花費/事件計數">${esc(p.name)}<br><span class="ink-3 mono" style="font-size:10px;font-weight:normal">${esc(p.id)}</span></th>`
@@ -1078,7 +1108,7 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
       <div class="card-head">
         <h2>依廣告瀏覽 <span class="ink-3" style="font-size:12px;font-weight:normal">廣告 × 小島 CPC 對照表</span></h2>
         <div class="ink-3" style="font-size:12px">
-          資料期間 <strong>${thisWeek.start}~${thisWeek.end}</strong> · ${lastNote}<br>
+          上週 <strong>${thisWeek.start}~${thisWeek.end}</strong> · ${lastNote}<br>
           本週(自然週 Sun~Sat) <strong>${weekRange.start}~${weekRange.end}</strong>
         </div>
       </div>
@@ -1102,7 +1132,7 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
               <td colspan="3" class="ink-3"></td>
             </tr>
             <tr style="background:#f7f9fc">
-              <td colspan="2"><strong>成本漲幅（vs 上週，絕對差）</strong></td>
+              <td colspan="2"><strong>成本漲幅（vs 上上週，絕對差）</strong></td>
               ${deltaCells}
               <td colspan="3" class="ink-3"></td>
             </tr>
