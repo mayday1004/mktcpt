@@ -254,7 +254,11 @@ export async function syncOnce(onProgress, options = {}) {
           for (const sr of serverRecords) {
             const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow, spec.dataHeaders, sr._id) : null;
             const knownFP = sheetMeta[sr._id]?.fingerprint;
-            const localDirty = localFP != null && localFP !== knownFP && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__";
+            // canonical 過後本機 == server 就不算衝突(YYYY-MM 欄被 Sheets 自動轉成 YYYY-MM-DD
+            // 的最大兇手在這:當 meta 還沒對齊時 knownFP 是 undefined,單純比 knownFP 會誤判 dirty)
+            const serverFP = !sr._deleted ? fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) : null;
+            const sameContent = localFP != null && serverFP != null && localFP === serverFP;
+            const localDirty = !sameContent && localFP != null && localFP !== knownFP && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__";
             const serverChanged = !knownFP || sr._updated_at > (sheetMeta[sr._id]?._updated_at || "");
 
             if (localDirty && serverChanged && !sr._deleted) {
@@ -301,7 +305,9 @@ export async function syncOnce(onProgress, options = {}) {
         for (const sr of serverRecords) {
           const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow, spec.dataHeaders, sr._id) : null;
           const knownFP = sheetMeta[sr._id]?.fingerprint;
-          if (localFP != null && localFP !== knownFP && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__"
+          const serverFP = !sr._deleted ? fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) : null;
+          const sameContent = localFP != null && serverFP != null && localFP === serverFP;
+          if (!sameContent && localFP != null && localFP !== knownFP && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__"
               && (!knownFP || sr._updated_at > (sheetMeta[sr._id]?._updated_at || ""))
               && !sr._deleted) {
             conflictedIds.add(sr._id);
@@ -327,7 +333,9 @@ export async function syncOnce(onProgress, options = {}) {
             // 偵測本機 dirty:server 比 meta 新,且本機跟 meta fingerprint 不同
             const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow, spec.dataHeaders, sr._id) : null;
             const knownFP = known?.fingerprint;
-            const localDirty = localFP != null && knownFP && localFP !== knownFP
+            const serverFP = !sr._deleted ? fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) : null;
+            const sameContent = localFP != null && serverFP != null && localFP === serverFP;
+            const localDirty = !sameContent && localFP != null && knownFP && localFP !== knownFP
                               && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__";
 
             if (localDirty && !sr._deleted) {
@@ -370,7 +378,9 @@ export async function syncOnce(onProgress, options = {}) {
           if (!isNewerOrFirst) continue;
           const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow, spec.dataHeaders, sr._id) : null;
           const knownFP = known?.fingerprint;
-          const localDirty = localFP != null && knownFP && localFP !== knownFP
+          const serverFP = !sr._deleted ? fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) : null;
+          const sameContent = localFP != null && serverFP != null && localFP === serverFP;
+          const localDirty = !sameContent && localFP != null && knownFP && localFP !== knownFP
                             && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__";
           if (localDirty && !sr._deleted) {
             conflictedIds.add(sr._id);
