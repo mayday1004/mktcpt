@@ -411,11 +411,13 @@ function renderActionRequired(state) {
         <h2>🔥 需要決策</h2>
         <div class="ink-3" style="font-size:12px">沒事時這區會自動隱藏</div>
       </div>
-      ${expiringHtml}
-      ${upcomingHtml}
-      ${shortfallHtml}
-      ${underspendHtml}
-      ${gapsHtml}
+      <div class="ar-blocks-grid">
+        ${expiringHtml}
+        ${upcomingHtml}
+        ${shortfallHtml}
+        ${underspendHtml}
+        ${gapsHtml}
+      </div>
     </div>
   `;
 }

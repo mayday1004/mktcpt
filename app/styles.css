@@ -467,6 +467,31 @@ dialog#modal::backdrop { background: rgba(15, 20, 30, 0.4); backdrop-filter: blu
 .perf-row-bad td:first-child {
   box-shadow: inset 3px 0 0 var(--bad);
 }
+
+/* 概覽「需要決策」卡片內 5 個 block 改成 2 欄,避免單欄太長 */
+.ar-blocks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+.ar-blocks-grid .ar-block {
+  margin: 0;
+}
+
+/* 廣告列表頁:即將到期 + 廣告送天數 兩張卡並排 */
+.notify-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.notify-grid > .card {
+  margin: 0;
+}
+.notify-grid:empty {
+  display: none;
+}
 .perf-row-expired td {
   background: #f1f3f5;
   color: #9aa0a6;

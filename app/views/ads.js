@@ -180,9 +180,10 @@ export function render(root) {
       </div>
     </div>
 
-    ${renderExpiringCard(expiring, s.products, s.ads)}
-
-    ${renderGiftDayInfo(s, { withFixButton: false })}
+    <div class="notify-grid">
+      ${renderExpiringCard(expiring, s.products, s.ads)}
+      ${renderGiftDayInfo(s, { withFixButton: false })}
+    </div>
 
     <div class="tabs">
       <button class="tab ${activeTab === "all" ? "active" : ""}" data-tab="all">
