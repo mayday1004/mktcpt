@@ -784,9 +784,19 @@ function renderAdView(state) {
       }
     }
     // 依廣告瀏覽是「廣告 × 小島 CPC 對照表」,純 APP 廣告不在這個視圖。
-    // 用聯集後的 weights 判定:只要任一 overlapping 段含小島權重就保留。
-    const hasIsland = islandProducts.some((p) => Number(mergedWeights[p.id]) > 0);
-    if (!hasIsland) continue;
+    // 判定「小島有沒有跑」兩條件任一成立就保留:
+    //   (A) 任一 overlapping 段含小島 weight(共購或獨立採買且時間有 overlap)
+    //   (B) 本週成效資料(performance_data)有小島產品的紀錄
+    //       — 獨立採買時小島段可能跟 APP 段時間不完全對齊,光靠 weights 會漏
+    const hasIslandSeg = islandProducts.some((p) => Number(mergedWeights[p.id]) > 0);
+    const hasIslandPerf = !hasIslandSeg && islandProducts.some((p) =>
+      (state.performance_data || []).some((r) =>
+        r.ad_code === code &&
+        r.product_id === p.id &&
+        r.period_start === thisWeek.start && r.period_end === thisWeek.end
+      )
+    );
+    if (!hasIslandSeg && !hasIslandPerf) continue;
     const rep = { ...latest, weights: mergedWeights };
     rows.push(buildAdRowData(state, code, rep, segs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today));
   }
@@ -954,7 +964,7 @@ function computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts, 
     const gapStart = sorted[i].end_date;
     const gapEnd = sorted[i + 1].start_date;
     if (gapStart < gapEnd && gapStart <= we && gapEnd > ws) {
-      return { kind: "gap", label: "⚠ 未採買空檔", tooltip: `空檔 ${gapStart} ~ ${gapEnd}` };
+      return { kind: "gap", label: "⚠ 送天數中", tooltip: `送天數空檔 ${gapStart} ~ ${gapEnd}` };
     }
   }
   return { kind: "none", label: "", tooltip: "" };
