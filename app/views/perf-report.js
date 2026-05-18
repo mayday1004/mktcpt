@@ -343,7 +343,7 @@ function renderProductReport(s, product) {
       <button class="filter-chip ${reportFilter === "all" ? "active" : ""}" data-report-filter="all">全部</button>
       <button class="filter-chip ${reportFilter === "bad" ? "active" : ""}" data-report-filter="bad">只看未達標</button>
       <button class="filter-chip ${reportFilter === "spend" ? "active" : ""}" data-report-filter="spend">花費高到低</button>
-      <button class="filter-chip ${reportFilter === "buyer" ? "active" : ""}" data-report-filter="buyer">只看有購買</button>
+      <button class="filter-chip ${reportFilter === "buyer" ? "active" : ""}" data-report-filter="buyer">只看有充值</button>
       <button class="filter-chip ${reportFilter === "dead" ? "active" : ""}" data-report-filter="dead">無轉換</button>
     </div>
   `;
