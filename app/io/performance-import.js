@@ -52,12 +52,29 @@ export async function pushPerfDataSheet() {
   });
 }
 
-// 計算一筆廣告 (含多段) 在 [start, end) 區間內貢獻給某產品的花費（台幣）
+// YYYY-MM-DD 字串 +1 天(避開 timezone:用 UTC 解析 + 加日)
+function addOneDayYmd(ymd) {
+  if (!ymd) return ymd;
+  const d = new Date(`${String(ymd).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return ymd;
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+// 計算一筆廣告 (含多段) 在 perf 期間內貢獻給某產品的花費（台幣）。
+//
+// 兩種期間在 inclusivity 上不同:
+//   - 廣告本身:start inclusive、end exclusive(§2.1「結束日當天不算錢」)
+//   - perf 資料:start / end 兩端都 inclusive — 使用者貼週資料時把 5/3~5/9 視為 7 天的一週,
+//     5/10~5/16 又是下一週,中間不可能少一天。所以 end 必須當 inclusive。
+//
+// 內部把 perf end 換算成 exclusive(+1 day)後再跟廣告期間取交集,天數用 (e - s) / day_ms 算。
 function computeSpend(ad, productId, start, end) {
   const w = Number(ad.weights?.[productId]) || 0;
   if (w <= 0) return 0;
+  const periodEndExclusive = addOneDayYmd(end);
   const s = ad.start_date > start ? ad.start_date : start;
-  const e = ad.end_date < end ? ad.end_date : end;
+  const e = ad.end_date < periodEndExclusive ? ad.end_date : periodEndExclusive;
   if (s >= e) return 0;
   const days = (Date.parse(e) - Date.parse(s)) / 86400000;
   if (!Number.isFinite(days) || days <= 0) return 0;
