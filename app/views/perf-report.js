@@ -300,7 +300,21 @@ function renderProductReport(s, product) {
     `;
   }
 
-  const rows = perfData.map((r) => buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibleCustom, reportVars));
+  // 計算每個 ad_code 的最晚 end_date(跨所有段),用來標「已到期」灰底
+  const today = todayTaipei();
+  const maxEndByCode = new Map();
+  for (const a of (s.ads || [])) {
+    if (!a.ad_code) continue;
+    const cur = maxEndByCode.get(a.ad_code) || "";
+    if ((a.end_date || "") > cur) maxEndByCode.set(a.ad_code, a.end_date || "");
+  }
+  // end_date 是 exclusive(§2.1):end_date 當天就已經不算錢 → end_date <= today 視為已到期
+  const isCodeExpired = (code) => {
+    const maxEnd = maxEndByCode.get(code);
+    return !!maxEnd && maxEnd <= today;
+  };
+
+  const rows = perfData.map((r) => buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibleCustom, reportVars, isCodeExpired(r.ad_code)));
   const failedRows = rows.filter((r) => r.status === "bad");
   const okRows = rows.filter((r) => r.status === "ok");
   const noConversionRows = rows.filter((r) => (Number(r.firstOrders) || 0) === 0 && (Number(r.purchaseOrders) || 0) === 0);
@@ -392,7 +406,7 @@ function renderProductReport(s, product) {
   `;
 }
 
-function buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibleCustom, reportVars) {
+function buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibleCustom, reportVars, expired = false) {
   const evalVars = { ...r, ...reportVars };
   const targetResults = visibleTargets.map((t) => {
     let actual = null;
@@ -417,6 +431,7 @@ function buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibl
     targetResults,
     customResults,
     status: failed ? "bad" : passed ? "ok" : "none",
+    expired,
     primaryActual: primary?.actual,
     primaryMet: primary?.met,
     spend: pickMetric(r, ["花費", "广告花费", "廣告花費", "spend", "cost"]),
@@ -439,8 +454,12 @@ function renderSummaryRow(row, primaryLabel, primaryGoal, tableColspan, groupVis
   const customCells = row.customResults.map(({ metric, actual }) => `
     <td class="num" title="${esc(metric.formula)}">${actual != null ? fmtMetric(actual, metric.show_as_percent) : "—"}</td>
   `).join("");
+  const rowClasses = [
+    row.status === "bad" ? "perf-row-bad" : "",
+    row.expired ? "perf-row-expired" : "",
+  ].filter(Boolean).join(" ");
   const main = `
-    <tr class="${row.status === "bad" ? "perf-row-bad" : ""}">
+    <tr class="${rowClasses}">
       <td class="mono">${compactDateRange(r.period_start, r.period_end)}</td>
       <td class="mono">${esc(r.ad_code || "")}</td>
       <td>
@@ -927,6 +946,10 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
 
   const status = computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts, reportVars);
 
+  // 已到期:此 ad_code 跨所有段的最晚 end_date <= today(end_date 是 exclusive)
+  const maxEnd = allSegs.reduce((m, a) => ((a.end_date || "") > m ? (a.end_date || "") : m), "");
+  const expired = !!maxEnd && maxEnd <= today;
+
   return {
     code, rep,
     islandCPCs, islandCPCsLast,
@@ -936,6 +959,7 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
     cpiRatio: worstCPI?.ratio ?? null,
     rateRatio: worstRate?.ratio ?? null,
     status,
+    expired,
   };
 }
 
@@ -1103,7 +1127,7 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
       : `<td></td>`;
 
     return `
-      <tr>
+      <tr class="${row.expired ? "perf-row-expired" : ""}">
         <td><strong>${esc(row.rep.ad_name || "")}</strong></td>
         <td class="mono">${esc(row.code)}</td>
         ${islandCells}

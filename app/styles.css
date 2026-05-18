@@ -467,6 +467,17 @@ dialog#modal::backdrop { background: rgba(15, 20, 30, 0.4); backdrop-filter: blu
 .perf-row-bad td:first-child {
   box-shadow: inset 3px 0 0 var(--bad);
 }
+.perf-row-expired td {
+  background: #f1f3f5;
+  color: #9aa0a6;
+}
+.perf-row-expired td.num,
+.perf-row-expired td .ink-3 {
+  color: #adb5bd;
+}
+.perf-row-expired .pill {
+  opacity: 0.6;
+}
 .perf-detail-row td {
   background: #f7f9fc;
   padding: 0;
