@@ -222,9 +222,26 @@ function renderProductReport(s, product) {
   const customMetrics = cfg.custom_metrics;
   const targets = product.performance_targets || [];
 
-  // 同 (ad_code) 取最近 2 個 period_end,把 14 個指標相加成單列
-  // period 顯示用「最早 start ~ 最晚 end」,公式以加總值計算
-  const allForProduct = (s.performance_data || []).filter((r) => r.product_id === product.id);
+  // 全表統一用「performance_data 全域最近 2 個 unique period 的聯集」當顯示期間,
+  // 例 5/3~5/9 + 5/10~5/16 → 5/3~5/16。某廣告只有單週資料時也顯示同範圍,避免列出
+  // 混雜的 05/03~05/16、05/10~05/16、05/03~05/09 視覺很亂。
+  const periodKeys = new Set();
+  for (const r of (s.performance_data || [])) {
+    if (r.period_start && r.period_end) periodKeys.add(`${r.period_start}|${r.period_end}`);
+  }
+  const globalPeriods = [...periodKeys]
+    .map((k) => { const [a, b] = k.split("|"); return { start: a, end: b }; })
+    .sort((a, b) => b.end.localeCompare(a.end))
+    .slice(0, 2);
+  const includedPeriodKeys = new Set(globalPeriods.map((p) => `${p.start}|${p.end}`));
+  const displayStart = globalPeriods.map((p) => p.start).sort()[0] || "";
+  const displayEnd = globalPeriods.map((p) => p.end).sort().slice(-1)[0] || "";
+
+  // 同 ad_code 把屬於全域 top-2 期間的紀錄相加成單列
+  const allForProduct = (s.performance_data || []).filter((r) =>
+    r.product_id === product.id &&
+    includedPeriodKeys.has(`${r.period_start}|${r.period_end}`)
+  );
   const byCode = new Map();
   for (const r of allForProduct) {
     const code = r.ad_code || "";
@@ -233,31 +250,23 @@ function renderProductReport(s, product) {
   }
   const perfData = [];
   for (const [, recs] of byCode) {
-    const sorted = recs.slice().sort((a, b) => (b.period_end || "").localeCompare(a.period_end || ""));
-    const top = sorted.slice(0, 2);
-    const latest = top[0];
+    const latest = recs.slice().sort((a, b) => (b.period_end || "").localeCompare(a.period_end || ""))[0];
     const agg = {
       ad_id: latest.ad_id,
       ad_code: latest.ad_code,
       ad_name: latest.ad_name,
       product_id: latest.product_id,
       group: latest.group,
+      period_start: displayStart,
+      period_end: displayEnd,
+      __period_count: recs.length,
     };
     for (const m of METRICS) {
-      agg[m] = top.reduce((sum, r) => sum + (Number(r[m]) || 0), 0);
+      agg[m] = recs.reduce((sum, r) => sum + (Number(r[m]) || 0), 0);
     }
-    const starts = top.map((r) => r.period_start).filter(Boolean).sort();
-    const ends = top.map((r) => r.period_end).filter(Boolean).sort();
-    agg.period_start = starts[0] || "";
-    agg.period_end = ends[ends.length - 1] || "";
-    agg.__period_count = top.length;
     perfData.push(agg);
   }
-  perfData.sort((a, b) => {
-    const k1 = (a.period_end || "") + (a.ad_code || "");
-    const k2 = (b.period_end || "") + (b.ad_code || "");
-    return k1 < k2 ? 1 : k1 > k2 ? -1 : 0;  // 最新在上
-  });
+  perfData.sort((a, b) => (a.ad_code || "").localeCompare(b.ad_code || ""));
 
   // 報表額外變數：當月支出/收入匯率
   const ym = s.settings.current_month;
