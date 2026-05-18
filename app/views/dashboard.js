@@ -293,26 +293,38 @@ function renderActionRequired(state) {
     return `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`;
   };
 
+  const renderExpItem = (g) => {
+    const tone = g.earliestDays <= 6 ? "exp-row-red" : "exp-row-blue";
+    const poorBadge = g.poorPerf
+      ? `<span class="pill exp-perf-bad" title="${escape(g.poorPerf.map((p) => `${p.productName} ${(p.ratio * 100).toFixed(0)}%`).join("、"))}">🚨 成效全爛</span>`
+      : "";
+    return `<div class="expiring-item ${tone}">
+      <span class="exp-days">${g.earliestDays}天</span>
+      <span class="exp-end mono">${fmtEnd(g.earliestEnd)}</span>
+      <span class="exp-code mono">${[...g.codes].join("/")}</span>
+      <strong class="exp-name">${escape(g.adName || "—")}</strong>
+      ${poorBadge}
+    </div>`;
+  };
+  const reds = expGroups.filter((g) => g.earliestDays <= 6);
+  const blues = expGroups.filter((g) => g.earliestDays > 6);
   const expiringHtml = expGroups.length === 0 ? "" : `
     <div class="ar-block">
       <div class="ar-block-head">
         <strong>📅 即將到期 (${expGroups.length} 支)</strong>
         <a class="ar-link" href="#ads">→ 廣告頁處理</a>
       </div>
-      <div class="expiring-list" style="margin-top:6px">
-        ${expGroups.map((g) => {
-          const tone = g.earliestDays <= 6 ? "exp-row-red" : "exp-row-blue";
-          const poorBadge = g.poorPerf
-            ? `<span class="pill exp-perf-bad" title="${escape(g.poorPerf.map((p) => `${p.productName} ${(p.ratio * 100).toFixed(0)}%`).join("、"))}">🚨 成效全爛</span>`
-            : "";
-          return `<div class="expiring-item ${tone}">
-            <span class="exp-days">${g.earliestDays}天</span>
-            <span class="exp-end mono">${fmtEnd(g.earliestEnd)}</span>
-            <span class="exp-code mono">${[...g.codes].join("/")}</span>
-            <strong class="exp-name">${escape(g.adName || "—")}</strong>
-            ${poorBadge}
-          </div>`;
-        }).join("")}
+      <div class="expiring-split" style="margin-top:6px">
+        <div class="expiring-list">
+          ${reds.length > 0
+            ? reds.map(renderExpItem).join("")
+            : `<div class="ink-3" style="font-size:12px;padding:8px">本週(6 天內)無到期</div>`}
+        </div>
+        <div class="expiring-list">
+          ${blues.length > 0
+            ? blues.map(renderExpItem).join("")
+            : `<div class="ink-3" style="font-size:12px;padding:8px">下週(7~13 天)無到期</div>`}
+        </div>
       </div>
     </div>
   `;
@@ -411,13 +423,11 @@ function renderActionRequired(state) {
         <h2>🔥 需要決策</h2>
         <div class="ink-3" style="font-size:12px">沒事時這區會自動隱藏</div>
       </div>
-      <div class="ar-blocks-grid">
-        ${expiringHtml}
-        ${upcomingHtml}
-        ${shortfallHtml}
-        ${underspendHtml}
-        ${gapsHtml}
-      </div>
+      ${expiringHtml}
+      ${upcomingHtml}
+      ${shortfallHtml}
+      ${underspendHtml}
+      ${gapsHtml}
     </div>
   `;
 }

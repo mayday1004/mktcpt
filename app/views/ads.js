@@ -180,10 +180,11 @@ export function render(root) {
       </div>
     </div>
 
-    <div class="notify-grid">
-      ${renderExpiringCard(expiring, s.products, s.ads)}
-      ${renderGiftDayInfo(s, { withFixButton: false })}
-    </div>
+    ${renderExpiringCard(expiring, s.products, s.ads)}
+
+    ${renderGiftDayInfo(s, { withFixButton: false })}
+
+    ${renderChurnCard(s, activeTab, filterStart, filterEnd)}
 
     <div class="tabs">
       <button class="tab ${activeTab === "all" ? "active" : ""}" data-tab="all">
@@ -241,6 +242,152 @@ export function render(root) {
   `;
 
   bindHandlers(root, s);
+}
+
+// 廣告 churn 統計卡:在當前 (產品分類 + 日期區間) 範圍下,算新增/淘汰廣告數量、花費比例
+//
+// 定義:
+//   新增廣告:ad_code 的最早 start_date 落在 [filterStart, filterEnd)
+//   淘汰廣告:ad_code 的最晚 end_date 落在 [filterStart, filterEnd] 且已停運
+//             (latest end_date <= today,涵蓋使用者明確 eliminate + 自然到期沒續費)
+//   產品過濾:activeTab !== "all" 時,只算對該產品有 weight > 0 的 ad_code,
+//             花費也只算該產品的 weight share
+//   花費:Σ(daily_amort_twd × overlap_days × weight_share),overlap_days 用 filter
+//        範圍跟段區間取交集(段本身 end-exclusive,filter end 也視為 exclusive)
+//   淘汰比例 = 淘汰花費 / 總花費
+function computeChurnStats(allAds, productFilter, filterStart, filterEnd, today) {
+  const byCode = new Map();
+  for (const a of allAds) {
+    if (!a.ad_code) continue;
+    if (!byCode.has(a.ad_code)) byCode.set(a.ad_code, []);
+    byCode.get(a.ad_code).push(a);
+  }
+
+  const inRange = (date) => {
+    if (!date) return false;
+    if (filterStart && date < filterStart) return false;
+    if (filterEnd && date > filterEnd) return false;
+    return true;
+  };
+
+  const overlapDays = (segStart, segEnd) => {
+    let s = segStart;
+    let e = segEnd;
+    if (filterStart && s < filterStart) s = filterStart;
+    if (filterEnd && e > filterEnd) e = filterEnd;
+    if (!s || !e || s >= e) return 0;
+    return (Date.parse(e) - Date.parse(s)) / 86400000;
+  };
+
+  let newCount = 0;
+  let elimCount = 0;
+  let totalSpend = 0;
+  let elimSpend = 0;
+  const elimCodes = [];
+  const newCodes = [];
+
+  for (const [code, segs] of byCode) {
+    if (productFilter !== "all") {
+      const has = segs.some((sg) => Number(sg.weights?.[productFilter]) > 0);
+      if (!has) continue;
+    }
+
+    const earliestStart = segs.reduce(
+      (m, sg) => (sg.start_date && (!m || sg.start_date < m) ? sg.start_date : m),
+      ""
+    );
+    const latestEnd = segs.reduce(
+      (m, sg) => ((sg.end_date || "") > m ? (sg.end_date || "") : m),
+      ""
+    );
+
+    const isNew = earliestStart && inRange(earliestStart);
+    const hasEnded = latestEnd && latestEnd <= today;
+    const isElim = hasEnded && inRange(latestEnd);
+
+    if (isNew) {
+      newCount++;
+      newCodes.push(code);
+    }
+    if (isElim) {
+      elimCount++;
+      elimCodes.push(code);
+    }
+
+    let spendForCode = 0;
+    for (const seg of segs) {
+      if (!seg.start_date || !seg.end_date) continue;
+      const days = overlapDays(seg.start_date, seg.end_date);
+      if (days <= 0) continue;
+      const daily = Number(seg.daily_amort_twd) || 0;
+      if (productFilter === "all") {
+        spendForCode += daily * days;
+      } else {
+        const w = Number(seg.weights?.[productFilter]) || 0;
+        spendForCode += daily * days * (w / 100);
+      }
+    }
+    totalSpend += spendForCode;
+    if (isElim) elimSpend += spendForCode;
+  }
+
+  return {
+    newCount,
+    elimCount,
+    totalSpend,
+    elimSpend,
+    elimRatio: totalSpend > 0 ? elimSpend / totalSpend : 0,
+    newCodes,
+    elimCodes,
+  };
+}
+
+function renderChurnCard(state, productFilter, filterStart, filterEnd) {
+  const today = todayTaipei();
+  const stats = computeChurnStats(state.ads || [], productFilter, filterStart, filterEnd, today);
+  const product = state.products?.find((p) => p.id === productFilter);
+  const scopeLabel = productFilter === "all" ? "全部產品" : (product?.name || productFilter);
+  const rangeLabel = (filterStart || filterEnd)
+    ? `${filterStart || "—"} ~ ${filterEnd || "—"}`
+    : "不限日期";
+  const fmtNum = (n) => Math.round(n).toLocaleString();
+  const fmtPct = (n) => `${(n * 100).toFixed(1)}%`;
+  const ratioColor = stats.elimRatio >= 0.5 ? "var(--bad)"
+                   : stats.elimRatio >= 0.3 ? "var(--warn)"
+                   : "var(--ink)";
+  const newTitle = stats.newCodes.length > 0 ? `新增的 ad_code:${stats.newCodes.slice(0, 30).join("、")}${stats.newCodes.length > 30 ? "…" : ""}` : "";
+  const elimTitle = stats.elimCodes.length > 0 ? `淘汰的 ad_code:${stats.elimCodes.slice(0, 30).join("、")}${stats.elimCodes.length > 30 ? "…" : ""}` : "";
+
+  return `
+    <div class="card churn-card" style="margin-bottom:12px">
+      <div class="card-head">
+        <h2>📊 廣告 churn <span class="ink-3" style="font-size:12px;font-weight:400">${esc(scopeLabel)} · ${esc(rangeLabel)}</span></h2>
+        <div class="ink-3" style="font-size:11px">隨上方產品分類 / 日期區間連動</div>
+      </div>
+      <div class="churn-grid">
+        <div class="churn-stat" title="${esc(newTitle)}">
+          <div class="ink-3" style="font-size:12px">➕ 新增廣告</div>
+          <div class="churn-stat-val">${stats.newCount}</div>
+          <div class="ink-3" style="font-size:11px">最早起始日落在區間內</div>
+        </div>
+        <div class="churn-stat" title="${esc(elimTitle)}">
+          <div class="ink-3" style="font-size:12px">⛔ 淘汰廣告</div>
+          <div class="churn-stat-val">${stats.elimCount}</div>
+          <div class="ink-3" style="font-size:11px">最晚結束日落在區間內且已停運</div>
+        </div>
+        <div class="churn-stat">
+          <div class="ink-3" style="font-size:12px">淘汰花費 / 總花費 (TWD)</div>
+          <div class="churn-stat-val" style="font-size:18px">${fmtNum(stats.elimSpend)} / ${fmtNum(stats.totalSpend)}</div>
+          <div class="ink-3" style="font-size:11px">區間內每日攤提加總</div>
+        </div>
+        <div class="churn-stat">
+          <div class="ink-3" style="font-size:12px">淘汰比例</div>
+          <div class="churn-stat-val" style="color:${ratioColor}">${fmtPct(stats.elimRatio)}</div>
+          <div class="ink-3" style="font-size:11px">淘汰花費 ÷ 總花費</div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // 即將到期清單（10 天內，已淘汰的不顯示）
@@ -349,43 +496,64 @@ function renderExpiringCard(expiring, products, allAds) {
           🚨 = 所有產品成效 < 30% 建議淘汰
         </div>
       </div>
-      <div class="expiring-list">
-        ${grouped.map((g) => {
-          const isUrgent = g.earliestDays <= 6;
-          const tone = isUrgent ? "exp-row-red" : "exp-row-blue";
-          const productPills = [...g.productIds].map((pid) =>
-            `<span class="pill exp-product-pill">${esc(nameOf[pid] || pid)}</span>`).join("");
-          const codeStr = [...g.codes].join(" / ");
-          const poorBadge = g.poorPerf
-            ? `<span class="pill exp-perf-bad" title="${esc(g.poorPerf.map((p) => `${p.productName} ${(p.ratio * 100).toFixed(0)}%`).join("、"))}">🚨 成效全爛</span>`
-            : "";
-          const isUsdt = g.currency === "USDT";
-          // 家族總額(若該 ad 有破圈/兄弟成員)— 用 carve-out / 兄弟合計 算總額,跟家族卡頭一致
-          const famBase = familyBaseOf(g.latestAd.ad_code);
-          const famAds = (allAds || []).filter((a) => familyBaseOf(a.ad_code) === famBase);
-          const hasFamily = new Set(famAds.map((a) => a.ad_code)).size > 1;
-          const famTotal = hasFamily ? computeFamilyTotal(allAds, famBase) : (isUsdt ? g.amountOrig : g.amountCny);
-          const amountStr = isUsdt
-            ? `${Math.round(famTotal).toLocaleString()} USDT`
-            : `${Math.round(famTotal).toLocaleString()} RMB`;
-          const amountTitle = hasFamily ? `家族(${famBase})總額` : "";
-          return `
-            <div class="expiring-item ${tone}">
-              <span class="exp-days">${g.earliestDays}天</span>
-              <span class="exp-end mono">${fmtEnd(g.earliestEnd)}</span>
-              <span class="exp-code mono">${esc(codeStr)}</span>
-              <strong class="exp-name">${esc(g.adName || "—")}</strong>
-              ${poorBadge}
-              <span class="exp-products">${productPills}</span>
-              <span class="exp-amount mono"${amountTitle ? ` title="${esc(amountTitle)}"` : ""}>${amountStr}</span>
-              <span class="exp-actions">
-                <button class="primary" data-exp-renew="${esc(g.latestAd.id)}">續費</button>
-                <button data-exp-eliminate="${esc(g.latestAd.id)}" title="標記為到期不再投放,從清單移除">淘汰</button>
-              </span>
-            </div>
-          `;
-        }).join("")}
+      <div class="expiring-split">
+        <div class="expiring-list">
+          ${(() => {
+            const reds = grouped.filter((g) => g.earliestDays <= 6);
+            if (reds.length === 0) return `<div class="ink-3" style="font-size:12px;padding:8px">本週(6 天內)無到期</div>`;
+            return reds.map((g) => renderExpiringItem(g, nameOf, allAds)).join("");
+          })()}
+        </div>
+        <div class="expiring-list">
+          ${(() => {
+            const blues = grouped.filter((g) => g.earliestDays > 6);
+            if (blues.length === 0) return `<div class="ink-3" style="font-size:12px;padding:8px">下週(7~13 天)無到期</div>`;
+            return blues.map((g) => renderExpiringItem(g, nameOf, allAds)).join("");
+          })()}
+        </div>
       </div>
+    </div>
+  `;
+}
+
+// 單筆「即將到期」row(red/blue 兩欄共用 — renderExpiringCard 拆紅藍兩欄渲染)
+function renderExpiringItem(g, nameOf, allAds) {
+  const WD = ["日", "一", "二", "三", "四", "五", "六"];
+  const fmtEnd = (ymd) => {
+    if (!ymd) return "";
+    const d = new Date(ymd + "T00:00:00");
+    return `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`;
+  };
+  const isUrgent = g.earliestDays <= 6;
+  const tone = isUrgent ? "exp-row-red" : "exp-row-blue";
+  const productPills = [...g.productIds].map((pid) =>
+    `<span class="pill exp-product-pill">${esc(nameOf[pid] || pid)}</span>`).join("");
+  const codeStr = [...g.codes].join(" / ");
+  const poorBadge = g.poorPerf
+    ? `<span class="pill exp-perf-bad" title="${esc(g.poorPerf.map((p) => `${p.productName} ${(p.ratio * 100).toFixed(0)}%`).join("、"))}">🚨 成效全爛</span>`
+    : "";
+  const isUsdt = g.currency === "USDT";
+  const famBase = familyBaseOf(g.latestAd.ad_code);
+  const famAds = (allAds || []).filter((a) => familyBaseOf(a.ad_code) === famBase);
+  const hasFamily = new Set(famAds.map((a) => a.ad_code)).size > 1;
+  const famTotal = hasFamily ? computeFamilyTotal(allAds, famBase) : (isUsdt ? g.amountOrig : g.amountCny);
+  const amountStr = isUsdt
+    ? `${Math.round(famTotal).toLocaleString()} USDT`
+    : `${Math.round(famTotal).toLocaleString()} RMB`;
+  const amountTitle = hasFamily ? `家族(${famBase})總額` : "";
+  return `
+    <div class="expiring-item ${tone}">
+      <span class="exp-days">${g.earliestDays}天</span>
+      <span class="exp-end mono">${fmtEnd(g.earliestEnd)}</span>
+      <span class="exp-code mono">${esc(codeStr)}</span>
+      <strong class="exp-name">${esc(g.adName || "—")}</strong>
+      ${poorBadge}
+      <span class="exp-products">${productPills}</span>
+      <span class="exp-amount mono"${amountTitle ? ` title="${esc(amountTitle)}"` : ""}>${amountStr}</span>
+      <span class="exp-actions">
+        <button class="primary" data-exp-renew="${esc(g.latestAd.id)}">續費</button>
+        <button data-exp-eliminate="${esc(g.latestAd.id)}" title="標記為到期不再投放,從清單移除">淘汰</button>
+      </span>
     </div>
   `;
 }
