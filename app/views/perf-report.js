@@ -783,6 +783,10 @@ function renderAdView(state) {
         if (n > 0) mergedWeights[pid] = Math.max(mergedWeights[pid] || 0, n);
       }
     }
+    // 依廣告瀏覽是「廣告 × 小島 CPC 對照表」,純 APP 廣告不在這個視圖。
+    // 用聯集後的 weights 判定:只要任一 overlapping 段含小島權重就保留。
+    const hasIsland = islandProducts.some((p) => Number(mergedWeights[p.id]) > 0);
+    if (!hasIsland) continue;
     const rep = { ...latest, weights: mergedWeights };
     rows.push(buildAdRowData(state, code, rep, segs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today));
   }
@@ -1048,7 +1052,7 @@ function fmtRate(v) {
 
 function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, weekRange) {
   if (rows.length === 0) {
-    return `<div class="card"><p class="ink-3">上週 ${thisWeek.start}~${thisWeek.end} 沒有匹配到任何廣告。</p></div>`;
+    return `<div class="card"><p class="ink-3">上週 ${thisWeek.start}~${thisWeek.end} 沒有任何含小島權重的廣告。</p></div>`;
   }
   const lastNote = lastWeek
     ? `vs 上上週 ${lastWeek.start}~${lastWeek.end}`
