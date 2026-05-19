@@ -1255,8 +1255,12 @@ function bindHandlers(root, s) {
   });
 
   // 即將到期清單：續費 / 淘汰
+  // 「續費」走 wizard，獨立採買 N 個產品時逐步續費(§5.7 wizard)
   root.querySelectorAll("[data-exp-renew]").forEach((el) => {
-    el.onclick = () => openEditor(null, el.dataset.expRenew);
+    el.onclick = () => {
+      const seg = s.ads.find((a) => a.id === el.dataset.expRenew);
+      if (seg) openRenewalWizard(seg.ad_code);
+    };
   });
   root.querySelectorAll("[data-exp-eliminate]").forEach((el) => {
     el.onclick = () => {
@@ -1340,6 +1344,331 @@ async function openEliminate(seg) {
 
 function esc(v) {
   return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ── 續費 wizard (2026-05) ────────────────────────────────────────────
+// 多產品獨立採買(例 st100 色狗导航 = AV9 / JK / HYC 各 100%)時，按一次「續費」
+// 走 wizard 逐步續費所有產品線。每一步可勾選「淘汰」讓該產品線到期不續費。
+// 共購廣告(weights 多個 < 100%)只有 1 條鏈尾，wizard 仍走 1 步流程，行為等同舊單一彈窗。
+//
+// findRenewalTails:回傳 ad_code 底下所有「沒被任何段 renewal_of 指到」且 !eliminated 的段
+function findRenewalTails(state, adCode) {
+  const sameCode = state.ads.filter((a) => a.ad_code === adCode && !a.eliminated);
+  if (sameCode.length === 0) return [];
+  const referenced = new Set(state.ads.map((a) => a.renewal_of).filter(Boolean));
+  const tails = sameCode.filter((a) => !referenced.has(a.id));
+  tails.sort((a, b) => (a.end_date || "").localeCompare(b.end_date || ""));
+  return tails;
+}
+
+function productLabelOfWeights(weights, products) {
+  const entries = Object.entries(weights || {}).filter(([, w]) => Number(w) > 0);
+  if (entries.length === 0) return "（無產品）";
+  const nameOf = Object.fromEntries(products.map((p) => [p.id, p.name]));
+  return entries.map(([pid, w]) => `${nameOf[pid] || pid} ${w}%`).join(" / ");
+}
+
+function openRenewalWizard(adCode) {
+  const s = getState();
+  const tails = findRenewalTails(s, adCode);
+  if (tails.length === 0) {
+    toast("找不到可續費的廣告段", "bad");
+    return;
+  }
+
+  const addDaysYmd = (ymd, n) => {
+    const d = new Date(ymd + "T00:00:00");
+    d.setDate(d.getDate() + n);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+
+  const steps = tails.map((src) => {
+    const startDate = src.end_date;
+    const days = src.amortize_days || 30;
+    const startYm = (startDate || s.settings.current_month).slice(0, 7);
+    const isUsdt = src.currency === "USDT";
+    return {
+      src,
+      isUsdt,
+      eliminate: false,
+      form: {
+        start_date: startDate,
+        end_date: addDaysYmd(startDate, days),
+        amount_orig: isUsdt ? (src.amount_orig || 0) : (src.amount_cny || 0),
+        currency_rate: isUsdt ? (src.currency_rate || getUsdtToCnyRate(s, startYm)) : 1,
+        amount_cny: src.amount_cny || 0,
+        exchange_rate: getExpenseRate(s, startYm),
+        amortize_days: days,
+      },
+    };
+  });
+
+  let cur = 0;
+  let dlg = null;
+
+  const readCurrentForm = () => {
+    if (!dlg) return;
+    const step = steps[cur];
+    step.eliminate = !!dlg.querySelector("#f-eliminate")?.checked;
+    if (!step.eliminate) {
+      step.form.start_date = dlg.querySelector("#f-start").value || step.form.start_date;
+      step.form.end_date = dlg.querySelector("#f-end").value || step.form.end_date;
+      step.form.amortize_days = Number(dlg.querySelector("#f-days").value) || 0;
+      step.form.exchange_rate = Number(dlg.querySelector("#f-rate").value) || 0;
+      if (step.isUsdt) {
+        step.form.amount_orig = Number(dlg.querySelector("#f-amount-orig").value) || 0;
+        step.form.currency_rate = Number(dlg.querySelector("#f-cny-rate").value) || 0;
+        step.form.amount_cny = step.form.amount_orig * step.form.currency_rate;
+      } else {
+        step.form.amount_cny = Number(dlg.querySelector("#f-cny").value) || 0;
+        step.form.amount_orig = step.form.amount_cny;
+      }
+    }
+  };
+
+  const validateStep = (idx) => {
+    const step = steps[idx];
+    if (step.eliminate) return null;
+    const f = step.form;
+    if (!f.start_date || !f.end_date) return "起訖日期必填";
+    if (f.end_date <= f.start_date) return "結束日需晚於開始日";
+    if (!f.amortize_days || f.amortize_days <= 0) return "攤提天數必須大於 0";
+    if (step.isUsdt) {
+      if (!f.amount_orig || f.amount_orig <= 0) return "USDT 金額必須大於 0";
+      if (!f.currency_rate || f.currency_rate <= 0) return "USDT→RMB 匯率必須大於 0";
+    } else {
+      if (!f.amount_cny || f.amount_cny <= 0) return "金額必須大於 0";
+    }
+    if (!f.exchange_rate || f.exchange_rate <= 0) return "匯率必須大於 0";
+    return null;
+  };
+
+  const render = () => {
+    const step = steps[cur];
+    const src = step.src;
+    const productLabel = productLabelOfWeights(src.weights, s.products);
+    const adName = src.ad_name || src.ad_code;
+    const isLast = cur === steps.length - 1;
+    const isFirst = cur === 0;
+    const stepBadges = steps.map((st, i) => {
+      const tone = i === cur ? "background:#2a4d7a;color:#fff" : (st.eliminate ? "background:#fde3e3;color:var(--bad)" : "background:#e6ecf3;color:var(--ink-2)");
+      const mark = st.eliminate ? "✕" : (i < cur ? "✓" : (i + 1));
+      return `<span class="pill" style="${tone};font-weight:700;min-width:24px;text-align:center">${mark}</span>`;
+    }).join('<span class="ink-3" style="font-size:10px">›</span>');
+
+    const html = `
+      <h2 style="display:flex;align-items:center;gap:10px">
+        <span>續費廣告</span>
+        <span class="pill" style="background:#dfe7f5;color:#2a4d7a;font-weight:700">(${cur + 1}/${steps.length}) ${esc(adName)}</span>
+      </h2>
+      <div style="display:flex;align-items:center;gap:6px;margin:6px 0 14px">${stepBadges}</div>
+      <p class="ink-2" style="font-size:13px;margin:0 0 10px">
+        本步驟產品:<strong>${esc(productLabel)}</strong>
+        <span class="ink-3" style="margin-left:8px">(代碼 ${esc(src.ad_code)})</span>
+      </p>
+      <div style="padding:10px;background:#f7f8fa;border:1px solid var(--line);border-radius:6px;margin-bottom:14px;font-size:12px;line-height:1.7">
+        <strong>原合約</strong> ·
+        ${esc(src.start_date)} ~ ${esc(src.end_date)} ·
+        ${step.isUsdt ? `${(src.amount_orig || 0).toLocaleString()} USDT × ${src.currency_rate || 0} = ` : ""}
+        ${(src.amount_cny || 0).toLocaleString()} RMB × ${src.exchange_rate || 0} =
+        ${Math.round((src.amount_cny || 0) * (src.exchange_rate || 0)).toLocaleString()} TWD ·
+        攤提 ${src.amortize_days || 0} 天 · 每日 ${Math.round(src.daily_amort_twd || 0).toLocaleString()} TWD
+      </div>
+
+      <label style="display:flex;align-items:center;gap:8px;padding:10px;border:1px solid ${step.eliminate ? "#e88" : "var(--line)"};border-radius:6px;background:${step.eliminate ? "#fde3e3" : "#fff"};margin-bottom:14px;cursor:pointer">
+        <input type="checkbox" id="f-eliminate" ${step.eliminate ? "checked" : ""} />
+        <span>此產品到期不再續費（<strong style="color:var(--bad)">淘汰</strong>）— 勾選後不會建立新段，只把現有段標記為已淘汰</span>
+      </label>
+
+      <fieldset id="renew-fields" ${step.eliminate ? "disabled style=\"opacity:0.4\"" : ""} style="border:none;padding:0;margin:0">
+        <div class="field-row">
+          <div class="field"><label>開始日（含）</label><input id="f-start" type="date" value="${step.form.start_date}" /></div>
+          <div class="field"><label>結束日（不含）</label><input id="f-end" type="date" value="${step.form.end_date}" /></div>
+          <div class="field"><label>攤提天數（自動 = 起迄天數）</label><input id="f-days" type="number" value="${step.form.amortize_days}" /></div>
+        </div>
+        ${step.isUsdt ? `
+          <div class="field-row">
+            <div class="field"><label>USDT 金額</label><input id="f-amount-orig" type="number" step="any" value="${step.form.amount_orig}" /></div>
+            <div class="field"><label>USDT→RMB 匯率</label>
+              <input id="f-cny-rate" type="number" step="any" value="${step.form.currency_rate}" />
+              <div class="hint">起始月匯率 ${getUsdtToCnyRate(s, (step.form.start_date || s.settings.current_month).slice(0, 7))}</div>
+            </div>
+            <div class="field"><label>RMB 金額（自動）</label><input id="f-cny" disabled value="0" /></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>RMB→TWD 匯率</label>
+              <input id="f-rate" type="number" step="any" value="${step.form.exchange_rate}" />
+              <div class="hint">起始月匯率 ${getExpenseRate(s, (step.form.start_date || s.settings.current_month).slice(0, 7))}</div>
+            </div>
+            <div class="field"><label>台幣金額（自動）</label><input id="f-twd" disabled value="0" /></div>
+            <div class="field"><label>每日攤提（台幣，自動）</label><input id="f-daily" disabled value="0" /></div>
+          </div>
+        ` : `
+          <div class="field-row">
+            <div class="field"><label>RMB 金額</label><input id="f-cny" type="number" step="any" value="${step.form.amount_cny}" /></div>
+            <div class="field"><label>RMB→TWD 匯率</label>
+              <input id="f-rate" type="number" step="any" value="${step.form.exchange_rate}" />
+              <div class="hint">起始月匯率 ${getExpenseRate(s, (step.form.start_date || s.settings.current_month).slice(0, 7))}</div>
+            </div>
+            <div class="field"><label>台幣金額（自動）</label><input id="f-twd" disabled value="0" /></div>
+          </div>
+          <div class="field"><label>每日攤提（台幣，自動）</label><input id="f-daily" disabled value="0" /></div>
+        `}
+      </fieldset>
+
+      <div class="modal-actions" style="margin-top:18px;display:flex;justify-content:space-between;align-items:center">
+        <button id="cancel">取消</button>
+        <div style="display:flex;gap:8px">
+          ${isFirst ? "" : `<button id="prev">← 上一步</button>`}
+          <button id="next" class="primary">${isLast ? "💾 儲存" : "下一步 →"}</button>
+        </div>
+      </div>
+    `;
+
+    dlg = modal.open(html);
+
+    const recalc = () => {
+      let cny;
+      if (step.isUsdt) {
+        const orig = Number(dlg.querySelector("#f-amount-orig").value) || 0;
+        const cnyRate = Number(dlg.querySelector("#f-cny-rate").value) || 0;
+        cny = orig * cnyRate;
+        dlg.querySelector("#f-cny").value = Math.round(cny * 100) / 100;
+      } else {
+        cny = Number(dlg.querySelector("#f-cny").value) || 0;
+      }
+      const rate = Number(dlg.querySelector("#f-rate").value) || 0;
+      const days = Number(dlg.querySelector("#f-days").value) || 0;
+      const twd = cny * rate;
+      dlg.querySelector("#f-twd").value = Math.round(twd).toLocaleString();
+      dlg.querySelector("#f-daily").value = days > 0 ? Math.round(twd / days).toLocaleString() : "0";
+    };
+    const syncDays = () => {
+      const start = dlg.querySelector("#f-start").value;
+      const end = dlg.querySelector("#f-end").value;
+      if (!start || !end) return;
+      const span = (new Date(end) - new Date(start)) / 86400000;
+      if (span > 0 && Number.isFinite(span)) {
+        dlg.querySelector("#f-days").value = span;
+        recalc();
+      }
+    };
+    const recalcInputs = step.isUsdt
+      ? ["f-amount-orig", "f-cny-rate", "f-rate", "f-days"]
+      : ["f-cny", "f-rate", "f-days"];
+    recalcInputs.forEach((id) => {
+      const el = dlg.querySelector("#" + id);
+      if (el) el.addEventListener("input", recalc);
+    });
+    dlg.querySelector("#f-start").addEventListener("change", syncDays);
+    dlg.querySelector("#f-end").addEventListener("change", syncDays);
+    recalc();
+
+    dlg.querySelector("#f-eliminate").onchange = () => {
+      readCurrentForm();
+      render();
+    };
+    dlg.querySelector("#cancel").onclick = () => modal.close();
+    if (!isFirst) {
+      dlg.querySelector("#prev").onclick = () => {
+        readCurrentForm();
+        cur -= 1;
+        render();
+      };
+    }
+    dlg.querySelector("#next").onclick = () => {
+      readCurrentForm();
+      const err = validateStep(cur);
+      if (err) { toast(err, "bad"); return; }
+      if (isLast) commit();
+      else { cur += 1; render(); }
+    };
+  };
+
+  // commit:單一 update() 套用所有 steps,並建立 1 筆撤回 todo(僅當有淘汰時)
+  const commit = () => {
+    for (let i = 0; i < steps.length; i++) {
+      const err = validateStep(i);
+      if (err) { toast(`第 ${i + 1} 步：${err}`, "bad"); cur = i; render(); return; }
+    }
+    const renewSteps = steps.filter((st) => !st.eliminate);
+    const elimSteps = steps.filter((st) => st.eliminate);
+
+    update((state) => {
+      const elimIds = elimSteps.map((st) => st.src.id);
+      const ad_snapshots = captureUndoSnapshot(state, elimIds);
+      const added_ad_ids = [];
+
+      for (const step of steps) {
+        const src = step.src;
+        if (step.eliminate) {
+          const a = state.ads.find((x) => x.id === src.id);
+          if (a) a.eliminated = true;
+          continue;
+        }
+        const f = step.form;
+        const twd = f.amount_cny * f.exchange_rate;
+        const newId = uid("ad");
+        const newAd = structuredClone(src);
+        newAd.id = newId;
+        newAd.start_date = f.start_date;
+        newAd.end_date = f.end_date;
+        newAd.amortize_days = f.amortize_days;
+        newAd.amount_cny = f.amount_cny;
+        newAd.exchange_rate = f.exchange_rate;
+        newAd.amount_twd = twd;
+        newAd.daily_amort_twd = twd / f.amortize_days;
+        newAd.renewal_of = src.id;
+        newAd.renewal_reason = "續費";
+        newAd.eliminated = false;
+        // pair 欄位不沿用(新段是獨立新段,split 由日後權重調整再觸發)
+        delete newAd.split_pair_id;
+        delete newAd.split_role;
+        newAd.code_at_creation = src.ad_code;
+        // 幣別:跟 src 走(RMB 買 RMB 續、USDT 買 USDT 續,不會跨幣別)
+        if (step.isUsdt) {
+          newAd.currency = "USDT";
+          newAd.currency_rate = f.currency_rate;
+          newAd.amount_orig = f.amount_orig;
+          newAd.amount_cny = f.amount_orig * f.currency_rate;
+          newAd.amount_twd = newAd.amount_cny * f.exchange_rate;
+          newAd.daily_amort_twd = newAd.amount_twd / f.amortize_days;
+        } else {
+          newAd.currency = "CNY";
+          newAd.currency_rate = 1;
+          newAd.amount_orig = f.amount_cny;
+        }
+        state.ads.push(newAd);
+        added_ad_ids.push(newId);
+      }
+
+      // 待辦:有淘汰才建立(純續費維持舊行為 — 不建立 todo)
+      if (elimSteps.length > 0) {
+        const adName = tails[0].ad_name || adCode;
+        const elimNames = elimSteps.map((st) => productLabelOfWeights(st.src.weights, state.products)).join("、");
+        const renewNames = renewSteps.map((st) => productLabelOfWeights(st.src.weights, state.products)).join("、");
+        const parts = [];
+        if (elimNames) parts.push(`淘汰 ${elimNames}`);
+        if (renewNames) parts.push(`續費 ${renewNames}`);
+        state.todos.push({
+          id: uid("todo"),
+          created_at: nowTaipeiStamp(),
+          action_type: "淘汰廣告",
+          description: `${adCode} ${adName}：${parts.join("、")}`,
+          status: "pending",
+          undo_payload: { ad_snapshots, added_ad_ids },
+        });
+      }
+    }, "續費精靈");
+
+    modal.close();
+    const msgParts = [];
+    if (renewSteps.length > 0) msgParts.push(`續費 ${renewSteps.length} 個`);
+    if (elimSteps.length > 0) msgParts.push(`淘汰 ${elimSteps.length} 個`);
+    toast(`已完成:${msgParts.join("、")}`, "ok");
+  };
+
+  render();
 }
 
 // ── 編輯器 / 新增 / 續費 ────────────────────────────────────────────
@@ -2545,7 +2874,7 @@ function openMoreMenu(seg) {
     b.onclick = async () => {
       const pick = b.dataset.pick;
       modal.close();
-      if (pick === "renew") openEditor(null, seg.id);
+      if (pick === "renew") openRenewalWizard(seg.ad_code);
       else if (pick === "end") openEndAd(seg);
       else if (pick === "lock-free" || pick === "lock-weight" || pick === "lock-full") {
         const newState = pick.split("-")[1];
