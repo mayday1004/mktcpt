@@ -144,30 +144,28 @@ export function computeAlerts(state, ymd /* today YYYY-MM-DD */) {
 
 // 列出 N 天內到期的廣告（給概覽頁的「即將到期」卡用）
 //
-// 規則：
-//   1. 以 ad_code 為單位（同代碼多段視為同一支廣告）
-//   2. 取該代碼「最後結束日」（max end_date）作為到期判斷依據
-//   3. 若該最後段的 renewal_reason 是內部生命週期事件
-//      （權重調整 / 轉移 / 送天數 / 送天數結束），視為非真正到期，不顯示
+// 規則:
+//   1. 以「renewal chain 尾段」為單位 = 沒被任何段 renewal_of 指到的段
+//      - 共購廣告(1 個 ad record)→ 1 個尾段
+//      - 獨立採買 N 個產品共代碼 → N 個尾段(每個產品線一個)
+//        例:st100 色狗导航 由 AV9 / JK / HYC 各買 100% → 3 個獨立 ad → 3 個尾段
+//        舊邏輯只取 latestByCode 一筆,會讓另外 2 個產品在「即將到期」卡漏失產品 pill。
+//   2. 已淘汰的段跳過
+//   3. 「送天數」/「送天數結束」是舊系統的暫時段(實務上不應該還是鏈尾),防呆跳過
+//   4. 渲染端(renderExpiringCard / dashboard renderActionRequired)會用 ad_name 二次去重,
+//      所以同一支廣告的多個尾段仍然合併成一列,但所有產品 pill 都會列出
 export function expiringAds(state, days = 10, todayYmd) {
   const today = todayYmd || todayTaipei();
   const horizon = addDays(today, days);
-  // 「送天數」/「送天數結束」是舊系統暫時段,理論上不會是 latestByCode 取出的最末段,留作防呆。
-  // 「權重調整」/「轉移」原本被跳過是 bug — latestByCode 已經用 end_date 取最末段了,renewal_reason
-  // 描述的是該段「是怎麼產生的」,跟廣告何時到期無關。最末段即使是「權重調整」也代表廣告即將真正到期,
-  // 應該照常通知(原本因此漏掉重口社這類「最末段 reason=權重調整」5/10 結束的廣告)。
   const SKIP_REASONS = new Set(["送天數", "送天數結束"]);
 
-  // 依 ad_code 分組，取「最後結束日」最大者那筆當代表
-  const latestByCode = new Map();
-  for (const a of state.ads) {
-    if (a.eliminated) continue;  // 已淘汰：使用者明確不再追蹤
-    const cur = latestByCode.get(a.ad_code);
-    if (!cur || a.end_date > cur.end_date) latestByCode.set(a.ad_code, a);
-  }
+  const referenced = new Set(state.ads.map((a) => a.renewal_of).filter(Boolean));
 
   const out = [];
-  for (const a of latestByCode.values()) {
+  for (const a of state.ads) {
+    if (a.eliminated) continue;
+    if (!a.end_date) continue;
+    if (referenced.has(a.id)) continue;  // 不是鏈尾:已被後續段取代
     if (a.end_date < today || a.end_date > horizon) continue;
     if (SKIP_REASONS.has(a.renewal_reason)) continue;
     out.push({
