@@ -2,7 +2,7 @@ import { getState } from "../state.js";
 import { suggestWeights } from "../domain/suggest.js";
 import { dailySpendGrid, dailySpendForAd, monthlyTotals } from "../domain/spending.js";
 import { addDays, monthOf, todayTaipei, diffDays, daysOfMonth, daysInMonth } from "../lib/dates.js";
-import { getMonthlyBudget, isNoBand } from "../schema.js";
+import { getMonthlyBudget, getDailyBudget, isNoBand } from "../schema.js";
 import { bandsForMonth, bandFor } from "../domain/budget.js";
 import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
 
@@ -32,7 +32,7 @@ function ensureInit(state) {
   const rate = state.settings.expense_rate || 4.7;
   if (!initialized) {
     initialized = true;
-    rows = [defaultRow(today, rate, 1)];
+    rows = [defaultRow(today, rate, 0)];
   }
   // 確保日期不在過去
   for (const r of rows) {
@@ -138,9 +138,20 @@ function computeRowSuggestion(state, products, scenarioAds, idx) {
     let totalDaily = 0;
     const gaps = {};
     for (const p of products) {
-      const budget = getMonthlyBudget(state, p.id, ym);
-      if (!budget) continue;
-      const target = budget / monthDays;
+      // APP 取 月預算 ÷ 月天數;島取 日預算
+      let target;
+      if (p.type === "island") {
+        const daily = getDailyBudget(state, p.id, ym);
+        if (daily != null) target = daily;
+        else {
+          const monthly = getMonthlyBudget(state, p.id, ym);
+          target = monthly ? monthly / monthDays : 0;
+        }
+      } else {
+        const monthly = getMonthlyBudget(state, p.id, ym);
+        target = monthly ? monthly / monthDays : 0;
+      }
+      if (!target) continue;
       const current = startDay[p.id] || 0;
       const gap = Math.max(0, target - current);
       if (gap > 0) gaps[p.id] = gap;
@@ -253,11 +264,25 @@ function renderSummaryTable(state, products, scenarioAds, today) {
   const primaryYM = rows[0] ? monthOf(rows[0].start) : state.settings.current_month;
   const monthDays = daysInMonth(primaryYM);
 
-  // 目標 = 月預算 / 當月天數(每日目標)
+  // 目標 = 每日目標
+  //   APP:月預算 ÷ 當月天數
+  //   小島:日預算(就是日預算本身,不必除天數)
+  // 兩者數學上等價(島的 monthly = daily × days),但 UI 標籤要區分
   const targets = {};
   for (const p of products) {
-    const budget = getMonthlyBudget(state, p.id, primaryYM);
-    targets[p.id] = budget ? budget / monthDays : null;
+    if (p.type === "island") {
+      const daily = getDailyBudget(state, p.id, primaryYM);
+      if (daily != null) {
+        targets[p.id] = daily;
+      } else {
+        // legacy fallback:沒設日預算但有月預算 → 月 ÷ 天
+        const monthly = getMonthlyBudget(state, p.id, primaryYM);
+        targets[p.id] = monthly ? monthly / monthDays : null;
+      }
+    } else {
+      const monthly = getMonthlyBudget(state, p.id, primaryYM);
+      targets[p.id] = monthly ? monthly / monthDays : null;
+    }
   }
 
   // 每一筆的「該筆 start 當天累積花費」(含該筆 + 之前所有筆 + 既有)
@@ -269,9 +294,15 @@ function renderSummaryTable(state, products, scenarioAds, today) {
 
   const targetCells = products.map((p) => {
     const t = targets[p.id];
-    const budget = getMonthlyBudget(state, p.id, primaryYM);
     if (!t) return `<td class="num ink-3">—</td>`;
-    return `<td class="num">${Math.round(t).toLocaleString()}<div class="target-sub">月 ${Math.round((budget || 0) / 1000)}k</div></td>`;
+    let sub;
+    if (p.type === "island") {
+      sub = `日預算`;
+    } else {
+      const monthly = getMonthlyBudget(state, p.id, primaryYM);
+      sub = `月 ${Math.round((monthly || 0) / 1000)}k`;
+    }
+    return `<td class="num">${Math.round(t).toLocaleString()}<div class="target-sub">${sub}</div></td>`;
   }).join("");
 
   const rowCells = rows.map((row, idx) => {
@@ -308,7 +339,7 @@ function renderSummaryTable(state, products, scenarioAds, today) {
           </thead>
           <tbody>
             <tr class="row-target">
-              <td>每日目標<div class="ink-3" style="font-size:10.5px;font-weight:400">${primaryYM} 月預算 ÷ ${monthDays} 天</div></td>
+              <td>每日目標<div class="ink-3" style="font-size:10.5px;font-weight:400">${primaryYM} · APP=月預算÷${monthDays}天、島=日預算</div></td>
               ${targetCells}
             </tr>
             ${rowCells}
@@ -368,12 +399,12 @@ function renderRowCard(state, products, idx, suggestion) {
             <label>攤提天數</label>
             <input type="number" value="${row.days}" data-row="${idx}" data-key="days" min="1" max="365" />
           </div>
-          <div class="compute-cell">
-            ${isEmpty
-              ? '<span class="ink-3">金額留空,見下方系統建議</span>'
-              : `總額 <strong>${Math.round(totalTwd).toLocaleString()}</strong> TWD <span class="ink-3">·</span> 每日攤提 <strong>${Math.round(dailyTwd).toLocaleString()}</strong> TWD/日`
-            }
-          </div>
+        </div>
+        <div class="compute-line">
+          ${isEmpty
+            ? '<span class="ink-3">金額留空,見下方系統建議</span>'
+            : `總額 <strong>${Math.round(totalTwd).toLocaleString()}</strong> TWD <span class="ink-3">·</span> 每日攤提 <strong>${Math.round(dailyTwd).toLocaleString()}</strong> TWD/日`
+          }
         </div>
 
         ${isEmpty && suggestion.amount_cny_suggest > 0 ? `
@@ -649,7 +680,7 @@ function bindHandlers(root) {
     addBtn.onclick = () => {
       const today = todayTaipei();
       const rate = getState().settings.expense_rate || 4.7;
-      rows.push(defaultRow(today, rate, rows.length + 1));
+      rows.push(defaultRow(today, rate, rows.length));
       doRender(root);
     };
   }
