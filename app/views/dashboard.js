@@ -339,9 +339,11 @@ function renderActionRequired(state) {
         ${upcoming.slice(0, 8).map((u) => {
           const sev = u.daysToStart <= 3 ? "warn" : "info";
           const md = u.ad.start_date.slice(5).replace("-", "/");
-          const kind = upcomingAdKind(u.ad);
+          const kind = upcomingAdKind(u.ad, state.ads);
           const verb = kind.id === "weight" ? "生效" : "上架";
-          const note = kind.id === "weight" ? "請至連結後台調整權重" : "注意聯繫站長、確認花費";
+          const note = kind.id === "weight" ? "請至連結後台調整權重"
+            : kind.id === "gift" ? "上一段結束後有空檔,確認站長那邊的安排"
+            : "注意聯繫站長、確認花費";
           return `<li class="ar-item ar-${sev}">
             <span class="ar-days">${u.daysToStart} 天後</span>
             <span>
@@ -522,10 +524,37 @@ function upcomingAds(state, days = 10) {
   return out.sort((a, b) => a.daysToStart - b.daysToStart);
 }
 
-function upcomingAdKind(ad) {
-  if ((ad.renewal_reason || "") === "權重調整") return { id: "weight", label: "權重調整", cls: "warn" };
-  if (ad.renewal_of) return { id: "renew", label: ad.renewal_reason || "續費", cls: "" };
+function upcomingAdKind(ad, allAds = []) {
+  // 1. 明確標 renewal_reason 的優先(權重調整 / 拆t改名 等)
+  if ((ad.renewal_reason || "") === "權重調整") return { id: "weight", label: "改權重", cls: "warn" };
+  if ((ad.renewal_reason || "") === "拆t改名") return { id: "split", label: "拆 t", cls: "warn" };
+
+  if (ad.renewal_of) {
+    // 從 ad.renewal_of 找上一段,比對權重 + 日期 gap
+    const prev = allAds.find((x) => x.id === ad.renewal_of);
+    if (prev) {
+      // (a) 權重不一樣 → 「改權重」(覆蓋 renewal_reason='續費' 的舊資料)
+      if (weightsDifferent(prev.weights, ad.weights)) {
+        return { id: "weight", label: "改權重", cls: "warn" };
+      }
+      // (b) 兩段中間有空檔(新段 start > 上段 end)→ 「送天數」
+      if (prev.end_date && ad.start_date && ad.start_date > prev.end_date) {
+        return { id: "gift", label: "送天數", cls: "warn" };
+      }
+    }
+    return { id: "renew", label: ad.renewal_reason || "續費", cls: "" };
+  }
+
   return { id: "new", label: "新上廣告", cls: "ok" };
+}
+
+function weightsDifferent(a, b) {
+  const wa = a || {}, wb = b || {};
+  const keys = new Set([...Object.keys(wa), ...Object.keys(wb)]);
+  for (const k of keys) {
+    if (Math.round((Number(wa[k]) || 0) * 100) !== Math.round((Number(wb[k]) || 0) * 100)) return true;
+  }
+  return false;
 }
 
 function renderKpiGroups(state, ym, totals) {
