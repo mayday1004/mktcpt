@@ -32,11 +32,7 @@ function ensureInit(state) {
   const rate = state.settings.expense_rate || 4.7;
   if (!initialized) {
     initialized = true;
-    rows = [
-      defaultRow(today, rate, 1),
-      defaultRow(today, rate, 2),
-      defaultRow(today, rate, 3),
-    ];
+    rows = [defaultRow(today, rate, 1)];
   }
   // 確保日期不在過去
   for (const r of rows) {
@@ -257,18 +253,10 @@ function renderSummaryTable(state, products, scenarioAds, today) {
   const primaryYM = rows[0] ? monthOf(rows[0].start) : state.settings.current_month;
   const monthDays = daysInMonth(primaryYM);
 
-  // baseline row = 今天 (或 第一筆 start 的前一天 / 今天) 的花費快照
-  // 取 今天 當 baseline 比較直覺
-  const baselineDate = today;
-  const baselineYm = monthOf(baselineDate);
-  const baselineGrid = dailySpendGrid(scenarioAds, baselineYm);
-  const baselineRow = baselineGrid[baselineDate] || {};
-
-  // target row = 月預算 / 當月天數
+  // 目標 = 月預算 / 當月天數(每日目標)
   const targets = {};
   for (const p of products) {
-    const ym = primaryYM;
-    const budget = getMonthlyBudget(state, p.id, ym);
+    const budget = getMonthlyBudget(state, p.id, primaryYM);
     targets[p.id] = budget ? budget / monthDays : null;
   }
 
@@ -279,11 +267,11 @@ function renderSummaryTable(state, products, scenarioAds, today) {
     <th class="num">${esc(p.name)} <span class="pill ${p.type === "app" ? "app" : "island"}" style="font-weight:400;font-size:10px">${p.type === "app" ? "APP" : "島"}</span></th>
   `).join("");
 
-  const baselineCells = products.map((p) => {
-    const v = baselineRow[p.id] || 0;
-    const target = targets[p.id] || 0;
-    const cls = !target ? "" : (v < target * 0.85 ? "cell-under" : v > target * 1.15 ? "cell-over" : "");
-    return `<td class="num ${cls}">${v > 0.5 ? Math.round(v).toLocaleString() : '<span class="ink-3">—</span>'}</td>`;
+  const targetCells = products.map((p) => {
+    const t = targets[p.id];
+    const budget = getMonthlyBudget(state, p.id, primaryYM);
+    if (!t) return `<td class="num ink-3">—</td>`;
+    return `<td class="num">${Math.round(t).toLocaleString()}<div class="target-sub">月 ${Math.round((budget || 0) / 1000)}k</div></td>`;
   }).join("");
 
   const rowCells = rows.map((row, idx) => {
@@ -304,13 +292,6 @@ function renderSummaryTable(state, products, scenarioAds, today) {
     return `<tr><td><strong>+ 第 ${idx + 1} 筆</strong><div class="ink-3" style="font-size:10.5px">${row.start.slice(5)} 當天</div>${tag}</td>${cells}</tr>`;
   }).join("");
 
-  const targetCells = products.map((p) => {
-    const t = targets[p.id];
-    const budget = getMonthlyBudget(state, p.id, primaryYM);
-    if (!t) return `<td class="num ink-3">—</td>`;
-    return `<td class="num">${Math.round(t).toLocaleString()}<div class="target-sub">月 ${Math.round((budget || 0) / 1000)}k</div></td>`;
-  }).join("");
-
   return `
     <div class="card">
       <div class="card-head">
@@ -326,18 +307,12 @@ function renderSummaryTable(state, products, scenarioAds, today) {
             </tr>
           </thead>
           <tbody>
-            <tr class="row-baseline">
-              <td><strong>初始 baseline</strong><div class="ink-3" style="font-size:10.5px">${baselineDate} (今天)</div></td>
-              ${baselineCells}
+            <tr class="row-target">
+              <td>每日目標<div class="ink-3" style="font-size:10.5px;font-weight:400">${primaryYM} 月預算 ÷ ${monthDays} 天</div></td>
+              ${targetCells}
             </tr>
             ${rowCells}
           </tbody>
-          <tfoot>
-            <tr class="row-target">
-              <td>每日目標<div class="ink-3" style="font-size:10.5px;font-weight:400">月預算 ÷ ${monthDays} 天</div></td>
-              ${targetCells}
-            </tr>
-          </tfoot>
         </table>
       </div>
       <div class="ink-3" style="font-size:11px;margin-top:8px">
@@ -395,8 +370,8 @@ function renderRowCard(state, products, idx, suggestion) {
           </div>
           <div class="compute-cell">
             ${isEmpty
-              ? '<div class="ink-3">金額留空,見下方系統建議</div>'
-              : `總額 <strong>${Math.round(totalTwd).toLocaleString()}</strong> TWD<br>每日攤提 <strong>${Math.round(dailyTwd).toLocaleString()}</strong> TWD/日`
+              ? '<span class="ink-3">金額留空,見下方系統建議</span>'
+              : `總額 <strong>${Math.round(totalTwd).toLocaleString()}</strong> TWD <span class="ink-3">·</span> 每日攤提 <strong>${Math.round(dailyTwd).toLocaleString()}</strong> TWD/日`
             }
           </div>
         </div>

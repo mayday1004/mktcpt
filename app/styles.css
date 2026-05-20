@@ -2641,11 +2641,12 @@ tr.family-member.family-last > td {
 .row-card-inputs input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .row-card-inputs input[disabled] { background: #f4f5f8; color: var(--ink-2); }
 .row-card-inputs .compute-cell {
-  padding: 8px 12px; border-radius: 6px;
+  padding: 6px 12px; border-radius: 6px;
   background: #f4f7fc; border: 1px dashed #c7d3e8;
-  font-size: 12px; color: var(--ink-2); line-height: 1.6;
+  font-size: 12px; color: var(--ink-2); line-height: 1.5;
   align-self: stretch;
-  display: flex; flex-direction: column; justify-content: center;
+  display: flex; align-items: center;
+  white-space: nowrap; overflow-x: auto;
 }
 .row-card-inputs .compute-cell strong { color: var(--ink); font-family: var(--mono); font-size: 13px; }
 @media (max-width: 1100px) {
