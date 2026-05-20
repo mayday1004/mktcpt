@@ -2566,3 +2566,169 @@ tr.family-member.family-last > td {
   padding-left: 8px;
   line-height: 1.5;
 }
+
+/* ============ 採買建議 v2(多筆) ============ */
+.rev-summary-table th, .rev-summary-table td { padding: 7px 9px; }
+.rev-summary-table .step-col { width: 220px; min-width: 200px; }
+.rev-summary-table tr.row-baseline { background: #fafbfd; }
+.rev-summary-table tr.row-target,
+.rev-summary-table tfoot tr.row-target { background: #f1f7ff; }
+.rev-summary-table tr.row-target td { font-weight: 600; }
+.rev-summary-table td .target-sub { font-size: 10.5px; color: var(--ink-3); margin-top: 2px; font-weight: 400; }
+.rev-summary-table td.num .delta-mini { font-size: 10.5px; color: var(--ok); font-weight: 600; }
+.rev-summary-table td.cell-under,
+.rev-summary-table .cell-under { color: var(--bad); }
+.rev-summary-table td.cell-over,
+.rev-summary-table .cell-over { color: var(--warn); }
+.rev-summary-table td.cell-ok,
+.rev-summary-table .cell-ok { color: var(--ok); }
+.rev-summary-table td.cell-final { font-weight: 600; }
+
+.row-card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.row-card.empty-amount {
+  background: #fffaef;
+  border-color: #e8c878;
+}
+.row-card-top {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px;
+  background: #fafbfd;
+  border-bottom: 1px solid var(--line);
+}
+.row-card.empty-amount .row-card-top {
+  background: #fff4dc;
+  border-bottom-color: #e8c878;
+}
+.row-card-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600; color: var(--ink-2);
+}
+.row-no {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  font-size: 12px; font-weight: 600;
+}
+.row-card.empty-amount .row-no { background: var(--warn); }
+.row-card .remove-btn {
+  background: none; border: none; color: var(--ink-3);
+  font-size: 16px; cursor: pointer; padding: 2px 8px; border-radius: 4px;
+  line-height: 1;
+}
+.row-card .remove-btn:hover { background: #fde3e3; color: var(--bad); }
+
+.row-card-body { padding: 12px 14px; }
+
+.row-card-inputs {
+  display: grid;
+  grid-template-columns: 130px 145px 145px 80px 90px 1fr;
+  gap: 10px;
+  align-items: end;
+}
+.row-card-inputs .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; margin: 0; }
+.row-card-inputs label { font-size: 11px; color: var(--ink-3); font-weight: 500; }
+.row-card-inputs input {
+  border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px;
+  font-family: var(--mono); font-size: 13px;
+  width: 100%; background: #fff;
+}
+.row-card-inputs input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.row-card-inputs input[disabled] { background: #f4f5f8; color: var(--ink-2); }
+.row-card-inputs .compute-cell {
+  padding: 8px 12px; border-radius: 6px;
+  background: #f4f7fc; border: 1px dashed #c7d3e8;
+  font-size: 12px; color: var(--ink-2); line-height: 1.6;
+  align-self: stretch;
+  display: flex; flex-direction: column; justify-content: center;
+}
+.row-card-inputs .compute-cell strong { color: var(--ink); font-family: var(--mono); font-size: 13px; }
+@media (max-width: 1100px) {
+  .row-card-inputs { grid-template-columns: repeat(3, 1fr); }
+  .row-card-inputs .compute-cell { grid-column: 1 / -1; }
+}
+@media (max-width: 700px) {
+  .row-card-inputs { grid-template-columns: 1fr 1fr; }
+}
+
+.rev-empty-suggest {
+  margin-top: 12px;
+  background: #fff;
+  border: 1px solid #e8c878;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  display: flex; gap: 14px; align-items: center;
+  flex-wrap: wrap;
+}
+.rev-empty-suggest .suggest-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: var(--warn); font-weight: 600;
+}
+.rev-empty-suggest .suggest-desc { color: var(--ink-2); flex: 1; min-width: 200px; }
+.rev-empty-suggest .suggest-num { font-family: var(--mono); font-size: 15px; color: var(--ink); font-weight: 600; }
+
+.weights-section {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+.weights-head {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.weights-head .weights-title { font-size: 12px; color: var(--ink-2); font-weight: 600; }
+.weights-head .weights-sum-inline {
+  font-size: 12px; color: var(--ink-3);
+  display: inline-flex; gap: 4px; align-items: center;
+}
+.weights-head .weights-sum-inline .sum-val { font-family: var(--mono); font-weight: 600; }
+.weights-head .weights-sum-inline .sum-val.ok { color: var(--ok); }
+.weights-head .weights-sum-inline .sum-val.bad { color: var(--bad); }
+.weights-head .spacer { flex: 1; }
+.weights-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+}
+.weight-cell {
+  display: grid;
+  grid-template-columns: 1fr 60px;
+  grid-template-rows: auto auto;
+  gap: 2px 8px;
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 8px;
+  background: #fff;
+  align-items: center;
+}
+.weight-cell.zero { background: #fafbfd; opacity: 0.55; }
+.weight-cell .pname {
+  font-size: 12px; font-weight: 500;
+  grid-column: 1; grid-row: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.weight-cell .input-wrap {
+  grid-column: 2; grid-row: 1;
+  display: flex; align-items: center; gap: 2px;
+}
+.weight-cell input {
+  width: 100%; border: 1px solid var(--line); border-radius: 4px;
+  padding: 2px 4px; font-family: var(--mono); font-size: 12px; text-align: right;
+  background: #fff;
+}
+.weight-cell input:focus { outline: 1.5px solid var(--accent); outline-offset: -1px; }
+.weight-cell input[disabled] { background: #f4f5f8; color: var(--ink-2); }
+.weight-cell .pct { font-size: 11px; color: var(--ink-3); }
+.weight-cell .share-twd {
+  grid-column: 1 / -1; grid-row: 2;
+  font-size: 10.5px; color: var(--ink-3);
+  font-family: var(--mono);
+  border-top: 1px dashed #eef0f4;
+  padding-top: 3px;
+}
+.weight-cell.zero .share-twd { color: #c0c5cf; }

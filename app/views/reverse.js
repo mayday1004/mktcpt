@@ -1,82 +1,65 @@
 import { getState } from "../state.js";
-import { suggestForDate, computeOverflowRangesForProduct } from "../domain/reverse.js";
 import { suggestWeights } from "../domain/suggest.js";
-import { dailySpendGrid, dailySpendForAd } from "../domain/spending.js";
-import { addDays, monthOf, monthEnd, daysOfMonth, todayTaipei } from "../lib/dates.js";
+import { dailySpendGrid, dailySpendForAd, monthlyTotals } from "../domain/spending.js";
+import { addDays, monthOf, todayTaipei, diffDays, daysOfMonth, daysInMonth } from "../lib/dates.js";
 import { getMonthlyBudget, isNoBand } from "../schema.js";
-import { bandsForMonth } from "../domain/budget.js";
-import { detectShortfalls } from "../domain/gift-days.js";
-import { projectAdsWithRenewals, projectedDecisionState } from "../domain/renewal-projection.js";
-import { openGiftDayFixModal } from "./gift-day-fix-modal.js";
+import { bandsForMonth, bandFor } from "../domain/budget.js";
+import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
 
-let mode = "date";  // "date" | "amount"
-let pickedDate = "";
-let pickedPids = new Set();  // date-mode 多選產品 id
-let amortizeDays = 30;
+// ── 模組層狀態 ────────────────────────────────────────────────────
+// rows: 各筆採買的暫存資料 — { id, amount_cny|null, start, end, rate, days, weights }
+let rows = [];
+let rowSeq = 1;
+let initialized = false;
+let spendScenario = "renewal";  // "renewal" | "actual"
+let viewMonth = "current";       // "current" | "next"
 
-// amount-mode 表單值
-let amtStart = "";
-let amtEnd = "";
-let amtDays = 30;
-let amtCny = 0;
-let spendScenario = "renewal";
+function defaultRow(today, expRate, offsetDays) {
+  const start = addDays(today, offsetDays);
+  return {
+    id: rowSeq++,
+    amount_cny: null,
+    start,
+    end: addDays(start, 30),
+    rate: expRate,
+    days: 30,
+    weights: {},
+  };
+}
 
-const todayStr = todayTaipei;
-
-export function render(root) {
-  const s = getState();
-  const ym = s.settings.current_month;
-  const today = todayStr();
-
-  // 從 sessionStorage 接收外部頁面的預填日期(例如「廣告調整建議」modal 點擊「前往採買建議」)
-  const prefillDate = sessionStorage.getItem("buyads_reverse_prefill_date");
-  if (prefillDate) {
-    sessionStorage.removeItem("buyads_reverse_prefill_date");
-    if (prefillDate >= today) {
-      mode = "date";
-      pickedDate = prefillDate;
+function ensureInit(state) {
+  const today = todayTaipei();
+  const rate = state.settings.expense_rate || 4.7;
+  if (!initialized) {
+    initialized = true;
+    rows = [
+      defaultRow(today, rate, 1),
+      defaultRow(today, rate, 2),
+      defaultRow(today, rate, 3),
+    ];
+  }
+  // 確保日期不在過去
+  for (const r of rows) {
+    if (r.start < today) r.start = today;
+    if (!r.end || r.end <= r.start) r.end = addDays(r.start, r.days || 30);
+    if (!r.rate) r.rate = rate;
+    if (!r.days || r.days <= 0) {
+      r.days = Math.max(1, diffDays(r.start, r.end));
     }
   }
+}
 
-  // 預設目標日 = 今天（若今日已過當月，仍以今日為準，使用者可自行往後挑）
-  if (!pickedDate || pickedDate < today) pickedDate = today;
-  if (!amtStart || amtStart < today) amtStart = today;
-  if (!amtEnd || amtEnd <= amtStart) {
-    amtEnd = addDays(amtStart, 30);
-  }
-
-  // 產品選擇器預設：第一個產品；同時清掉不存在的 pid
-  for (const pid of [...pickedPids]) {
-    if (!s.products.find((p) => p.id === pid)) pickedPids.delete(pid);
-  }
-  if (pickedPids.size === 0 && s.products[0]) {
-    pickedPids = new Set([s.products[0].id]);
-  }
-
-  root.innerHTML = `
-    <div class="view-head">
-      <div>
-        <h1>採買建議</h1>
-        <div class="desc">兩種模式:① 選日期 + 產品 → 算出該產品這天要補多少才補到位;② 給定一筆 RMB 金額與起迄 → 系統建議怎麼分產品權重</div>
-      </div>
-    </div>
-
-    <div class="tabs">
-      <button class="tab ${mode === "date" ? "active" : ""}" data-mode="date">依日期看可加空間</button>
-      <button class="tab ${mode === "amount" ? "active" : ""}" data-mode="amount">依金額分配權重</button>
-    </div>
-
-    ${mode === "date" ? renderDateMode(s, ym) : renderAmountMode(s, ym)}
-  `;
-
-  bindHandlers(root);
+function nextMonthYM(ym) {
+  if (!ym) return "";
+  const [y, m] = ym.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
 }
 
 function scenarioFor(state, ym) {
   if (spendScenario !== "renewal") {
     return { state, virtualRenewals: [], excludedPoorPerf: [] };
   }
-  const projection = projectAdsWithRenewals(state, ym, { fromDate: todayStr(), excludePoorPerf: true });
+  const projection = projectAdsWithRenewals(state, ym, { fromDate: todayTaipei(), excludePoorPerf: true });
   return {
     state: { ...state, ads: projection.ads },
     virtualRenewals: projection.virtualRenewals,
@@ -84,536 +67,422 @@ function scenarioFor(state, ym) {
   };
 }
 
-function renderScenarioChips() {
-  return `
-    <div style="display:flex;align-items:center;gap:6px">
-      <span class="ink-3" style="font-size:12px">攤提模式：</span>
-      <button class="filter-chip ${spendScenario === "renewal" ? "active" : ""}" data-spend-scenario="renewal">續費預估</button>
-      <button class="filter-chip ${spendScenario === "actual" ? "active" : ""}" data-spend-scenario="actual">實際資料</button>
-    </div>
-  `;
+// 把一筆 row 轉成預覽用的 fake ad,丟給 dailySpendGrid / suggestWeights 用
+function makePreviewAd(row) {
+  if (!row || !row.amount_cny || !row.days || row.days <= 0) return null;
+  const totalTwd = row.amount_cny * row.rate;
+  const dailyTwd = totalTwd / row.days;
+  return {
+    id: `__preview_row_${row.id}`,
+    ad_code: `__preview_row_${row.id}`,
+    ad_name: `(預覽:第 ${rows.indexOf(row) + 1} 筆)`,
+    group: "preview",
+    amount_cny: row.amount_cny,
+    exchange_rate: row.rate,
+    amount_twd: totalTwd,
+    start_date: row.start,
+    end_date: row.end,
+    amortize_days: row.days,
+    daily_amort_twd: dailyTwd,
+    purchase_mode: "shared",
+    weights: { ...(row.weights || {}) },
+  };
 }
 
-function renderScenarioHint(scenario, excludedUnique = []) {
-  const parts = [];
-  if (spendScenario === "renewal") {
-    parts.push(`已把今日後到期、且未淘汰/非成效全爛的廣告當作會續費計算;預估續費段 ${uniqueByCode(scenario.virtualRenewals).length} 支`);
-  } else {
-    parts.push("只用已存在廣告段計算;未手動續費的廣告到期後停止攤提");
+// 算「第 idx 筆採買」在 row.start 當天的累積花費(該筆 + 前面已加的筆 + 既有廣告)
+function spendAtRowStart(scenarioAds, idx) {
+  const row = rows[idx];
+  const ym = monthOf(row.start);
+  const baseAds = [...scenarioAds];
+  // 把 0..idx 的所有筆當預覽 ad 一起算
+  for (let i = 0; i <= idx; i++) {
+    const ad = makePreviewAd(rows[i]);
+    if (ad) baseAds.push(ad);
   }
-  if (excludedUnique.length > 0) {
-    parts.push(`排除成效全爛 ${excludedUnique.length} 支:${esc(excludedUnique.map((a) => a.ad_name || a.ad_code).slice(0, 3).join("、"))}${excludedUnique.length > 3 ? `…等 ${excludedUnique.length} 支` : ""}`);
-  }
-  return `<div class="hint" style="margin-bottom:12px">${parts.join("；")}</div>`;
+  const grid = dailySpendGrid(baseAds, ym);
+  return grid[row.start] || {};
 }
 
-function uniqueByCode(ads) {
-  const seen = new Set();
-  const out = [];
-  for (const ad of ads || []) {
-    const key = ad.ad_code || ad.id;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(ad);
-  }
-  return out;
-}
-
-// ── Mode 1: 依日期看可加空間 ───────────────────────────────────────
-function renderDateMode(s, ym) {
-  const rate = s.settings.expense_rate;
-  const today = todayStr();
-  if (pickedDate < today) pickedDate = today;
-  const scenario = scenarioFor(s, monthOf(pickedDate));
-  const cards = suggestForDate(scenario.state, pickedDate, rate, amortizeDays);
-  const selected = cards.filter((c) => pickedPids.has(c.product.id));
-
-  // 產品 chip 列：多選；每個 chip 旁顯示該產品當日可加的簡短摘要
-  const chips = s.products.map((p) => {
-    const c = cards.find((x) => x.product.id === p.id);
-    const isActive = pickedPids.has(p.id);
-    let badge = "";
-    if (c) {
-      if (c.kind === "ok" && c.suggestTwd > 0) badge = `<span class="ink-3" style="margin-left:4px">+${Math.round(c.suggestTwd).toLocaleString()}</span>`;
-      else if (c.kind === "full") badge = `<span class="ink-3" style="margin-left:4px">滿</span>`;
-      else if (c.kind === "empty") badge = `<span class="ink-3" style="margin-left:4px">—</span>`;
-    }
-    return `<button class="filter-chip ${isActive ? "active" : ""}" data-rev-pid="${esc(p.id)}">${esc(p.name)}${badge}</button>`;
-  }).join("");
-
-  // 與「依金額」對齊:baseline 已排除成效全爛廣告(不會續費)。同支廣告不分產品視為一組。
-  const excludedSeen = new Set();
-  const excludedUnique = [];
-  for (const a of [...(cards.excludedPoorPerf || []), ...(scenario.excludedPoorPerf || [])]) {
-    const key = a.ad_code || a.id;
-    if (excludedSeen.has(key)) continue;
-    excludedSeen.add(key);
-    excludedUnique.push(a);
-  }
-  const excludedHint = renderScenarioHint(scenario, excludedUnique);
-
-  let cardHtml;
-  if (selected.length === 0) {
-    cardHtml = `<div class="card"><p class="ink-2">請至少選一個產品（可多選）。</p></div>`;
-  } else if (selected.length === 1) {
-    cardHtml = renderDateCardLarge(selected[0], amortizeDays, rate);
-  } else {
-    cardHtml = renderDateCombinedCard(selected, amortizeDays, rate, scenario.state);
-  }
-
-  return `
-    <div class="rev-controls">
-      <div class="field" style="min-width:160px">
-        <label>目標日期（當日或未來）</label>
-        <input id="rev-date" type="date" value="${pickedDate}" min="${today}" />
-      </div>
-      <div class="field" style="min-width:140px">
-        <label>支出匯率</label>
-        <input id="rev-rate" type="number" step="0.01" value="${rate}" disabled />
-        <div class="hint">在「設定」頁修改</div>
-      </div>
-      <div class="field" style="min-width:120px">
-        <label>預期攤提天數</label>
-        <input id="rev-days" type="number" value="${amortizeDays}" min="1" max="180" />
-        <div class="hint">用於估算 RMB 採買額（單日 × 攤提天）</div>
-      </div>
-    </div>
-
-    ${renderGapWarningForDate(s, pickedDate)}
-    ${excludedHint}
-
-    <div class="filter-row" style="margin-bottom:12px">
-      <span class="ink-3" style="font-size:12px">產品（可多選）：</span>
-      ${chips}
-      ${pickedPids.size > 0 ? `<button class="link-btn" id="rev-clear-pids" style="margin-left:auto">清除選擇</button>` : ""}
-    </div>
-
-    ${cardHtml}
-  `;
-}
-
-// 多選產品：合計可加空間 + 自動分權重（依 suggestTwd 比例）
-// 「已補到位」(kind != ok 或 suggestTwd <= 0) 的產品自動排除分配，但仍列出原因。
-function renderDateCombinedCard(cards, days, rate, state) {
-  const usable = cards.filter((c) => c.kind === "ok" && c.suggestTwd > 0);
-  const skipped = cards.filter((c) => !(c.kind === "ok" && c.suggestTwd > 0));
-
-  if (usable.length === 0) {
-    return `
-      <div class="card">
-        <h2>合計可加空間</h2>
-        <p class="ink-2">所選產品都沒有可加空間。</p>
-        ${renderSkippedList(skipped)}
-      </div>
-      ${renderSimulatedMonthGrid({
-        start_date: pickedDate,
-        end_date: addDays(pickedDate, days),
-        amortize_days: days,
-        daily_amort_twd: 0,
-        weights: {},
-      })}
-    `;
-  }
-
-  const totalDailyTwd = usable.reduce((s, c) => s + c.suggestTwd, 0);
-  const totalTwd = totalDailyTwd * days;
-  const totalCny = rate > 0 ? Math.round(totalTwd / rate) : 0;
-  // 用 2 位小數權重避免「APP uncapped 大、小島 capped 小」混選時整數四捨五入
-  // 把小島權重向上推、dailyShare 因而超過小島自己的 suggestTwd / upper
-  const weights = computeIntegerWeights(usable.map((c) => ({ id: c.product.id, value: c.suggestTwd })), 2);
-
-  // 偵測:被分配權重後仍補不到下限的產品(可能是 period binding 卡到 baseline 突增日)
-  // APP / no_band 不檢查日帶寬,跳過此偵測
-  const cantFillCards = usable.filter((c) => {
-    if (!!c.skipBand || !c.band || c.band.lower <= 0) return false;
-    const w = weights[c.product.id] || 0;
-    const dailyShare = totalDailyTwd * (w / 100);
-    return (c.todaySpent || 0) + dailyShare < c.band.lower;
-  });
-
-  // 偵測:APP / no_band 加完 dailyShare 後攤提期內哪些天會超過 upper
-  // 用 dailyShare 重算(suggestTwd 是「該產品 100% 採買」的值,跟多選分權後不一樣)
-  const overflowItems = state
-    ? usable
-        .filter((c) => !!c.skipBand)
-        .map((c) => {
-          const w = weights[c.product.id] || 0;
-          const dailyShare = totalDailyTwd * (w / 100);
-          return {
-            product: c.product,
-            ranges: computeOverflowRangesForProduct(state, c.product, pickedDate, days, dailyShare),
-          };
-        })
-        .filter((it) => it.ranges.length > 0)
-    : [];
-
-  return `
-    <div class="card">
-      <div class="card-head">
-        <h2>${usable.length} 個產品 — 合計可加空間</h2>
-        <button class="primary" id="date-create-multi">📋 用此參數建立廣告</button>
-      </div>
-
-      <div class="rev-hero">
-        <div class="rev-hero-num">${Math.round(totalDailyTwd).toLocaleString()} <span class="rev-hero-unit">TWD/日</span></div>
-        <div class="rev-hero-sub">
-          ${pickedDate} 起，買 ${days} 天廣告 → <strong>${totalCny.toLocaleString()}</strong> RMB（${Math.round(totalTwd).toLocaleString()} TWD ÷ ${rate}）
-        </div>
-        <div class="rev-hero-limits">
-          ${usable.map((c) => {
-            const w = weights[c.product.id] || 0;
-            const dailyShare = totalDailyTwd * (w / 100);
-            const hint = c.skipBand
-              ? `<span class="ink-3" style="font-size:11px">(不檢查日帶寬)</span>`
-              : `<span class="ink-3" style="font-size:11px">(最緊 ${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span>`;
-            return `<div><strong>${esc(c.product.name)} ${Math.round(w)}%</strong> — ${Math.round(dailyShare).toLocaleString()} TWD/日 ${hint}</div>`;
-          }).join("")}
-        </div>
-      </div>
-
-      ${(() => {
-        if (!overflowItems || overflowItems.length === 0) return "";
-        const ymNext = nextMonthOf(pickedDate);
-        const nextDays = countOverflowDaysInMonth(overflowItems, ymNext);
-        const summary = nextDays > 0
-          ? `<div class="hint rev-summary rev-summary-warn" style="margin-top:8px">⚠️ 下月會有 <strong>${nextDays}</strong> 天日花費會超出建議上限,需注意下月預算狀況</div>`
-          : "";
-        return `${summary}${renderOverflowCallout(overflowItems)}`;
-      })()}
-
-      ${cantFillCards.length > 0 ? `
-        <div class="rev-callout-perf-adjust">
-          <div style="font-weight:600;color:var(--warn)">⚠️ 有 ${cantFillCards.length} 個產品補不到建議下限</div>
-          <div class="ink-2" style="font-size:13px;margin-top:6px;line-height:1.6">
-            ${cantFillCards.map((c) => {
-              const w = weights[c.product.id] || 0;
-              const dailyShare = totalDailyTwd * (w / 100);
-              const stillShort = Math.round(c.band.lower - (c.todaySpent + dailyShare));
-              return `<div>• <strong>${esc(c.product.name)}</strong>:分到 ${Math.round(dailyShare).toLocaleString()} TWD/日,加完仍缺 ${stillShort.toLocaleString()} TWD/日(攤提區間最緊在 ${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "?"})</div>`;
-            }).join("")}
-            <br>
-            <strong>實務上能做的:</strong>
-            <ul style="margin:4px 0 0;padding-left:20px">
-              <li>找願意做短期(一個月以內)的廣告主直接採買 — 這種廣告要碰運氣</li>
-              <li>接受這幾天少花 — 如果是空檔期(舊廣告剛結束、新廣告還沒上),這就是市場限制造成的少花</li>
-              <li>在最緊那天起做權重調整,把佔住 baseline 的廣告分一些給其他短缺產品</li>
-            </ul>
-          </div>
-        </div>
-      ` : ""}
-
-      <details class="rev-details">
-        <summary>各產品限制細節</summary>
-        <div class="rev-product-cards" style="margin-top:8px">
-          ${usable.map((c) => {
-            const w = weights[c.product.id] || 0;
-            const dailyShare = totalDailyTwd * (w / 100);
-            return `
-              <div class="rev-card">
-                <h3>
-                  <span>${esc(c.product.name)}</span>
-                  <span class="pill ${c.product.type}" style="font-weight:400;font-size:11px;margin-left:4px">${c.product.type === "app" ? "APP" : "小島"}</span>
-                  <span class="pill" style="font-size:14px;margin-left:auto">${Math.round(w)}%</span>
-                </h3>
-                <div class="rev-row"><span class="label">月剩餘 / ${c.daysToMonthEnd} 天</span><span class="val">${Math.round(c.monthRemainPerDay || 0).toLocaleString()}/日</span></div>
-                ${c.skipBand
-                  ? `<div class="rev-row"><span class="label">攤提區間最緊</span><span class="val ink-3" style="font-size:11px">不檢查日帶寬</span></div>`
-                  : `<div class="rev-row"><span class="label">攤提區間最緊</span><span class="val">${Math.round(c.minHeadroomInPeriod || 0).toLocaleString()}<span class="ink-3" style="font-size:11px"> (${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span></span></div>`
-                }
-                <div class="rev-row"><span class="label">分到 daily</span><span class="val"><strong>${Math.round(dailyShare).toLocaleString()}</strong></span></div>
-              </div>
-            `;
-          }).join("")}
-        </div>
-      </details>
-
-      ${renderSimulatedMonthGrid({
-        start_date: pickedDate,
-        end_date: addDays(pickedDate, days),
-        amortize_days: days,
-        daily_amort_twd: totalDailyTwd,
-        weights,
-      })}
-
-      ${renderSkippedList(skipped)}
-    </div>
-  `;
-}
-
-function nextMonthOf(ymd) {
-  const ym = monthOf(ymd);
-  const [y, m] = ym.split("-").map(Number);
-  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
-}
-
-// 算 overflowItems 中落在 ymNext (YYYY-MM) 的總天數,給「下月會有 N 天日花費會超出」摘要用
-function countOverflowDaysInMonth(items, ymPrefix) {
-  if (!ymPrefix) return 0;
-  let n = 0;
-  for (const it of items) {
-    for (const r of it.ranges || []) {
-      for (let i = 0; i < r.days; i++) {
-        const d = addDays(r.start, i);
-        if (d.slice(0, 7) === ymPrefix) n++;
-      }
-    }
-  }
-  return n;
-}
-
-// APP / no_band 因不檢查日帶寬,suggest 可能造成攤提期某些天超過 upper。
-// 列出超過區間,讓使用者決定要不要改採買日(提早 / 延後)避開。
-// items: [{ product, ranges: [{ start, end, days, minDaily, maxDaily, upper }, ...] }, ...]
-function renderOverflowCallout(items) {
-  const filtered = items.filter((it) => it.ranges && it.ranges.length > 0);
-  if (filtered.length === 0) return "";
-  const showProductName = filtered.length > 1;
-  const lines = filtered.flatMap((it) => it.ranges.map((r) => {
-    const prefix = showProductName ? `<strong>${esc(it.product.name)}</strong>:` : "";
-    const dateRange = r.start === r.end ? r.start.slice(5) : `${r.start.slice(5)} ~ ${r.end.slice(5)}`;
-    const amountRange = r.minDaily === r.maxDaily
-      ? `約 ${Math.round(r.minDaily).toLocaleString()} TWD/日`
-      : `約 ${Math.round(r.minDaily).toLocaleString()} ~ ${Math.round(r.maxDaily).toLocaleString()} TWD/日`;
-    return `<div>• ${prefix}${dateRange}(${r.days} 天)${amountRange}(上限 ${Math.round(r.upper).toLocaleString()})</div>`;
-  })).join("");
-  return `
-    <div class="rev-callout-perf-adjust">
-      <div style="font-weight:600;color:var(--warn)">⚠️ 預估會超過建議日花費上限</div>
-      <div class="ink-2" style="font-size:13px;margin-top:6px;line-height:1.7">
-        ${lines}
-        <br>
-        <strong>想避開的話可以:</strong>
-        <ul style="margin:4px 0 0;padding-left:20px">
-          <li>提早幾天買 → 攤提期更早結束,跨月那段變短</li>
-          <li>延後到下月初再買 → 攤提整個落在下月</li>
-        </ul>
-      </div>
-    </div>
-  `;
-}
-
-function renderSkippedList(skipped) {
-  if (!skipped || skipped.length === 0) return "";
-  const items = skipped.map((c) => {
-    const note = c.note || (c.kind === "full" ? "已補到位" : c.kind === "empty" ? "未設預算" : "無可加空間");
-    return `<li><strong>${esc(c.product.name)}</strong> — ${esc(note)}</li>`;
-  }).join("");
-  return `
-    <div class="hint" style="margin-top:14px;padding:10px 12px;background:#f7f9fc;border-radius:6px;font-size:12px">
-      <strong>未納入分配的產品（${skipped.length}）：</strong>
-      <ul style="margin:4px 0 0;padding-left:20px">${items}</ul>
-    </div>
-  `;
-}
-
-// 依 value 比例算權重，最後一筆收尾補到 100。
-// decimals=0 → 整數%(舊行為);decimals=2 → 2 位小數,避免「APP 大、小島小」混選時整數
-// 四捨五入讓小島 weight 略高於真實比例,造成 dailyShare 超過 upper。
-function computeIntegerWeights(items, decimals = 0) {
-  const total = items.reduce((s, x) => s + (Number(x.value) || 0), 0);
+// 該筆當天的「貢獻 delta」=  daily_twd × weight%
+function contribForRow(row, day) {
+  if (!row.amount_cny || !row.days || row.days <= 0) return {};
+  if (day < row.start || day >= row.end) return {};
+  const dailyTwd = (row.amount_cny * row.rate) / row.days;
   const out = {};
-  if (total <= 0 || items.length === 0) return out;
-  const factor = Math.pow(10, decimals);
-  const roundTo = (v) => Math.round(v * factor) / factor;
-  let acc = 0;
-  for (let i = 0; i < items.length - 1; i++) {
-    out[items[i].id] = roundTo((Number(items[i].value) || 0) / total * 100);
-    acc += out[items[i].id];
+  for (const [pid, w] of Object.entries(row.weights || {})) {
+    out[pid] = dailyTwd * (Number(w) / 100);
   }
-  out[items[items.length - 1].id] = roundTo(100 - acc);
   return out;
 }
 
-// 大張卡片:選定產品 + 日期後顯示該產品的補貨建議
-// 警示卡(CLAUDE.md §5.8.1 v2):
-// 若 pickedDate 當天有任何產品的日花費 < 建議下限 → 顯示警示 + 一鍵調整按鈕
-function renderGapWarningForDate(state, pickedDate) {
-  const today = todayTaipei();
-  // 用 projection state:跟概覽 / 權重調整頁的偵測對齊,只警示真實缺口
-  const shortfalls = detectShortfalls(projectedDecisionState(state), today);
-  const relevant = shortfalls.filter((sf) => sf.days.some((d) => d.date === pickedDate));
-  if (relevant.length === 0) return "";
-  const items = relevant.map((sf) => {
-    const dayInfo = sf.days.find((d) => d.date === pickedDate);
-    const typeBadge = sf.productType === "island"
-      ? `<span class="pill bad" style="font-size:10px;margin-left:4px">小島</span>`
-      : `<span class="pill warn" style="font-size:10px;margin-left:4px">APP</span>`;
-    return `<li><strong>${esc(sf.productName)}</strong>${typeBadge} 當日缺 <strong>${Math.round(dayInfo.shortfall).toLocaleString()}</strong> TWD/日 <span class="ink-3" style="font-size:11px">(下限 ${Math.round(dayInfo.lower).toLocaleString()})</span></li>`;
-  }).join("");
-  return `
-    <div class="card" style="border-left:3px solid var(--warn);background:#fffbf0;margin-bottom:12px">
-      <div class="card-head">
-        <h3 style="margin:0;font-size:14px">⚠️ 此日有產品日花費低於下限</h3>
-        <button class="primary" id="rev-gd-fix-open">→ 一鍵調整</button>
-      </div>
-      <ul style="margin:8px 0 0;padding-left:20px;font-size:13px;line-height:1.7">${items}</ul>
-    </div>
-  `;
+// 對某一筆 row 算「建議」:
+//   - 若 amount_cny 為空 → 算「把當天每個產品補到 月預算/月天數 目標」需要多少 RMB
+//     並用 suggestWeights 算建議權重(把該筆需要的 daily 當 virtual ad)
+//   - 若 amount_cny 已填 → 用 suggestWeights 算建議權重
+// 累積:把前 0..idx-1 的所有筆當預覽 ad 加進 scenarioAds,確保不重複塞同個產品
+function computeRowSuggestion(state, products, scenarioAds, idx) {
+  const row = rows[idx];
+  const ym = monthOf(row.start);
+
+  // 把前面的筆當虛擬 ad 一起送進去
+  const priorAds = [];
+  for (let i = 0; i < idx; i++) {
+    const ad = makePreviewAd(rows[i]);
+    if (ad) priorAds.push(ad);
+  }
+  const adsForSuggest = [...scenarioAds, ...priorAds];
+  const stateForSuggest = { ...state, ads: adsForSuggest };
+
+  const isEmpty = !row.amount_cny;
+  if (isEmpty) {
+    // 算每個產品「離目標還差多少」,加總得到該筆需要的 daily TWD
+    const grid = dailySpendGrid(adsForSuggest, ym);
+    const startDay = grid[row.start] || {};
+    const monthDays = daysInMonth(ym);
+    let totalDaily = 0;
+    const gaps = {};
+    for (const p of products) {
+      const budget = getMonthlyBudget(state, p.id, ym);
+      if (!budget) continue;
+      const target = budget / monthDays;
+      const current = startDay[p.id] || 0;
+      const gap = Math.max(0, target - current);
+      if (gap > 0) gaps[p.id] = gap;
+      totalDaily += gap;
+    }
+    if (totalDaily <= 0) {
+      return { amount_cny_suggest: 0, daily_twd: 0, weights: {}, reasons: ["所有產品都已達日目標,無需再採買"] };
+    }
+    const totalTwd = totalDaily * row.days;
+    const cny = row.rate > 0 ? Math.round(totalTwd / row.rate) : 0;
+    const r = suggestWeights(stateForSuggest, products, adsForSuggest, ym, {
+      start_date: row.start,
+      end_date: row.end,
+      amortize_days: row.days,
+      daily_amort_twd: totalDaily,
+    });
+    // suggestWeights 沒給有效 weights 時降級用 gap 比例
+    let weights = r.weights;
+    if (!weights || Object.keys(weights).length === 0) {
+      weights = {};
+      const keys = Object.keys(gaps);
+      let acc = 0;
+      for (let i = 0; i < keys.length - 1; i++) {
+        weights[keys[i]] = Math.round((gaps[keys[i]] / totalDaily) * 100);
+        acc += weights[keys[i]];
+      }
+      if (keys.length > 0) weights[keys[keys.length - 1]] = 100 - acc;
+    }
+    return { amount_cny_suggest: cny, daily_twd: totalDaily, weights, reasons: r.reasons };
+  }
+
+  // 有金額 → 直接算建議權重
+  const dailyTwd = (row.amount_cny * row.rate) / row.days;
+  const r = suggestWeights(stateForSuggest, products, adsForSuggest, ym, {
+    start_date: row.start,
+    end_date: row.end,
+    amortize_days: row.days,
+    daily_amort_twd: dailyTwd,
+  });
+  return { amount_cny_suggest: row.amount_cny, daily_twd: dailyTwd, weights: r.weights, reasons: r.reasons };
 }
 
-function renderDateCardLarge(c, days, rate) {
-  if (c.budget == null) {
-    return `
-      <div class="card">
-        <h2>${esc(c.product.name)} <span class="pill ${c.product.type}" style="font-weight:400">${c.product.type === "app" ? "APP" : "小島"}</span></h2>
-        <p class="ink-2">尚未設定月預算 — 請到「產品」頁設定後再回來查看。</p>
-      </div>
-    `;
-  }
-  const usable = c.kind === "ok" && c.suggestTwd > 0;
-  const totalTwd = c.suggestTwd * days;
-  const totalCny = rate > 0 ? Math.round(totalTwd / rate) : 0;
-  // APP / no_band 不檢查日帶寬,只剩「月剩餘÷剩餘天數」一個 binding,不顯示較緊標籤
-  const skipBand = !!c.skipBand;
-  // 哪個是 binding constraint：月剩餘÷剩餘天數 vs 攤提區間最緊(只有小島才有意義)
-  const monthBindingFirst = (c.monthRemainPerDay ?? Infinity) <= (c.minHeadroomInPeriod ?? Infinity);
-  const monthBindingTag = (!skipBand && monthBindingFirst) ? `<span class="pill warn" style="font-size:10px;margin-left:4px">較緊</span>` : "";
-  const periodBindingTag = (!skipBand && !monthBindingFirst) ? `<span class="pill warn" style="font-size:10px;margin-left:4px">較緊</span>` : "";
+// ── render entry ──────────────────────────────────────────────────
+export function render(root) {
+  const state = getState();
+  ensureInit(state);
 
-  // 偵測「採買建議仍補不到下限」(加完建議值後當日仍 < lower)
-  // APP / no_band 不檢查日帶寬,跳過此提示
-  const newDailyAfter = (c.todaySpent || 0) + (c.suggestTwd || 0);
-  const cantFillToLower = usable && !skipBand && c.band && c.band.lower > 0 && newDailyAfter < c.band.lower;
-  const shortfallToLower = cantFillToLower ? Math.round(c.band.lower - newDailyAfter) : 0;
-  const calloutPeriodBinding = cantFillToLower && !monthBindingFirst;
-  // 有短攤提方案可一鍵套用(避開 baseline 突增日)
-  const hasShortFix = cantFillToLower && c.shortAmortize && c.shortSuggestTwd > c.suggestTwd;
-  const shortNewDaily = hasShortFix ? (c.todaySpent + c.shortSuggestTwd) : 0;
-  const shortFillsLower = hasShortFix && shortNewDaily >= c.band.lower;
+  // 從 sessionStorage 接收外部頁面的預填日期(例:廣告調整建議 → 前往採買建議)
+  const prefillDate = sessionStorage.getItem("buyads_reverse_prefill_date");
+  if (prefillDate) {
+    sessionStorage.removeItem("buyads_reverse_prefill_date");
+    const today = todayTaipei();
+    if (prefillDate >= today && rows[0]) {
+      rows[0].start = prefillDate;
+      rows[0].end = addDays(prefillDate, rows[0].days || 30);
+    }
+  }
+
+  doRender(root);
+}
+
+function doRender(root) {
+  const state = getState();
+  const products = state.products;
+  const today = todayTaipei();
+  // 採買筆通常落在當月 — 用「第一筆的 start 月份」當主 ym
+  const primaryYM = rows[0] ? monthOf(rows[0].start) : state.settings.current_month;
+  const scenario = scenarioFor(state, primaryYM);
+  const scenarioAds = scenario.state.ads;
+
+  // 為每一筆預先算建議(畫面要用)
+  const suggestions = rows.map((_, idx) => computeRowSuggestion(state, products, scenarioAds, idx));
+
+  root.innerHTML = `
+    <div class="view-head">
+      <div>
+        <h1>採買建議</h1>
+        <div class="desc">建立多筆採買 → 上方累積看每個產品日花費怎麼變;中段卡片可改權重與金額;留空的筆會自動算出建議 RMB;下方 tab 切「當月 / 下月」看模擬攤提。</div>
+      </div>
+    </div>
+
+    ${renderSummaryTable(state, products, scenarioAds, today)}
+
+    <div class="card">
+      <div class="card-head">
+        <h2>採買筆數(可任意增減)</h2>
+        <div style="display:flex;gap:8px">
+          <button class="link-btn" id="rev-add-row">⊕ 新增一筆</button>
+        </div>
+      </div>
+      <div id="rev-rows">
+        ${rows.map((_, idx) => renderRowCard(state, products, idx, suggestions[idx])).join("")}
+      </div>
+      <div class="hint" style="margin-top:8px">
+        <strong>運作邏輯:</strong>
+        ① 金額 / 起迄 / 匯率 / 攤提天數 = 這支廣告的基本資料(改起迄會自動帶攤提天數);
+        ② 權重 = 該筆要分給哪些產品(可自由改);
+        ③ 留空的金額會自動算「補上多少 RMB 能讓所有產品都到達日目標」,按「採用建議」就帶入。
+      </div>
+    </div>
+
+    ${renderAmortGridCard(state, products, scenarioAds, today)}
+  `;
+
+  bindHandlers(root);
+}
+
+// ── Summary table ──────────────────────────────────────────────────
+function renderSummaryTable(state, products, scenarioAds, today) {
+  const primaryYM = rows[0] ? monthOf(rows[0].start) : state.settings.current_month;
+  const monthDays = daysInMonth(primaryYM);
+
+  // baseline row = 今天 (或 第一筆 start 的前一天 / 今天) 的花費快照
+  // 取 今天 當 baseline 比較直覺
+  const baselineDate = today;
+  const baselineYm = monthOf(baselineDate);
+  const baselineGrid = dailySpendGrid(scenarioAds, baselineYm);
+  const baselineRow = baselineGrid[baselineDate] || {};
+
+  // target row = 月預算 / 當月天數
+  const targets = {};
+  for (const p of products) {
+    const ym = primaryYM;
+    const budget = getMonthlyBudget(state, p.id, ym);
+    targets[p.id] = budget ? budget / monthDays : null;
+  }
+
+  // 每一筆的「該筆 start 當天累積花費」(含該筆 + 之前所有筆 + 既有)
+  const accSpendByRow = rows.map((_, idx) => spendAtRowStart(scenarioAds, idx));
+
+  const productHeaders = products.map((p) => `
+    <th class="num">${esc(p.name)} <span class="pill ${p.type === "app" ? "app" : "island"}" style="font-weight:400;font-size:10px">${p.type === "app" ? "APP" : "島"}</span></th>
+  `).join("");
+
+  const baselineCells = products.map((p) => {
+    const v = baselineRow[p.id] || 0;
+    const target = targets[p.id] || 0;
+    const cls = !target ? "" : (v < target * 0.85 ? "cell-under" : v > target * 1.15 ? "cell-over" : "");
+    return `<td class="num ${cls}">${v > 0.5 ? Math.round(v).toLocaleString() : '<span class="ink-3">—</span>'}</td>`;
+  }).join("");
+
+  const rowCells = rows.map((row, idx) => {
+    const spend = accSpendByRow[idx];
+    const isEmpty = !row.amount_cny;
+    const cells = products.map((p) => {
+      const v = spend[p.id] || 0;
+      const target = targets[p.id] || 0;
+      const contrib = contribForRow(row, row.start)[p.id] || 0;
+      const cls = isEmpty || !target ? "" :
+        (v < target * 0.85 ? "cell-under" : v > target * 1.15 ? "cell-over" : v >= target * 0.95 ? "cell-ok" : "");
+      const cellFinal = idx === rows.length - 1 ? "cell-final" : "";
+      const delta = (!isEmpty && contrib > 0.5) ? `<div class="delta-mini">+${Math.round(contrib).toLocaleString()}</div>` : "";
+      const cellContent = isEmpty ? "—" : Math.round(v).toLocaleString();
+      return `<td class="num ${cls} ${cellFinal}">${cellContent}${delta}</td>`;
+    }).join("");
+    const tag = isEmpty ? '<span class="pill warn" style="font-size:10px;margin-left:4px">留空</span>' : "";
+    return `<tr><td><strong>+ 第 ${idx + 1} 筆</strong><div class="ink-3" style="font-size:10.5px">${row.start.slice(5)} 當天</div>${tag}</td>${cells}</tr>`;
+  }).join("");
+
+  const targetCells = products.map((p) => {
+    const t = targets[p.id];
+    const budget = getMonthlyBudget(state, p.id, primaryYM);
+    if (!t) return `<td class="num ink-3">—</td>`;
+    return `<td class="num">${Math.round(t).toLocaleString()}<div class="target-sub">月 ${Math.round((budget || 0) / 1000)}k</div></td>`;
+  }).join("");
 
   return `
     <div class="card">
       <div class="card-head">
-        <h2>${esc(c.product.name)} <span class="pill ${c.product.type}" style="font-weight:400">${c.product.type === "app" ? "APP" : "小島"}</span></h2>
-        ${usable ? `<button class="primary" id="date-create">📋 用此參數建立廣告</button>` : ""}
+        <h2>各產品日花費 — 累積每一筆後的影響</h2>
+        <div class="ink-3" style="font-size:12px">每格 = 該筆 start_date 當天加入後的日花費;小綠字 = 該筆貢獻</div>
       </div>
+      <div class="table-wrap">
+        <table class="rev-summary-table">
+          <thead>
+            <tr>
+              <th class="step-col">步驟</th>
+              ${productHeaders}
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="row-baseline">
+              <td><strong>初始 baseline</strong><div class="ink-3" style="font-size:10.5px">${baselineDate} (今天)</div></td>
+              ${baselineCells}
+            </tr>
+            ${rowCells}
+          </tbody>
+          <tfoot>
+            <tr class="row-target">
+              <td>每日目標<div class="ink-3" style="font-size:10.5px;font-weight:400">月預算 ÷ ${monthDays} 天</div></td>
+              ${targetCells}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div class="ink-3" style="font-size:11px;margin-top:8px">
+        <span class="cell-under" style="font-family:var(--mono)">紅</span> 低於目標 ·
+        <span class="cell-ok" style="font-family:var(--mono)">綠</span> 接近 / 達標 ·
+        <span class="cell-over" style="font-family:var(--mono)">橘</span> 超過目標。
+      </div>
+    </div>
+  `;
+}
 
-      ${usable ? `
-        <div class="rev-hero">
-          <div class="rev-hero-num">${Math.round(c.suggestTwd).toLocaleString()} <span class="rev-hero-unit">TWD/日</span></div>
-          <div class="rev-hero-sub">
-            買 ${days} 天廣告，本產品 100% 採買 → <strong>${totalCny.toLocaleString()}</strong> RMB（${Math.round(totalTwd).toLocaleString()} TWD ÷ ${rate}）
+// ── Row card ──────────────────────────────────────────────────────
+function renderRowCard(state, products, idx, suggestion) {
+  const row = rows[idx];
+  const isEmpty = !row.amount_cny;
+  const totalTwd = (row.amount_cny || 0) * row.rate;
+  const dailyTwd = isEmpty ? (suggestion.daily_twd || 0) : (totalTwd / row.days);
+  const wSum = Object.values(row.weights || {}).reduce((a, b) => a + Number(b || 0), 0);
+  const wSumOk = Math.abs(wSum - 100) < 0.5;
+
+  // 權重展示來源:有金額時用使用者編輯的 weights;沒金額時用 suggestion.weights(預覽,不可改)
+  const displayWeights = isEmpty ? (suggestion.weights || {}) : (row.weights || {});
+
+  return `
+    <div class="row-card ${isEmpty ? "empty-amount" : ""}">
+      <div class="row-card-top">
+        <div class="row-card-title">
+          <span class="row-no">${idx + 1}</span>
+          <span>第 ${idx + 1} 筆採買</span>
+          ${isEmpty ? '<span class="pill warn">金額留空</span>' : ''}
+        </div>
+        <button class="remove-btn" data-remove="${idx}" title="刪除這筆">✕</button>
+      </div>
+      <div class="row-card-body">
+        <div class="row-card-inputs">
+          <div class="field">
+            <label>金額 (RMB)</label>
+            <input type="number" step="any" value="${row.amount_cny ?? ""}" placeholder="留空 = 建議" data-row="${idx}" data-key="amount_cny" />
           </div>
-          <div class="rev-hero-limits">
-            <div>月剩餘 ÷ 剩餘 ${c.daysToMonthEnd} 天 = <strong>${Math.round(c.monthRemainPerDay || 0).toLocaleString()}</strong>/日${monthBindingTag}</div>
-            ${skipBand
-              ? `<div class="ink-3" style="font-size:11px">${c.product.type === "app" ? "APP" : "破圈"} 不檢查日帶寬,只看月預算</div>`
-              : `<div>攤提區間 ${c.amortizeDaysUsed} 天最緊 = <strong>${Math.round(c.minHeadroomInPeriod || 0).toLocaleString()}</strong>/日 <span class="ink-3">(${c.minHeadroomDay ? c.minHeadroomDay.slice(5) : "—"})</span>${periodBindingTag}</div>`
+          <div class="field">
+            <label>開始日</label>
+            <input type="date" value="${row.start}" data-row="${idx}" data-key="start" min="${todayTaipei()}" />
+          </div>
+          <div class="field">
+            <label>結束日(不含)</label>
+            <input type="date" value="${row.end}" data-row="${idx}" data-key="end" min="${todayTaipei()}" />
+          </div>
+          <div class="field">
+            <label>匯率</label>
+            <input type="number" step="0.01" value="${row.rate}" data-row="${idx}" data-key="rate" />
+          </div>
+          <div class="field">
+            <label>攤提天數</label>
+            <input type="number" value="${row.days}" data-row="${idx}" data-key="days" min="1" max="365" />
+          </div>
+          <div class="compute-cell">
+            ${isEmpty
+              ? '<div class="ink-3">金額留空,見下方系統建議</div>'
+              : `總額 <strong>${Math.round(totalTwd).toLocaleString()}</strong> TWD<br>每日攤提 <strong>${Math.round(dailyTwd).toLocaleString()}</strong> TWD/日`
             }
           </div>
         </div>
-      ` : `
-        <div class="rev-hero rev-hero-bad">
-          <div class="rev-hero-num" style="color:var(--bad);font-size:18px">無可加空間</div>
-          <div class="rev-hero-sub" style="color:var(--bad)">${esc(c.note || "—")}</div>
-        </div>
-      `}
 
-      ${cantFillToLower ? `
-        <div class="rev-callout-perf-adjust">
-          <div style="font-weight:600;color:var(--warn)">⚠️ ${pickedDate.slice(5)} 補不到建議下限 — 還缺 ${shortfallToLower.toLocaleString()} TWD/日</div>
-          <div class="ink-2" style="font-size:13px;margin-top:6px;line-height:1.6">
-            ${calloutPeriodBinding ? `
-              原因:你的 ${c.amortizeDaysUsed} 天攤提會跨進 <strong>${c.minHeadroomDay.slice(5)}</strong>,而那天的 ${esc(c.product.name)} baseline 已逼近建議花費上限(其他既有廣告佔住了)。新廣告每多加 1 元都會害 ${c.minHeadroomDay.slice(5)} 那天爆上限,所以建議值被壓到只剩 ${Math.round(c.suggestTwd).toLocaleString()} TWD/日。
-              <br><br>
-              <strong>實務上能做的:</strong>
-              <ul style="margin:4px 0 0;padding-left:20px">
-                <li>找到願意做短期(${c.shortAmortize ? c.shortAmortize : "<" + c.amortizeDaysUsed} 天以下)的廣告主直接採買 — 但這種短攤提廣告多半要碰運氣,不是常態</li>
-                <li>接受 ${pickedDate.slice(5)} ~ ${c.minHeadroomDay.slice(5)} 前一天會略低於下限。如果這段是空檔(舊廣告剛結束、新廣告 ${c.minHeadroomDay.slice(5)} 才上),這就是市場限制造成的少花</li>
-                <li>在 ${c.minHeadroomDay.slice(5)} 起做權重調整,把佔住 baseline 的那支廣告分一些給其他短缺產品(視具體 case)</li>
-              </ul>
+        ${isEmpty && suggestion.amount_cny_suggest > 0 ? `
+          <div class="rev-empty-suggest">
+            <span class="suggest-tag">💡 系統建議</span>
+            <span class="suggest-desc">把所有產品補到日目標需要 <span class="suggest-num">${suggestion.amount_cny_suggest.toLocaleString()} RMB</span>(每日攤提約 ${Math.round(suggestion.daily_twd).toLocaleString()} TWD)</span>
+            <button class="primary" data-adopt="${idx}">採用建議</button>
+          </div>
+        ` : isEmpty ? `
+          <div class="rev-empty-suggest" style="border-color:#cfd5e0;background:#f7f9fc">
+            <span class="ink-3">${suggestion.reasons && suggestion.reasons[0] ? esc(suggestion.reasons[0]) : "目前無建議"}</span>
+          </div>
+        ` : ""}
+
+        <div class="weights-section">
+          <div class="weights-head">
+            <span class="weights-title">權重分配</span>
+            ${!isEmpty ? `
+              <span class="weights-sum-inline">加總 <span class="sum-val ${wSumOk ? "ok" : "bad"}">${Math.round(wSum * 10) / 10}%</span></span>
             ` : `
-              原因:${esc(c.product.name)} 月預算所剩有限,平均到剩餘 ${c.daysToMonthEnd} 天只夠每日加 ${Math.round(c.suggestTwd).toLocaleString()} TWD。
-              <br><br>
-              <strong>實務上能做的:</strong>
-              <ul style="margin:4px 0 0;padding-left:20px">
-                <li>提高 ${esc(c.product.name)} 的月預算</li>
-                <li>淘汰本月其他既有 ${esc(c.product.name)} 廣告以釋放預算</li>
-                <li>接受月預算範圍內的少花</li>
-              </ul>
+              <span class="ink-3" style="font-size:12px">(系統預估,採用建議後可編輯)</span>
             `}
+            <span class="spacer"></span>
+            ${!isEmpty ? `<button class="link-btn" data-rebalance="${idx}">⚖ 重新建議</button>` : ""}
+            ${!isEmpty ? `<button class="primary" data-create-row="${idx}" style="margin-left:8px">📋 建立廣告</button>` : ""}
+          </div>
+          <div class="weights-grid">
+            ${products.map((p) => {
+              const w = Number(displayWeights[p.id] || 0);
+              const shareTwd = dailyTwd * (w / 100);
+              return `
+                <div class="weight-cell ${w === 0 ? "zero" : ""}">
+                  <span class="pname" title="${esc(p.name)}">${esc(p.name)}</span>
+                  <div class="input-wrap">
+                    <input type="number" step="0.1" value="${w}" data-row="${idx}" data-w-pid="${esc(p.id)}" ${isEmpty ? "disabled" : ""} />
+                    <span class="pct">%</span>
+                  </div>
+                  <div class="share-twd">${shareTwd > 0.5 ? Math.round(shareTwd).toLocaleString() + " TWD/日" : "—"}</div>
+                </div>
+              `;
+            }).join("")}
           </div>
         </div>
-      ` : ""}
-
-      ${(() => {
-        if (!(usable && skipBand && c.overflowRanges && c.overflowRanges.length > 0)) return "";
-        const items = [{ product: c.product, ranges: c.overflowRanges }];
-        const ymNext = nextMonthOf(pickedDate);
-        const nextDays = countOverflowDaysInMonth(items, ymNext);
-        const summary = nextDays > 0
-          ? `<div class="hint rev-summary rev-summary-warn" style="margin-top:8px">⚠️ 下月會有 <strong>${nextDays}</strong> 天日花費會超出建議上限,需注意下月預算狀況</div>`
-          : "";
-        return `${summary}${renderOverflowCallout(items)}`;
-      })()}
-
-      <details class="rev-details">
-        <summary>細節（月度／當日／建議花費值）</summary>
-        <div class="rev-product-cards" style="margin-top:8px">
-          <div class="rev-card">
-            <h3 style="margin-bottom:8px">月度</h3>
-            <div class="rev-row"><span class="label">月預算</span><span class="val">${Math.round(c.budget).toLocaleString()}${c.budgetIsFallback ? `<div class="ink-3" style="font-size:11px">沿用最近月份（本月未設）</div>` : ""}</span></div>
-            <div class="rev-row"><span class="label">月已花</span><span class="val">${Math.round(c.monthSpent).toLocaleString()}</span></div>
-            <div class="rev-row"><span class="label">月剩餘</span><span class="val">${Math.round(c.monthRemaining).toLocaleString()}</span></div>
-          </div>
-          <div class="rev-card">
-            <h3 style="margin-bottom:8px">${pickedDate} 當日</h3>
-            <div class="rev-row"><span class="label">建議日花費上限</span><span class="val">${Math.round(c.band.upper).toLocaleString()}</span></div>
-            <div class="rev-row"><span class="label">已配置</span><span class="val">${Math.round(c.todaySpent).toLocaleString()}</span></div>
-            <div class="rev-row"><span class="label">當日尚可加</span><span class="val">${Math.round(c.todayHeadroom).toLocaleString()}</span></div>
-          </div>
-        </div>
-      </details>
-
-      ${renderSimulatedMonthGrid({
-        start_date: pickedDate,
-        end_date: addDays(pickedDate, days),
-        amortize_days: days,
-        daily_amort_twd: c.suggestTwd,
-        weights: { [c.product.id]: 100 },
-      })}
+      </div>
     </div>
   `;
 }
 
-// 模擬「假設這筆新廣告買下去 + 所有現有廣告到期都續費」之後的整月每日攤提表。
-//   - 對每個 ad_code 的最後一段，把 end_date 推到月底+1（沒淘汰才推）
-//   - 加上代表新採買的 fakeAd（caller 提供 weights，可單產品 100% 或多產品分權重）
-//   - 即使新採買無法成立（daily_amort_twd <= 0），仍顯示「續費後 baseline」表格，標題改寫
-// 表格格式跟概覽頁的「每日攤提（台幣）」一致。
-function renderSimulatedMonthGrid(fakeAdInput, scenario = null) {
-  const s = getState();
-  if (!fakeAdInput || !fakeAdInput.start_date) return "";
+// ── Amort grid card ────────────────────────────────────────────────
+function renderAmortGridCard(state, products, scenarioAds, today) {
+  const primaryYM = rows[0] ? monthOf(rows[0].start) : state.settings.current_month;
+  const ymNext = nextMonthYM(primaryYM);
+  const ym = viewMonth === "next" ? ymNext : primaryYM;
 
-  const hasNewBuy = (fakeAdInput.daily_amort_twd || 0) > 0;
-  const ym = monthOf(fakeAdInput.start_date);
-  const today = todayTaipei();
-  if (!scenario) scenario = scenarioFor(s, ym);
+  const fakeAds = rows.map((r) => makePreviewAd(r)).filter(Boolean);
 
-  // 不做 auto-renewal:跟「概覽 → 每日攤提」用同一份 state.ads,顯示「現有廣告 + 此筆新採買」
-  // 的真實未來分布。如果某個廣告在月中就到期不續費,該日期之後就沒貢獻 — 這跟概覽一致。
-  // (舊版會自動把每個 code 最新段的 end_date 推到月底,造成兩邊數字對不起來。)
-  // 注意:「排除成效全爛廣告」只用在【建議金額】演算法(suggestForDate / suggestWeights),
-  // 因為那是預測未來空間。但這個 grid 是【顯示實際分布】,要跟概覽 / 權重調整影響預覽一致,
-  // 所以不能過濾 — 用全部 state.ads。
-  const fakeAd = hasNewBuy
-    ? { id: "preview_new_ad", ad_code: "_PREVIEW_", ad_name: "(預覽:新採買)", group: "preview", ...fakeAdInput }
-    : null;
-  const baseAds = scenario?.state?.ads || s.ads || [];
-  const ads = hasNewBuy ? [...baseAds, fakeAd] : baseAds;
-  const grid = dailySpendGrid(ads, ym);
-  const products = s.products;
+  // 月份 grid 計算
+  // renewal 模式時 scenarioAds 已經有續費 projection。若切到「next month」,需要對 next month 也跑一次 projection。
+  let monthAds = scenarioAds;
+  if (viewMonth === "next" && spendScenario === "renewal") {
+    const nextProj = projectAdsWithRenewals(state, ymNext, { fromDate: today, excludePoorPerf: true });
+    monthAds = nextProj.ads;
+  } else if (viewMonth === "next") {
+    monthAds = state.ads;
+  }
+
+  const grid = dailySpendGrid([...monthAds, ...fakeAds], ym);
   const monthDays = [...daysOfMonth(ym)];
-  const dayBandsByPid = Object.fromEntries(products.map((p) => [p.id, bandsForMonth(s, p, ym)]));
+  const dayBandsByPid = Object.fromEntries(products.map((p) => [p.id, bandsForMonth(state, p, ym)]));
 
   const monthTotals = Object.fromEntries(products.map((p) => [p.id, 0]));
   let grandTotal = 0;
 
+  const headerCells = products.map((p) => `<th class="num">${esc(p.name)}</th>`).join("");
+
   const bodyRows = monthDays.map((d) => {
     const row = grid[d] || {};
-    // 該日「新採買」貢獻明細(用來在格子顯示 +delta)
-    const newContrib = fakeAd ? dailySpendForAd(fakeAd, d) : {};
-    const isInBuyPeriod = fakeAd && d >= fakeAd.start_date && d < fakeAd.end_date;
+    // 新採買貢獻明細
+    const newContrib = {};
+    for (const fad of fakeAds) {
+      const per = dailySpendForAd(fad, d);
+      for (const [pid, v] of Object.entries(per)) newContrib[pid] = (newContrib[pid] || 0) + v;
+    }
+    const isInBuyPeriod = fakeAds.some((fad) => d >= fad.start_date && d < fad.end_date);
     let dayTotal = 0;
     const cells = products.map((p) => {
       const amt = row[p.id] || 0;
@@ -622,7 +491,6 @@ function renderSimulatedMonthGrid(fakeAdInput, scenario = null) {
       const b = dayBandsByPid[p.id]?.[d];
       const isFuture = d >= today;
       const checkBand = isFuture && b && b.budget_set && !isNoBand(p) && amt > 0;
-      // 比較用四捨五入後的整數,跟格子顯示對齊。否則 5025.0000001 > 5025 會把顯示「5025」標紅,讓使用者以為超過
       const amtRounded = Math.round(amt);
       const isUnder = checkBand && amtRounded < Math.round(b.lower);
       const isOver = checkBand && amtRounded > Math.round(b.upper);
@@ -631,7 +499,7 @@ function renderSimulatedMonthGrid(fakeAdInput, scenario = null) {
       const deltaBadge = newAmt > 0
         ? `<div style="font-size:10px;color:var(--ok);font-weight:600">+${Math.round(newAmt).toLocaleString()}</div>`
         : "";
-      return `<td class="${cls}">${amt ? Math.round(amt).toLocaleString() : "<span class='ink-3'>—</span>"}${deltaBadge}</td>`;
+      return `<td class="${cls}">${amt ? Math.round(amt).toLocaleString() : '<span class="ink-3">—</span>'}${deltaBadge}</td>`;
     }).join("");
     grandTotal += dayTotal;
     const todayCls = d === today ? " dg-today" : "";
@@ -645,7 +513,7 @@ function renderSimulatedMonthGrid(fakeAdInput, scenario = null) {
 
   const footerCells = products.map((p) => {
     const total = monthTotals[p.id];
-    const budget = getMonthlyBudget(s, p.id, ym) || 0;
+    const budget = getMonthlyBudget(state, p.id, ym) || 0;
     const diff = total - budget;
     const diffClass = !budget ? "ink-3" : diff > 10000 ? "bad" : diff > 0 ? "warn" : -diff > 20000 ? "warn" : "ok";
     return `<td class="num dg-foot">
@@ -654,21 +522,25 @@ function renderSimulatedMonthGrid(fakeAdInput, scenario = null) {
     </td>`;
   }).join("");
 
-  const headerCells = products.map((p) => `<th class="num">${esc(p.name)}</th>`).join("");
-
-  const heading = hasNewBuy
-    ? `採買後每日攤提(${ym},台幣)`
-    : `現有廣告每日攤提(${ym},台幣)`;
+  const heading = `採買後每日攤提(${ym},台幣)`;
   const scenarioLabel = spendScenario === "renewal" ? "續費預估" : "實際資料";
-  const subhint = hasNewBuy
-    ? `假設此筆新廣告買下,加上${scenarioLabel}的既有攤提分布。淡綠底 = 此筆新採買的攤提區間,綠色 +N = 該日新增貢獻。紅色格 = 超出建議日花費上限。`
-    : `這筆新採買沒有可加空間,下表只顯示${scenarioLabel}的既有攤提分布。`;
+  const subhint = fakeAds.length > 0
+    ? `淡綠底 = 採買筆攤提區間;綠 +N = 當日新增貢獻;紅字 = 低於下限;橘字 = 超過上限。${scenarioLabel}模式。`
+    : `沒有有效採買筆,下表只顯示${scenarioLabel}的既有攤提分布。`;
 
   return `
     <div class="card" style="margin-top:14px">
       <div class="card-head">
         <h2>${heading}</h2>
-        ${renderScenarioChips()}
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="ink-3" style="font-size:12px">攤提模式:</span>
+          <button class="filter-chip ${spendScenario === "renewal" ? "active" : ""}" data-spend-scenario="renewal">續費預估</button>
+          <button class="filter-chip ${spendScenario === "actual" ? "active" : ""}" data-spend-scenario="actual">實際資料</button>
+        </div>
+      </div>
+      <div class="tabs" style="margin-bottom:10px">
+        <button class="tab ${viewMonth === "current" ? "active" : ""}" data-view-month="current">當月(${primaryYM})</button>
+        <button class="tab ${viewMonth === "next" ? "active" : ""}" data-view-month="next">下月(${ymNext})</button>
       </div>
       <div class="ink-3" style="font-size:12px;margin-bottom:6px">${subhint}</div>
       <div class="table-wrap" style="max-height:560px;overflow:auto">
@@ -694,366 +566,135 @@ function renderSimulatedMonthGrid(fakeAdInput, scenario = null) {
   `;
 }
 
-
-// ── Mode 2: 依金額分配權重 ─────────────────────────────────────────
-function renderAmountMode(s, ym) {
-  const rate = s.settings.expense_rate;
-  const today = todayStr();
-  const scenario = scenarioFor(s, monthOf(amtStart || today));
-  // 採買只能往未來；amtStart 落在過去就強拉到今日
-  if (amtStart && amtStart < today) amtStart = today;
-  if (amtEnd && amtEnd <= amtStart) {
-    amtEnd = addDays(amtStart, amtDays);
-  }
-  const amountTwd = (Number(amtCny) || 0) * rate;
-  const dailyTwd = amtDays > 0 ? amountTwd / amtDays : 0;
-
-  let suggested = null;
-  let reasons = [];
-  let candidates = [];
-  let inMonthDays = 0;
-  let inNextMonthDays = 0;
-  let ymNext = "";
-  if (amtCny > 0 && amtStart && amtEnd && amtDays > 0 && amtEnd > amtStart) {
-    const fakeAd = {
-      start_date: amtStart,
-      end_date: amtEnd,
-      amortize_days: amtDays,
-      daily_amort_twd: dailyTwd,
-    };
-    const r = suggestWeights(scenario.state, s.products, scenario.state.ads, ym, fakeAd);
-    suggested = r.weights;
-    reasons = r.reasons;
-    candidates = r.candidates || [];
-    inMonthDays = r.inMonthDays || 0;
-    inNextMonthDays = r.inNextMonthDays || 0;
-    ymNext = r.ymNext || "";
-  }
-
-  const nameOf = Object.fromEntries(s.products.map((p) => [p.id, p.name]));
-  const productOf = Object.fromEntries(s.products.map((p) => [p.id, p]));
-  const candById = Object.fromEntries(candidates.map((c) => [c.p.id, c]));
-  const excluded = candidates.filter((c) => c.excludeReason);
-  const totalW = suggested ? Object.values(suggested).reduce((a, b) => a + b, 0) : 0;
-
-  return `
-    <div class="rev-controls">
-      <div class="field" style="min-width:140px">
-        <label>金額（RMB）</label>
-        <input id="amt-cny" type="number" step="any" value="${amtCny || ""}" placeholder="例 90000" />
-      </div>
-      <div class="field" style="min-width:140px">
-        <label>支出匯率</label>
-        <input id="amt-rate" type="number" step="0.01" value="${rate}" disabled />
-        <div class="hint">= ${Math.round(amountTwd).toLocaleString()} TWD</div>
-      </div>
-      <div class="field" style="min-width:140px">
-        <label>開始日（當日或未來）</label>
-        <input id="amt-start" type="date" value="${amtStart}" min="${today}" />
-      </div>
-      <div class="field" style="min-width:140px">
-        <label>結束日（不含）</label>
-        <input id="amt-end" type="date" value="${amtEnd}" min="${today}" />
-      </div>
-      <div class="field" style="min-width:120px">
-        <label>攤提天數</label>
-        <input id="amt-days" type="number" value="${amtDays}" min="1" max="180" />
-        <div class="hint">每日攤提 = ${Math.round(dailyTwd).toLocaleString()} TWD</div>
-      </div>
-    </div>
-
-    ${suggested == null ? `
-      <div class="card"><p class="ink-2">填入金額、起訖、攤提天數後，系統會依各產品「剩餘預算」與「當日建議日花費剩餘空間」算出建議權重。</p></div>
-    ` : Object.keys(suggested).length === 0 ? `
-      <div class="card">
-        <p class="ink-2" style="color:var(--bad)">無法給出建議：</p>
-        <ul>${reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
-      </div>
-      ${renderSimulatedMonthGrid({
-        start_date: amtStart,
-        end_date: amtEnd,
-        amortize_days: amtDays,
-        daily_amort_twd: 0,
-        weights: {},
-      }, scenario)}
-    ` : `
-      <div class="card">
-        <div class="card-head">
-          <h2>建議權重分配</h2>
-          <button class="primary" id="amt-create">📋 用此參數建立廣告</button>
-        </div>
-
-        <div class="rev-hero">
-          <div class="rev-hero-num">${Math.round(amountTwd).toLocaleString()} <span class="rev-hero-unit">TWD（${amtCny.toLocaleString()} RMB）</span></div>
-          <div class="rev-hero-sub">
-            ${amtStart} ~ ${amtEnd}（${amtDays} 天）→ 每日攤提 <strong>${Math.round(dailyTwd).toLocaleString()}</strong> TWD
-          </div>
-          <div class="rev-hero-limits">
-            ${Object.entries(suggested).sort(([, a], [, b]) => b - a).map(([pid, w]) => {
-              const dailyShare = dailyTwd * (w / 100);
-              return `<div><strong>${esc(nameOf[pid] || pid)} ${Math.round(w)}%</strong> — ${Math.round(dailyShare).toLocaleString()} TWD/日</div>`;
-            }).join("")}
-          </div>
-        </div>
-
-        ${reasons.length ? `<div class="hint" style="margin-top:8px">${reasons.map((r) => esc(r)).join("；")}</div>` : ""}
-
-        <details class="rev-details">
-          <summary>各產品預算 / 建議花費值 細節</summary>
-        <div class="rev-product-cards" style="margin-top:8px">
-          ${Object.entries(suggested)
-            .sort(([, a], [, b]) => b - a)
-            .map(([pid, w]) => {
-              const dailyShare = dailyTwd * (w / 100);
-              const totalShare = amountTwd * (w / 100);
-              const cand = candById[pid];
-              const monthContrib = dailyShare * inMonthDays;
-              const monthSpent = cand?.spent || 0;
-              const budget = cand?.budget;
-              const projTotal = monthSpent + monthContrib;
-              const fmt = (n) => Math.round(n).toLocaleString();
-
-              // 本月：projTotal vs budget
-              let thisMonthLine = "";
-              if (budget != null && budget > 0) {
-                const over = projTotal - budget;
-                const cls = over > 0.5 ? "bad" : "ok";
-                const sign = over > 0.5 ? `✗ +${fmt(over)}` : "✓";
-                thisMonthLine = `<div class="rev-line"><span class="rev-k">本月</span><span class="rev-v ${cls}">${fmt(projTotal)} / ${fmt(budget)} ${sign}</span></div>`;
-              }
-
-              // 下月:baseline + nextContrib vs nextBudget(此為「月總額」資訊性提示;
-              // 強制砍預算的硬性建議已移除,改用下方「每日 upper 超出天數」做提醒)
-              let nextMonthLine = "";
-              if (inNextMonthDays > 0 && cand?.nextBudgetAssumed != null && cand.nextBudgetAssumed > 0) {
-                const nextContrib = dailyShare * inNextMonthDays;
-                const baseline = cand.nextSpent || 0;
-                const nextProj = baseline + nextContrib;
-                const nextBudget = cand.nextBudgetAssumed;
-                const nextOver = nextProj - nextBudget;
-                const cls = nextOver > 0.5 ? "bad" : "ok";
-                const sign = nextOver > 0.5 ? `✗ +${fmt(nextOver)}` : "✓";
-                const tipText = `${cand.nextBudgetIsAssumed ? "下月預算未設，以本月為假設；" : ""}已含現廣告續費`;
-                nextMonthLine = `<div class="rev-line"><span class="rev-k" title="${tipText}">下月</span><span class="rev-v ${cls}">${fmt(nextProj)} / ${fmt(nextBudget)} ${sign}</span></div>`;
-              }
-              const cutLine = "";
-
-              return `
-                <div class="rev-card">
-                  <h3>
-                    <span>${esc(nameOf[pid] || pid)}</span>
-                    <span class="pill ${productOf[pid]?.type || ""}" style="font-weight:400;font-size:11px;margin-left:4px">${productOf[pid]?.type === "app" ? "APP" : "小島"}</span>
-                    <span class="pill" style="font-size:14px;margin-left:auto">${Math.round(w)}%</span>
-                  </h3>
-                  <div class="rev-line"><span class="rev-k">日／月</span><span class="rev-v">${fmt(dailyShare)}／${fmt(totalShare)} <span class="ink-3">(${fmt(totalShare / rate)} RMB)</span></span></div>
-                  ${thisMonthLine}
-                  ${nextMonthLine}
-                  ${cutLine}
-                </div>
-              `;
-            }).join("")}
-        </div>
-        <div class="hint" style="margin-top:8px">
-          合計：<strong>${Math.round(totalW)}%</strong>
-          ${inMonthDays ? `；本月攤提天 <strong>${inMonthDays}</strong>` : ""}
-          ${inNextMonthDays ? `；下月（${ymNext}）攤提天 <strong>${inNextMonthDays}</strong>` : ""}
-        </div>
-        </details>
-        ${(() => {
-          // 改成「逐日 upper 比對」(跟依日期同一套):對每個產品 baseline+dailyShare > upper 就計入 overflow,
-          // 連續超出合併成 range。下月有 N 天超出時提醒,不再強制建議砍預算。
-          if (rate <= 0) return "";
-          const overflowItems = [];
-          for (const [pid, w] of Object.entries(suggested)) {
-            const cand = candById[pid];
-            if (!cand?.p) continue;
-            const dailyShare = dailyTwd * (w / 100);
-            const ranges = computeOverflowRangesForProduct(scenario.state, cand.p, amtStart, amtDays, dailyShare);
-            if (ranges.length === 0) continue;
-            overflowItems.push({ product: cand.p, ranges });
-          }
-          const nextMonthOverflowDays = countOverflowDaysInMonth(overflowItems, ymNext);
-
-          // 「現有廣告續費就會超下月預算」資訊提示(跟新採買無關,單獨保留)
-          let baselineOverTotal = 0;
-          if (inNextMonthDays && rate > 0) {
-            for (const c of candidates) {
-              if (!c.nextBudgetAssumed || c.nextBudgetAssumed <= 0) continue;
-              const baseline = c.nextSpent || 0;
-              const baselineOver = Math.max(0, baseline - c.nextBudgetAssumed);
-              if (baselineOver > 0.5) baselineOverTotal += baselineOver;
-            }
-          }
-          const baselineNote = baselineOverTotal > 0.5
-            ? `<div class="hint rev-summary rev-summary-info" style="margin-top:8px">ℹ️ 光現有廣告續費就會超下月預算 ${Math.ceil(baselineOverTotal / rate).toLocaleString()} RMB(與這筆採買無關)</div>`
-            : "";
-
-          if (overflowItems.length === 0) return baselineNote;
-
-          const overflowCallout = renderOverflowCallout(overflowItems);
-          const nextMonthSummary = nextMonthOverflowDays > 0
-            ? `<div class="hint rev-summary rev-summary-warn" style="margin-top:8px">⚠️ 下月會有 <strong>${nextMonthOverflowDays}</strong> 天日花費會超出建議上限,需注意下月預算狀況</div>`
-            : "";
-          return `${nextMonthSummary}${overflowCallout}${baselineNote}`;
-        })()}
-        ${excluded.length ? `
-          <div class="hint" style="margin-top:12px;padding:10px 12px;background:#f7f9fc;border-radius:6px;font-size:12px">
-            <strong>未納入分配的產品（${excluded.length}）：</strong>
-            <ul style="margin:4px 0 0;padding-left:20px">
-              ${excluded.map((c) => `<li><strong>${esc(c.p.name)}</strong> — ${esc(c.excludeReason)}</li>`).join("")}
-            </ul>
-          </div>
-        ` : ""}
-      </div>
-
-      ${renderSimulatedMonthGrid({
-        start_date: amtStart,
-        end_date: amtEnd,
-        amortize_days: amtDays,
-        daily_amort_twd: dailyTwd,
-        weights: suggested,
-      }, scenario)}
-    `}
-  `;
-}
-
+// ── 事件 ──────────────────────────────────────────────────────────
 function bindHandlers(root) {
-  root.querySelectorAll("[data-mode]").forEach((el) => {
-    el.onclick = () => {
-      mode = el.dataset.mode;
-      render(root);
-    };
-  });
+  // 採買模式 chip
   root.querySelectorAll("[data-spend-scenario]").forEach((el) => {
-    el.onclick = () => {
-      spendScenario = el.dataset.spendScenario;
-      render(root);
+    el.onclick = () => { spendScenario = el.dataset.spendScenario; doRender(root); };
+  });
+  // 月份 tab
+  root.querySelectorAll("[data-view-month]").forEach((el) => {
+    el.onclick = () => { viewMonth = el.dataset.viewMonth; doRender(root); };
+  });
+  // 輸入欄(amount/start/end/rate/days)
+  root.querySelectorAll("[data-row][data-key]").forEach((el) => {
+    el.onchange = () => {
+      const i = Number(el.dataset.row);
+      const k = el.dataset.key;
+      if (!rows[i]) return;
+      const today = todayTaipei();
+      let v = el.value;
+      if (k === "amount_cny") {
+        v = v === "" || v == null ? null : Number(v);
+        if (Number.isNaN(v)) v = null;
+        const wasEmpty = !rows[i].amount_cny;
+        rows[i].amount_cny = v;
+        // 從空→有金額:若 weights 為空就用建議自動填
+        if (wasEmpty && v && Object.keys(rows[i].weights || {}).length === 0) {
+          const state = getState();
+          const primaryYM = monthOf(rows[i].start);
+          const scenario = scenarioFor(state, primaryYM);
+          const sug = computeRowSuggestion(state, state.products, scenario.state.ads, i);
+          rows[i].weights = { ...(sug.weights || {}) };
+        }
+      } else if (k === "rate" || k === "days") {
+        v = Number(v) || 0;
+        rows[i][k] = v;
+      } else {
+        rows[i][k] = v;
+      }
+      // 起迄變動 → 自動算攤提天數
+      if (k === "start" || k === "end") {
+        if (rows[i].start < today) rows[i].start = today;
+        if (rows[i].end <= rows[i].start) rows[i].end = addDays(rows[i].start, rows[i].days || 30);
+        rows[i].days = Math.max(1, diffDays(rows[i].start, rows[i].end));
+      }
+      doRender(root);
     };
   });
-
-  if (mode === "date") {
-    root.querySelector("#rev-date").onchange = (e) => { pickedDate = e.target.value; render(root); };
-    root.querySelector("#rev-days").oninput = (e) => {
-      const v = Number(e.target.value);
-      if (Number.isFinite(v) && v > 0 && v <= 365) { amortizeDays = v; render(root); }
+  // 權重 input
+  root.querySelectorAll("[data-w-pid]").forEach((el) => {
+    el.onchange = () => {
+      const i = Number(el.dataset.row);
+      const pid = el.dataset.wPid;
+      if (!rows[i]) return;
+      const v = Number(el.value) || 0;
+      if (v === 0) delete rows[i].weights[pid];
+      else rows[i].weights[pid] = v;
+      doRender(root);
     };
-    // 日花費低於下限警示「→ 一鍵調整」
-    const gdBtn = root.querySelector("#rev-gd-fix-open");
-    if (gdBtn) gdBtn.onclick = () => openGiftDayFixModal(() => render(root));
-    root.querySelectorAll("[data-rev-pid]").forEach((el) => {
-      el.onclick = () => {
-        const pid = el.dataset.revPid;
-        if (pickedPids.has(pid)) pickedPids.delete(pid);
-        else pickedPids.add(pid);
-        render(root);
-      };
-    });
-    const clearBtn = root.querySelector("#rev-clear-pids");
-    if (clearBtn) clearBtn.onclick = () => { pickedPids.clear(); render(root); };
-    const dc = root.querySelector("#date-create");
-    if (dc) dc.onclick = () => createFromDateMode();
-    const dcm = root.querySelector("#date-create-multi");
-    if (dcm) dcm.onclick = () => createFromDateMultiMode();
-  } else {
-    const apply = () => render(root);
-    const q = (sel) => root.querySelector(sel);
-    q("#amt-cny").onchange = (e) => { amtCny = Number(e.target.value) || 0; apply(); };
-    // 起訖任一變動 → 自動把攤提天數帶成 (end - start)(end 不含當天 = 不 +1),使用者改攤提天數會覆寫
-    const syncDaysFromDates = () => {
-      if (amtStart && amtEnd && amtEnd > amtStart) {
-        const d = Math.round((Date.parse(amtEnd) - Date.parse(amtStart)) / 86400000);
-        if (Number.isFinite(d) && d > 0 && d <= 365) amtDays = d;
+  });
+  // 移除筆
+  root.querySelectorAll("[data-remove]").forEach((el) => {
+    el.onclick = () => {
+      const i = Number(el.dataset.remove);
+      if (rows.length <= 1) {
+        // 至少保留一筆
+        const today = todayTaipei();
+        const rate = getState().settings.expense_rate || 4.7;
+        rows = [defaultRow(today, rate, 1)];
+      } else {
+        rows.splice(i, 1);
       }
+      doRender(root);
     };
-    q("#amt-start").onchange = (e) => { amtStart = e.target.value; syncDaysFromDates(); apply(); };
-    q("#amt-end").onchange = (e) => { amtEnd = e.target.value; syncDaysFromDates(); apply(); };
-    q("#amt-days").onchange = (e) => {
-      const v = Number(e.target.value);
-      if (Number.isFinite(v) && v > 0 && v <= 365) { amtDays = v; apply(); }
+  });
+  // 採用建議(empty row)
+  root.querySelectorAll("[data-adopt]").forEach((el) => {
+    el.onclick = () => {
+      const i = Number(el.dataset.adopt);
+      if (!rows[i]) return;
+      const state = getState();
+      const primaryYM = monthOf(rows[i].start);
+      const scenario = scenarioFor(state, primaryYM);
+      const sug = computeRowSuggestion(state, state.products, scenario.state.ads, i);
+      if (sug.amount_cny_suggest > 0) {
+        rows[i].amount_cny = sug.amount_cny_suggest;
+        rows[i].weights = { ...(sug.weights || {}) };
+      }
+      doRender(root);
     };
-    const create = q("#amt-create");
-    if (create) create.onclick = () => createFromAmountMode();
+  });
+  // 重新建議權重
+  root.querySelectorAll("[data-rebalance]").forEach((el) => {
+    el.onclick = () => {
+      const i = Number(el.dataset.rebalance);
+      if (!rows[i]) return;
+      const state = getState();
+      const primaryYM = monthOf(rows[i].start);
+      const scenario = scenarioFor(state, primaryYM);
+      const sug = computeRowSuggestion(state, state.products, scenario.state.ads, i);
+      rows[i].weights = { ...(sug.weights || {}) };
+      doRender(root);
+    };
+  });
+  // 新增筆
+  const addBtn = root.querySelector("#rev-add-row");
+  if (addBtn) {
+    addBtn.onclick = () => {
+      const today = todayTaipei();
+      const rate = getState().settings.expense_rate || 4.7;
+      rows.push(defaultRow(today, rate, rows.length + 1));
+      doRender(root);
+    };
   }
-}
-
-function createFromAmountMode() {
-  const s = getState();
-  const ym = s.settings.current_month;
-  const rate = s.settings.expense_rate;
-  const dailyTwd = amtDays > 0 ? (amtCny * rate) / amtDays : 0;
-  const fakeAd = {
-    start_date: amtStart, end_date: amtEnd,
-    amortize_days: amtDays, daily_amort_twd: dailyTwd,
-  };
-  const scenario = scenarioFor(s, monthOf(amtStart || todayTaipei()));
-  const r = suggestWeights(scenario.state, s.products, scenario.state.ads, ym, fakeAd);
-  // 暫存 prefill 給 ads 編輯彈窗
-  sessionStorage.setItem("buyads_prefill_ad", JSON.stringify({
-    amount_cny: amtCny,
-    exchange_rate: rate,
-    start_date: amtStart,
-    end_date: amtEnd,
-    amortize_days: amtDays,
-    weights: r.weights,
-  }));
-  location.hash = "#ads";
-}
-
-// date mode「用此參數建立廣告」：單一產品時 100%；多選時用合計 daily + 比例權重
-function createFromDateMode() {
-  const s = getState();
-  const rate = s.settings.expense_rate;
-  const scenario = scenarioFor(s, monthOf(pickedDate));
-  const cards = suggestForDate(scenario.state, pickedDate, rate, amortizeDays);
-  const onlyPid = pickedPids.size === 1 ? [...pickedPids][0] : null;
-  const card = cards.find((c) => c.product.id === onlyPid);
-  if (!card || card.kind !== "ok" || card.suggestTwd <= 0) {
-    toast("該產品這天沒有可加空間", "bad");
-    return;
-  }
-
-  const totalTwd = card.suggestTwd * amortizeDays;
-  const cny = rate > 0 ? Math.round(totalTwd / rate) : 0;
-  const startDate = pickedDate;
-  const endDate = addDays(startDate, amortizeDays);
-
-  sessionStorage.setItem("buyads_prefill_ad", JSON.stringify({
-    amount_cny: cny,
-    exchange_rate: rate,
-    start_date: startDate,
-    end_date: endDate,
-    amortize_days: amortizeDays,
-    weights: { [onlyPid]: 100 },
-  }));
-  location.hash = "#ads";
-}
-
-// date mode 多選：合計 daily 為廣告 daily，依各產品 suggestTwd 比例分權
-function createFromDateMultiMode() {
-  const s = getState();
-  const rate = s.settings.expense_rate;
-  const scenario = scenarioFor(s, monthOf(pickedDate));
-  const cards = suggestForDate(scenario.state, pickedDate, rate, amortizeDays);
-  const usable = cards.filter((c) => pickedPids.has(c.product.id) && c.kind === "ok" && c.suggestTwd > 0);
-  if (usable.length === 0) {
-    toast("選中的產品都沒有可加空間", "bad");
-    return;
-  }
-  const totalDailyTwd = usable.reduce((s, c) => s + c.suggestTwd, 0);
-  const weights = computeIntegerWeights(usable.map((c) => ({ id: c.product.id, value: c.suggestTwd })), 2);
-  const totalTwd = totalDailyTwd * amortizeDays;
-  const cny = rate > 0 ? Math.round(totalTwd / rate) : 0;
-  const startDate = pickedDate;
-  const endDate = addDays(startDate, amortizeDays);
-  sessionStorage.setItem("buyads_prefill_ad", JSON.stringify({
-    amount_cny: cny,
-    exchange_rate: rate,
-    start_date: startDate,
-    end_date: endDate,
-    amortize_days: amortizeDays,
-    weights,
-  }));
-  location.hash = "#ads";
+  // 用這筆參數建立廣告
+  root.querySelectorAll("[data-create-row]").forEach((el) => {
+    el.onclick = () => {
+      const i = Number(el.dataset.createRow);
+      const row = rows[i];
+      if (!row || !row.amount_cny) return;
+      sessionStorage.setItem("buyads_prefill_ad", JSON.stringify({
+        amount_cny: row.amount_cny,
+        exchange_rate: row.rate,
+        start_date: row.start,
+        end_date: row.end,
+        amortize_days: row.days,
+        weights: { ...row.weights },
+      }));
+      location.hash = "#ads";
+    };
+  });
 }
 
 function esc(v) {
