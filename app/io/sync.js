@@ -22,6 +22,39 @@ import { TABLE_SYNC_SPECS } from "./sync-specs.js";
 import { addConflict, getConflictCount, subscribeConflicts } from "./conflict-store.js";
 import { logInfo, logWarn, logError } from "../lib/sync-log.js";
 
+// ===== 同步狀態廣播(給 sidebar status pill 用)=====
+// 統一一份輕量狀態,有變動時 emit 給所有訂閱者(sidebar / debug overlay 等)。
+// 不存到 localStorage,只在記憶體;主要供 UI 即時顯示。
+const _statusListeners = new Set();
+let _lastSuccessAt = 0;
+let _lastFailedAt = 0;
+let _lastError = "";
+let _hasPendingChanges = false;  // state 動過但還沒 sync 成功
+
+function _emitStatus() {
+  for (const fn of _statusListeners) {
+    try { fn(); } catch { /* swallow */ }
+  }
+}
+export function subscribeSyncStatus(fn) {
+  _statusListeners.add(fn);
+  return () => _statusListeners.delete(fn);
+}
+export function getSyncStatus() {
+  return {
+    isSyncing,
+    lastSuccessAt: _lastSuccessAt,
+    lastFailedAt: _lastFailedAt,
+    lastError: _lastError,
+    hasPendingChanges: _hasPendingChanges,
+    nextEarliestSyncAt,
+    consecutiveFailures,
+    serverVersion: loadServerVersion(),
+    conflictCount: getConflictCount(),
+    isConfigured: hasCredentials(),
+  };
+}
+
 // 自動同步調節
 const DEBOUNCE_AFTER_CHANGE_MS = 5000;     // state 改後 5 秒無新變動 → 同步
 const POLL_INTERVAL_MS = 30 * 1000;        // 每 30 秒背景同步一次
@@ -573,6 +606,7 @@ async function runSyncIfReady(reason, options = {}) {
   }
 
   isSyncing = true;
+  _emitStatus();
   try {
     const result = await syncOnce(
       (p) => showSyncBanner({ ...p, name: `${reason} · ${p.name}` }),
@@ -587,15 +621,22 @@ async function runSyncIfReady(reason, options = {}) {
     if (result.conflicts > 0) {
       markSyncDone(`⚠️ 有 ${result.conflicts} 筆衝突待處理`, "bad");
     }
+    // 同步成功 → 清掉 pending(只在 push 沒衝突時才算真的全推上去)
+    _lastSuccessAt = Date.now();
+    _lastError = "";
+    if ((result.conflicts || 0) === 0) _hasPendingChanges = false;
   } catch (e) {
     consecutiveFailures += 1;
     const backoffMs = Math.min(10 * 60 * 1000, 30 * 1000 * Math.pow(2, consecutiveFailures - 1));
     nextEarliestSyncAt = Date.now() + backoffMs;
     markSyncDone(`✗ 同步失敗:${e.message}(${Math.round(backoffMs / 1000)}s 後再試)`, "bad");
     logError("sync.runFailed", { reason, attempts: consecutiveFailures, error: String(e?.message || e) });
+    _lastFailedAt = Date.now();
+    _lastError = String(e?.message || e);
   } finally {
     isSyncing = false;
     lastSyncEndedAt = Date.now();
+    _emitStatus();
   }
 }
 
@@ -606,6 +647,12 @@ export function initSyncOrchestrator() {
   setTimeout(() => runSyncIfReady("啟動載入", { serverWins: true }), 100);
 
   subscribe(() => {
+    // state 動了 → 標 dirty 並通知 status 訂閱者(sidebar 即時亮起「有未同步變更」)
+    // 但若同步中,變動可能是 applySync(伺服器拉下來的)觸發的,不能算成 user dirty
+    if (!isSyncing && !_hasPendingChanges) {
+      _hasPendingChanges = true;
+      _emitStatus();
+    }
     if (isSyncing) return;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
@@ -619,6 +666,8 @@ export function initSyncOrchestrator() {
 
   // 衝突解決完(佇列歸零)→ 立刻試一次 sync
   subscribeConflicts((queue) => {
+    // 衝突數變動 → 通知 status 訂閱者(讓 sidebar 即時更新衝突徽章)
+    _emitStatus();
     if (queue.length === 0 && orchestratorStarted) {
       setTimeout(() => runSyncIfReady("衝突已解決"), 200);
     }
@@ -630,21 +679,28 @@ export async function manualSync() {
   if (isSyncing) throw new Error("同步進行中,請稍候");
   if (getConflictCount() > 0) throw new Error("有衝突待處理,請先解決");
   isSyncing = true;
+  _emitStatus();
   try {
     await syncOnce((p) => showSyncBanner(p));
     consecutiveFailures = 0;
     nextEarliestSyncAt = 0;
+    _lastSuccessAt = Date.now();
+    _lastError = "";
     if (getConflictCount() > 0) {
       markSyncDone(`⚠️ 有 ${getConflictCount()} 筆衝突待處理`, "bad");
     } else {
+      _hasPendingChanges = false;
       markSyncDone("✓ 手動同步完成", "ok");
     }
   } catch (e) {
     markSyncDone(`✗ 手動同步失敗:${e.message}`, "bad");
     logError("sync.manualFailed", { error: String(e?.message || e) });
+    _lastFailedAt = Date.now();
+    _lastError = String(e?.message || e);
     throw e;
   } finally {
     isSyncing = false;
     lastSyncEndedAt = Date.now();
+    _emitStatus();
   }
 }

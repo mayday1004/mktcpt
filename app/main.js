@@ -1,6 +1,6 @@
 import { getState, subscribe, canUndo, peekUndo, undo } from "./state.js";
 import { getExpenseRate, getIncomeRate, getRateSource } from "./schema.js";
-import { initSyncOrchestrator, onConflictResolved } from "./io/sync.js";
+import { initSyncOrchestrator, onConflictResolved, subscribeSyncStatus, getSyncStatus } from "./io/sync.js";
 import { initConflictBanner } from "./io/conflict-resolver.js";
 import { initLongTabWatch, showColdStartGateToast } from "./lib/version-gate.js";
 import "./lib/sync-log.js";  // 註冊 window.__buyadsLog 給 DevTools 用
@@ -103,6 +103,8 @@ window.addEventListener("DOMContentLoaded", () => {
   showColdStartGateToast();
   // 長 tab 偵測:每 30 秒 fetch /version.txt,看 server 有沒有新 deploy → banner 提示重整
   initLongTabWatch();
+  // sidebar 同步狀態 pill:訂閱 sync 模組,每 20 秒重畫一次(讓「N 分前」更新)
+  initSyncStatusPill();
 });
 subscribe(() => {
   renderSidebar();
@@ -132,6 +134,69 @@ function bindSidebarToggle() {
     aside.classList.toggle("collapsed");
     localStorage.setItem(SIDEBAR_KEY, aside.classList.contains("collapsed") ? "1" : "0");
   };
+}
+
+// ── Sidebar 同步狀態 pill ─────────────────────────────────────────
+// 顯示優先序(由上而下):衝突 > 同步中 > 失敗 > dirty(有未同步)> ok > off
+function renderSyncStatusPill() {
+  const el = document.getElementById("sync-status");
+  if (!el) return;
+  const s = getSyncStatus();
+  if (!s.isConfigured) {
+    el.className = "sync-status off";
+    el.innerHTML = `<div class="ss-main"><span class="ss-ico">⛔</span><span>同步未設定</span></div><div class="ss-sub">設定 → Apps Script URL/Token</div>`;
+    return;
+  }
+  if (s.conflictCount > 0) {
+    el.className = "sync-status conflict";
+    el.innerHTML = `<div class="ss-main"><span class="ss-ico">⚠</span><span>${s.conflictCount} 筆衝突待處理</span></div><div class="ss-sub">點右下角 banner 解衝突</div>`;
+    return;
+  }
+  if (s.isSyncing) {
+    el.className = "sync-status syncing";
+    el.innerHTML = `<div class="ss-main"><span class="ss-ico">⟳</span><span>同步中…</span></div><div class="ss-sub">${s.serverVersion ? `雲端 v${s.serverVersion}` : ""}</div>`;
+    return;
+  }
+  // 失敗:在等下次重試 → 顯示倒數
+  if (s.lastFailedAt && s.consecutiveFailures > 0 && s.nextEarliestSyncAt > Date.now()) {
+    const inSec = Math.max(1, Math.round((s.nextEarliestSyncAt - Date.now()) / 1000));
+    el.className = "sync-status fail";
+    const errShort = (s.lastError || "").slice(0, 32);
+    el.innerHTML = `<div class="ss-main"><span class="ss-ico">✗</span><span>同步失敗</span></div><div class="ss-sub">${esc(errShort)} · ${inSec}s 後重試</div>`;
+    return;
+  }
+  if (s.hasPendingChanges) {
+    el.className = "sync-status dirty";
+    el.innerHTML = `<div class="ss-main"><span class="ss-ico">●</span><span>有未同步變更</span></div><div class="ss-sub">${s.lastSuccessAt ? `上次 ${relTime(s.lastSuccessAt)}` : "從未同步"}${s.serverVersion ? ` · v${s.serverVersion}` : ""}</div>`;
+    return;
+  }
+  if (!s.lastSuccessAt) {
+    // 還沒成功跑過任何同步(剛開頁,orchestrator 還沒打到 server)
+    el.className = "sync-status";
+    el.innerHTML = `<div class="ss-main"><span class="ss-ico">…</span><span>等待初次同步</span></div><div class="ss-sub">${s.serverVersion ? `本機 v${s.serverVersion}` : "未連線"}</div>`;
+    return;
+  }
+  el.className = "sync-status ok";
+  const sub = `${relTime(s.lastSuccessAt)}${s.serverVersion ? ` · 雲端 v${s.serverVersion}` : ""}`;
+  el.innerHTML = `<div class="ss-main"><span class="ss-ico">✓</span><span>已同步</span></div><div class="ss-sub">${sub}</div>`;
+}
+
+function relTime(ts) {
+  if (!ts) return "—";
+  const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (sec < 60) return `${sec}s 前`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m 前`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h 前`;
+  return `${Math.round(hr / 24)}d 前`;
+}
+
+function initSyncStatusPill() {
+  renderSyncStatusPill();
+  subscribeSyncStatus(renderSyncStatusPill);
+  // 每 20 秒重畫:相對時間「N 分前」會隨時間更新;倒數重試秒數也要動
+  setInterval(renderSyncStatusPill, 20 * 1000);
 }
 
 function bindKeyboard() {
