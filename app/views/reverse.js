@@ -2,7 +2,7 @@ import { getState } from "../state.js";
 import { suggestWeights } from "../domain/suggest.js";
 import { dailySpendGrid, dailySpendForAd, monthlyTotals } from "../domain/spending.js";
 import { addDays, monthOf, todayTaipei, diffDays, daysOfMonth, daysInMonth } from "../lib/dates.js";
-import { getMonthlyBudget, getDailyBudget, isNoBand } from "../schema.js";
+import { getMonthlyBudget, getDailyBudget, getLatestBudget, isNoBand } from "../schema.js";
 import { bandsForMonth, bandFor } from "../domain/budget.js";
 import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
 
@@ -138,11 +138,11 @@ function computeRowSuggestion(state, products, scenarioAds, idx) {
     let totalDaily = 0;
     const gaps = {};
     for (const p of products) {
-      // APP 取 月預算 ÷ 月天數;島取 日預算
+      // APP 取 月預算 ÷ 月天數;島取最新一段的日預算
       let target;
       if (p.type === "island") {
-        const daily = getDailyBudget(state, p.id, ym);
-        if (daily != null) target = daily;
+        const latest = getLatestBudget(state, p.id, ym);
+        if (latest != null) target = latest;
         else {
           const monthly = getMonthlyBudget(state, p.id, ym);
           target = monthly ? monthly / monthDays : 0;
@@ -266,16 +266,15 @@ function renderSummaryTable(state, products, scenarioAds, today) {
 
   // 目標 = 每日目標
   //   APP:月預算 ÷ 當月天數
-  //   小島:日預算(就是日預算本身,不必除天數)
-  // 兩者數學上等價(島的 monthly = daily × days),但 UI 標籤要區分
+  //   小島:本月最新一段的日預算(多段時不平均,直接取最後 — 例 5/1=5000,5/6=6000 → 6000)
   const targets = {};
   for (const p of products) {
     if (p.type === "island") {
-      const daily = getDailyBudget(state, p.id, primaryYM);
-      if (daily != null) {
-        targets[p.id] = daily;
+      const latest = getLatestBudget(state, p.id, primaryYM);  // 島:amount 即日預算
+      if (latest != null) {
+        targets[p.id] = latest;
       } else {
-        // legacy fallback:沒設日預算但有月預算 → 月 ÷ 天
+        // legacy fallback:沒任何預算紀錄
         const monthly = getMonthlyBudget(state, p.id, primaryYM);
         targets[p.id] = monthly ? monthly / monthDays : null;
       }
