@@ -286,6 +286,7 @@ function computeChurnStats(allAds, productFilter, filterStart, filterEnd, today)
   let elimSpend = 0;
   const elimCodes = [];
   const newCodes = [];
+  const details = [];  // 每個 code 的明細,給 UI 展開用
 
   for (const [code, segs] of byCode) {
     if (productFilter !== "all") {
@@ -302,35 +303,82 @@ function computeChurnStats(allAds, productFilter, filterStart, filterEnd, today)
       ""
     );
 
+    // 「已淘汰」=「使用者按淘汰按鈕」(eliminated=true) OR「自然到期沒續費」(latestEnd <= today)
+    // 不再要求停運日落在篩選區間內 — 只要這支廣告現在算淘汰,且區間內有花到錢,就計入淘汰金額
+    const anyEliminated = segs.some((sg) => !!sg.eliminated);
+    const naturallyExpired = latestEnd && latestEnd <= today;
+    const isEliminated = anyEliminated || naturallyExpired;
+
     const isNew = earliestStart && inRange(earliestStart);
-    const hasEnded = latestEnd && latestEnd <= today;
-    const isElim = hasEnded && inRange(latestEnd);
+    // effectiveStopDate 給明細顯示用:eliminated=true 但 end_date 還沒到 → 顯示 today
+    const effectiveStopDate = (anyEliminated && latestEnd > today) ? today : latestEnd;
 
     if (isNew) {
       newCount++;
       newCodes.push(code);
     }
+
+    let spendForCode = 0;
+    let totalOverlapDays = 0;
+    let sampleDaily = 0;
+    let sampleWeight = 0;
+    for (const seg of segs) {
+      if (!seg.start_date || !seg.end_date) continue;
+      // 已淘汰廣告:未來那段不會真的花到錢,把 effective end 卡在 today
+      const effectiveSegEnd = (anyEliminated && seg.end_date > today) ? today : seg.end_date;
+      const days = overlapDays(seg.start_date, effectiveSegEnd);
+      if (days <= 0) continue;
+      const daily = Number(seg.daily_amort_twd) || 0;
+      const w = productFilter === "all" ? 100 : (Number(seg.weights?.[productFilter]) || 0);
+      const contrib = daily * days * (w / 100);
+      spendForCode += contrib;
+      totalOverlapDays += days;
+      if (daily > sampleDaily) { sampleDaily = daily; sampleWeight = w; }
+    }
+    totalSpend += spendForCode;
+
+    // 淘汰金額 = 所有已淘汰廣告(任何時候被淘汰)在篩選區間內的花費加總
+    const isElim = isEliminated && spendForCode > 0;
     if (isElim) {
+      elimSpend += spendForCode;
       elimCount++;
       elimCodes.push(code);
     }
 
-    let spendForCode = 0;
-    for (const seg of segs) {
-      if (!seg.start_date || !seg.end_date) continue;
-      const days = overlapDays(seg.start_date, seg.end_date);
-      if (days <= 0) continue;
-      const daily = Number(seg.daily_amort_twd) || 0;
-      if (productFilter === "all") {
-        spendForCode += daily * days;
-      } else {
-        const w = Number(seg.weights?.[productFilter]) || 0;
-        spendForCode += daily * days * (w / 100);
-      }
+    // 沒被算淘汰時記錄原因(明細展開用)
+    let notElimReason = "";
+    if (!isEliminated) {
+      if (!latestEnd) notElimReason = "無 end_date";
+      else notElimReason = `仍在跑(最晚 end ${latestEnd} > today ${today},且未按淘汰)`;
+    } else if (spendForCode <= 0) {
+      notElimReason = "已淘汰但區間內無花費";
     }
-    totalSpend += spendForCode;
-    if (isElim) elimSpend += spendForCode;
+
+    // 該 code 任一段的 ad_name(取最新段)
+    const sortedSegs = segs.slice().sort((a, b) => (b.end_date || "").localeCompare(a.end_date || ""));
+    const adName = sortedSegs[0]?.ad_name || "";
+
+    details.push({
+      code,
+      adName,
+      earliestStart,
+      latestEnd,
+      hasEnded,
+      anyEliminated,
+      effectiveStopDate,
+      isNew,
+      isElim,
+      notElimReason,
+      segCount: segs.length,
+      totalOverlapDays,
+      sampleDaily,
+      sampleWeight,
+      contribution: spendForCode,
+    });
   }
+
+  // 依貢獻排序方便檢視
+  details.sort((a, b) => b.contribution - a.contribution);
 
   return {
     newCount,
@@ -340,6 +388,7 @@ function computeChurnStats(allAds, productFilter, filterStart, filterEnd, today)
     elimRatio: totalSpend > 0 ? elimSpend / totalSpend : 0,
     newCodes,
     elimCodes,
+    details,
   };
 }
 
@@ -359,6 +408,35 @@ function renderChurnCard(state, productFilter, filterStart, filterEnd) {
   const newTitle = stats.newCodes.length > 0 ? `新增的 ad_code:${stats.newCodes.slice(0, 30).join("、")}${stats.newCodes.length > 30 ? "…" : ""}` : "";
   const elimTitle = stats.elimCodes.length > 0 ? `淘汰的 ad_code:${stats.elimCodes.slice(0, 30).join("、")}${stats.elimCodes.length > 30 ? "…" : ""}` : "";
 
+  const elimDetailRows = stats.details
+    .filter((d) => d.isElim)
+    .map((d) => {
+      const reason = d.anyEliminated && d.latestEnd > today
+        ? `已按淘汰(原 end ${d.latestEnd})`
+        : `自然到期 ${d.latestEnd}`;
+      return `<tr>
+        <td class="mono">${esc(d.code)}</td>
+        <td>${esc(d.adName)}</td>
+        <td class="ink-3 mono" style="font-size:11px">${esc(reason)}</td>
+        <td class="num mono">${d.totalOverlapDays.toFixed(0)}</td>
+        <td class="num mono">${fmtNum(d.sampleDaily)}</td>
+        <td class="num mono">${d.sampleWeight}%</td>
+        <td class="num"><strong>${fmtNum(d.contribution)}</strong></td>
+      </tr>`;
+    }).join("");
+  const notElimRows = stats.details
+    .filter((d) => !d.isElim && d.contribution > 0)
+    .slice(0, 30)
+    .map((d) => `<tr>
+      <td class="mono">${esc(d.code)}</td>
+      <td>${esc(d.adName)}</td>
+      <td class="ink-3" style="font-size:11px">${esc(d.notElimReason || "—")}</td>
+      <td class="num mono">${d.totalOverlapDays.toFixed(0)}</td>
+      <td class="num mono">${fmtNum(d.sampleDaily)}</td>
+      <td class="num mono">${d.sampleWeight}%</td>
+      <td class="num ink-3">${fmtNum(d.contribution)}</td>
+    </tr>`).join("");
+
   return `
     <div class="card churn-card" style="margin-bottom:12px">
       <div class="card-head">
@@ -374,7 +452,7 @@ function renderChurnCard(state, productFilter, filterStart, filterEnd) {
         <div class="churn-stat" title="${esc(elimTitle)}">
           <div class="ink-3" style="font-size:12px">⛔ 淘汰廣告</div>
           <div class="churn-stat-val">${stats.elimCount}</div>
-          <div class="ink-3" style="font-size:11px">最晚結束日落在區間內且已停運</div>
+          <div class="ink-3" style="font-size:11px">已淘汰且區間內有花費</div>
         </div>
         <div class="churn-stat">
           <div class="ink-3" style="font-size:12px">淘汰花費 / 總花費 (TWD)</div>
@@ -387,6 +465,31 @@ function renderChurnCard(state, productFilter, filterStart, filterEnd) {
           <div class="ink-3" style="font-size:11px">淘汰花費 ÷ 總花費</div>
         </div>
       </div>
+      <details class="churn-details" style="margin-top:14px">
+        <summary class="ink-2" style="cursor:pointer;font-size:12px;font-weight:600">📋 明細(共 ${stats.elimCount} 支淘汰 · 點開驗證每筆)</summary>
+        <div class="table-wrap" style="margin-top:8px;max-height:380px;overflow:auto">
+          <table style="font-size:12px">
+            <thead>
+              <tr>
+                <th>代碼</th>
+                <th>名稱</th>
+                <th>淘汰原因</th>
+                <th class="num">overlap 天數</th>
+                <th class="num">daily TWD</th>
+                <th class="num">${productFilter === "all" ? "權重" : "本產品 weight"}</th>
+                <th class="num">區間貢獻</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${elimDetailRows || `<tr><td colspan="7" class="ink-3" style="text-align:center;padding:14px">區間內沒有已淘汰廣告</td></tr>`}
+              ${notElimRows ? `
+                <tr><td colspan="7" style="background:#fafbfc;padding:6px 12px;color:var(--ink-3);font-size:11px"><strong>未列入淘汰(仍在跑或無花費):</strong>顯示前 30 筆貢獻最高的</td></tr>
+                ${notElimRows}
+              ` : ""}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </div>
   `;
 }
