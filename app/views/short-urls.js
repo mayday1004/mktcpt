@@ -44,7 +44,7 @@ function groupByContact(rows) {
   const groupedByContact = new Map();
   const ungrouped = [];
   for (const a of rows) {
-    const key = (a.contact_tg || a.contact_info || "").trim();
+    const key = (a.contact_info || "").trim();
     if (!key) {
       ungrouped.push({ contact: "", ads: [a] });
     } else {
@@ -279,7 +279,7 @@ export function render(root) {
           window.toast(
             adsInGroup.length === 1
               ? `已複製 ${codes[0]} 的通知文字,標記為已通知`
-              : `已複製 ${adsInGroup.length} 筆通知文字(${(adsInGroup[0].contact_tg || adsInGroup[0].contact_info || "")}),全部標記為已通知`,
+              : `已複製 ${adsInGroup.length} 筆通知文字(${(adsInGroup[0].contact_info || "")}),全部標記為已通知`,
             "ok"
           );
         })
@@ -384,7 +384,7 @@ function renderRow(a, s, { inGroup = false } = {}) {
   // 「廣告名稱 / 站長」欄:單筆時若有 contact_info 顯示在名稱下方;群組內已在 header 顯示,row 不重複
   const nameCell = `
     ${esc(a.ad_name || "")}
-    ${!inGroup && (a.contact_tg || a.contact_info) ? `<div class="ink-3" style="font-size:11px;margin-top:3px">站長:${esc(a.contact_tg || a.contact_info)}</div>` : ""}
+    ${!inGroup && a.contact_info ? `<div class="ink-3" style="font-size:11px;margin-top:3px">站長:${esc(a.contact_info)}</div>` : ""}
   `;
 
   return `

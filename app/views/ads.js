@@ -1830,7 +1830,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
         <div class="hint"><span id="ad-copy-count">${(a.ad_copy || "").length}</span> / 20</div>
       </div>
       <div class="field" style="flex:1">
-        <label>聯絡用 TG 號</label>
+        <label>我方聯絡用 TG 號</label>
         <input id="f-contact-tg" type="text" value="${esc(a.contact_tg || "")}" placeholder="例:@abc123" />
       </div>
       <div class="field" style="flex:2">
@@ -2022,9 +2022,16 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const host = q("#weights");
     const productsToShow = s.products;  // 永遠顯示全部產品(包含破圈),由 submit 時偵測碰撞自動拆
     host.innerHTML = productsToShow.map((p) => `
-      <div class="weight-grid">
-        <div>${esc(p.name)} <span class="ink-3 mono" style="font-size:11px">${esc(p.id)}</span></div>
-        <input type="number" min="0" max="100" step="1" data-pid="${esc(p.id)}" value="${weights[p.id] ?? ""}" placeholder="0" />
+      <div class="weight-grid ad-weight-card ${Number(weights[p.id] || 0) > 0 ? "active" : ""}" style="--w:${Math.max(0, Math.min(100, Number(weights[p.id]) || 0))}">
+        <div class="ad-weight-main">
+          <span class="ad-weight-name">${esc(p.name)}</span>
+          <span class="ad-weight-id mono">${esc(p.id)}</span>
+        </div>
+        <div class="ad-weight-control">
+          <input type="number" min="0" max="100" step="1" data-pid="${esc(p.id)}" value="${weights[p.id] ?? ""}" placeholder="0" />
+          <span class="ad-weight-unit">%</span>
+        </div>
+        <div class="ad-weight-bar" aria-hidden="true"><span></span></div>
       </div>
     `).join("");
     host.querySelectorAll("input[data-pid]").forEach((inp) => {
@@ -2032,6 +2039,12 @@ function openEditor(id, renewFrom = null, prefill = null) {
         const v = inp.value === "" ? 0 : Number(inp.value);
         if (v > 0) weights[inp.dataset.pid] = v;
         else delete weights[inp.dataset.pid];
+        const card = inp.closest(".ad-weight-card");
+        if (card) {
+          const pct = Math.max(0, Math.min(100, Number(v) || 0));
+          card.style.setProperty("--w", pct);
+          card.classList.toggle("active", pct > 0);
+        }
         recalcSum();
         updatePoquanPreview();
       };
