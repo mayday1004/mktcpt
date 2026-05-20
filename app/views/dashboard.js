@@ -339,9 +339,17 @@ function renderActionRequired(state) {
         ${upcoming.slice(0, 8).map((u) => {
           const sev = u.daysToStart <= 3 ? "warn" : "info";
           const md = u.ad.start_date.slice(5).replace("-", "/");
+          const kind = upcomingAdKind(u.ad);
+          const verb = kind.id === "weight" ? "生效" : "上架";
+          const note = kind.id === "weight" ? "請至連結後台調整權重" : "注意聯繫站長、確認花費";
           return `<li class="ar-item ar-${sev}">
             <span class="ar-days">${u.daysToStart} 天後</span>
-            <span>廣告 <strong>${escape(u.ad.ad_name || u.ad.ad_code)}</strong> <span class="ink-3 mono" style="font-size:11px">${escape(u.ad.ad_code)}</span> 即將在 <strong>${md}</strong> 上架，注意聯繫站長、確認花費</span>
+            <span>
+              <span class="pill ${kind.cls}" style="font-size:10px;margin-right:4px">${kind.label}</span>
+              廣告 <strong>${escape(u.ad.ad_name || u.ad.ad_code)}</strong>
+              <span class="ink-3 mono" style="font-size:11px">${escape(u.ad.ad_code)}</span>
+              即將在 <strong>${md}</strong> ${verb}，${note}
+            </span>
           </li>`;
         }).join("")}
         ${upcoming.length > 8 ? `<li class="ink-3" style="font-size:12px">…還有 ${upcoming.length - 8} 支</li>` : ""}
@@ -512,6 +520,12 @@ function upcomingAds(state, days = 10) {
     });
   }
   return out.sort((a, b) => a.daysToStart - b.daysToStart);
+}
+
+function upcomingAdKind(ad) {
+  if ((ad.renewal_reason || "") === "權重調整") return { id: "weight", label: "權重調整", cls: "warn" };
+  if (ad.renewal_of) return { id: "renew", label: ad.renewal_reason || "續費", cls: "" };
+  return { id: "new", label: "新上廣告", cls: "ok" };
 }
 
 function renderKpiGroups(state, ym, totals) {

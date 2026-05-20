@@ -21,11 +21,11 @@ let activeTab = "all";
 function _defaultYesterdayRange() {
   const today = todayTaipei();              // "YYYY-MM-DD"
   const yesterday = addDays(today, -1);
-  return { start: yesterday, end: today };  // [yesterday, today) — 半開區間 = 昨天一天
+  return { start: yesterday, end: yesterday };
 }
 const _initialRange = _defaultYesterdayRange();
 let filterStart = _initialRange.start;  // YYYY-MM-DD
-let filterEnd = _initialRange.end;      // YYYY-MM-DD (今天,exclusive)
+let filterEnd = _initialRange.end;      // YYYY-MM-DD (inclusive)
 // 模組級搜尋字串（廣告代碼或名稱，繁簡/大小寫不分）
 let searchQuery = "";
 
@@ -108,7 +108,7 @@ export function render(root) {
   const inFilterForTab = (s) =>
     (!filterStart && !filterEnd) ||
     (s.start_date && s.end_date &&
-      (!filterEnd || s.start_date < filterEnd) &&
+      (!filterEnd || s.start_date <= filterEnd) &&
       (!filterStart || s.end_date > filterStart));
   const tabAliveCodes = (() => {
     if (activeTab === "all") return null;
@@ -247,7 +247,7 @@ export function render(root) {
 // 廣告 churn 統計卡:在當前 (產品分類 + 日期區間) 範圍下,算新增/淘汰廣告數量、花費比例
 //
 // 定義:
-//   新增廣告:ad_code 的最早 start_date 落在 [filterStart, filterEnd)
+//   新增廣告:ad_code 的最早 start_date 落在 [filterStart, filterEnd]
 //   淘汰廣告:ad_code 的最晚 end_date 落在 [filterStart, filterEnd] 且已停運
 //             (latest end_date <= today,涵蓋使用者明確 eliminate + 自然到期沒續費)
 //   產品過濾:activeTab !== "all" 時,只算對該產品有 weight > 0 的 ad_code,
@@ -273,8 +273,9 @@ function computeChurnStats(allAds, productFilter, filterStart, filterEnd, today)
   const overlapDays = (segStart, segEnd) => {
     let s = segStart;
     let e = segEnd;
+    const endExclusive = filterEnd ? addDays(filterEnd, 1) : "";
     if (filterStart && s < filterStart) s = filterStart;
-    if (filterEnd && e > filterEnd) e = filterEnd;
+    if (endExclusive && e > endExclusive) e = endExclusive;
     if (!s || !e || s >= e) return 0;
     return (Date.parse(e) - Date.parse(s)) / 86400000;
   };
@@ -649,7 +650,7 @@ function renderFamily(fam, products) {
     const inFilter = (s) =>
       (!filterStart && !filterEnd) ||
       (s.start_date && s.end_date &&
-        (!filterEnd || s.start_date < filterEnd) &&
+        (!filterEnd || s.start_date <= filterEnd) &&
         (!filterStart || s.end_date > filterStart));
     const pickLatest = (segs) => {
       const allValid = segs.filter((s) => s.start_date && s.end_date);
@@ -758,7 +759,7 @@ function renderGroup(group, products, opts = {}) {
   const inFilterForRender = (s) =>
     (!filterStart && !filterEnd) ||
     (s.start_date && s.end_date &&
-      (!filterEnd || s.start_date < filterEnd) &&
+      (!filterEnd || s.start_date <= filterEnd) &&
       (!filterStart || s.end_date > filterStart));
   const inFilterSegs = segs.filter(inFilterForRender);
   const latest = inFilterSegs.length > 0
@@ -881,12 +882,15 @@ function currentMonthLatestSegs(segs) {
     .map((seg, index) => ({ seg, index }))
     .filter(({ seg }) => seg.start_date && seg.end_date && seg.start_date < monthEnd && seg.end_date > monthStart);
   const pool = inMonth.length > 0 ? inMonth : segs.map((seg, index) => ({ seg, index }));
-  return pool
+  const latest = pool
     .slice()
     .sort((a, b) =>
       (b.seg.start_date || "").localeCompare(a.seg.start_date || "") ||
-      (b.seg.end_date || "").localeCompare(a.seg.end_date || ""))
-    .slice(0, 1);
+      (b.seg.end_date || "").localeCompare(a.seg.end_date || ""))[0];
+  if (!latest) return [];
+  return pool.filter(({ seg }) =>
+    seg.start_date === latest.seg.start_date && seg.end_date === latest.seg.end_date
+  );
 }
 
 function renderWeightDetailRow(seg, products, opts = {}) {
@@ -1038,14 +1042,11 @@ function productWeightEntries(seg, products) {
 // fallback:若 asOf 完全沒命中任何段(整支廣告已結束),退回「整體 latest seg」避免空白
 function aggregateGroupWeights(segs, products, opts = {}) {
   const today = todayTaipei();
-  // asOf:過濾期間內的「今天」或期間最後一天,避免用 filterEnd(exclusive 次月 1 號)
+  // asOf:過濾期間內的「今天」或期間最後一天
   // 落在所有段之外造成主路徑都 fail
   let asOf = today;
   if (opts.filterEnd) {
-    const fe = new Date(opts.filterEnd);
-    fe.setUTCDate(fe.getUTCDate() - 1);
-    const feInclusive = fe.toISOString().slice(0, 10);
-    asOf = feInclusive < today ? feInclusive : today;
+    asOf = opts.filterEnd < today ? opts.filterEnd : today;
   } else if (opts.filterStart) {
     asOf = opts.filterStart > today ? opts.filterStart : today;
   }
@@ -1222,7 +1223,7 @@ function bindHandlers(root, s) {
     const [y, m] = ym.split("-").map(Number);
     filterStart = `${ym}-01`;
     const next = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
-    filterEnd = next;
+    filterEnd = addDays(next, -1);
     render(root);
   };
 

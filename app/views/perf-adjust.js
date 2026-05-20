@@ -1107,13 +1107,14 @@ async function applyAll(pivot, newWeightsByAd, root) {
       const seg = st.ads.find((a) => a.id === ch.ad.id);
       if (!seg) { errCount++; continue; }
       const effective = today > seg.start_date && today < seg.end_date ? today : seg.start_date;
+      const effectiveLabel = formatTodoDate(effective);
       const oldStr = fmtW(seg.weights);
       const newStr = fmtW(ch.newW);
       try {
         if (effective <= seg.start_date) {
           seg.weights = { ...ch.newW };
           okCount++;
-          successDetails.push(`${seg.ad_code} ${seg.ad_name}｜${oldStr} → ${newStr}`);
+          successDetails.push(`${effectiveLabel ? `${effectiveLabel} ` : ""}${seg.ad_code} ${seg.ad_name}｜${oldStr} → ${newStr}`);
         } else {
           const r = buildWeightAdjust(seg, effective, { ...ch.newW });
           const i = st.ads.findIndex((a) => a.id === seg.id);
@@ -1127,7 +1128,7 @@ async function applyAll(pivot, newWeightsByAd, root) {
             if (rebal?.newLinkedSegId) added_ad_ids.push(rebal.newLinkedSegId);
           }
           okCount++;
-          successDetails.push(`${seg.ad_code} ${seg.ad_name}｜${oldStr} → ${newStr}`);
+          successDetails.push(`${effectiveLabel ? `${effectiveLabel} ` : ""}${seg.ad_code} ${seg.ad_name}｜${oldStr} → ${newStr}`);
         }
       } catch { errCount++; }
     }
@@ -1156,6 +1157,12 @@ function formatWeights(w) {
     .sort(([, a], [, b]) => Number(b) - Number(a))
     .map(([pid, v]) => `${pid}:${v}%`)
     .join(", ") || "（無）";
+}
+
+function formatTodoDate(ymd) {
+  const m = String(ymd || "").match(/^\d{4}-(\d{2})-(\d{2})/);
+  if (!m) return "";
+  return `${Number(m[1])}/${Number(m[2])}`;
 }
 
 function sameWeights(a, b) {
