@@ -14,6 +14,7 @@
 //      在 spec 裡 normalize/denormalize；view code 完全不變
 
 import { METRICS, RENEWAL_REASONS, PRODUCT_TYPES } from "../schema.js";
+import { applyDoneEliminateTodos, normalizeTodoCreatedAt } from "../domain/todo-utils.js";
 
 // ===== 共用 helpers =====
 
@@ -370,6 +371,7 @@ export const TABLE_SYNC_SPECS = [
       if (Object.prototype.hasOwnProperty.call(obj, "站長聯繫")) a.contact_info = String(obj["站長聯繫"] || "");
       a.notes = String(obj["備註"] || "");
       a.eliminated = String(obj["已淘汰"] || "").toUpperCase() === "Y";
+      applyDoneEliminateTodos(state);
     },
     removeFromState(state, _id) {
       state.ads = (state.ads || []).filter((a) => a.id !== _id);
@@ -553,20 +555,21 @@ export const TABLE_SYNC_SPECS = [
     dataHeaders: ["id", "建立時間", "動作類型", "描述", "狀態"],
     flatten: (s) => (s.todos || []).map((t) => ({
       _id: t.id,
-      dataRow: [t.id, t.created_at || "", t.action_type || "", t.description || "", t.status || "pending"],
+      dataRow: [t.id, normalizeTodoCreatedAt(t.created_at), t.action_type || "", t.description || "", t.status || "pending"],
     })),
     upsertInState(state, _id, obj) {
       state.todos = state.todos || [];
       const idx = state.todos.findIndex((t) => t.id === _id);
       const rec = {
         id: _id,
-        created_at: String(obj["建立時間"] || ""),
+        created_at: normalizeTodoCreatedAt(obj["建立時間"]),
         action_type: String(obj["動作類型"] || ""),
         description: String(obj["描述"] || ""),
         status: obj["狀態"] === "done" ? "done" : "pending",
       };
       if (idx >= 0) state.todos[idx] = rec;
       else state.todos.push(rec);
+      applyDoneEliminateTodos(state);
     },
     removeFromState(state, _id) {
       state.todos = (state.todos || []).filter((t) => t.id !== _id);
@@ -576,13 +579,13 @@ export const TABLE_SYNC_SPECS = [
       return rows
         .map((r) => ({
           id: String(r[idx("id")] || ""),
-          created_at: String(r[idx("建立時間")] || ""),
+          created_at: normalizeTodoCreatedAt(r[idx("建立時間")]),
           at: String(r[idx("動作類型")] || ""),
           desc: String(r[idx("描述")] || ""),
           status: String(r[idx("狀態")] || "pending"),
         }))
         .filter((x) => x.id)
-        .map((x) => ({ _id: x.id, dataRow: [x.id, x.created_at, x.at, x.desc, x.status] }));
+        .map((x) => ({ _id: x.id, dataRow: [x.id, normalizeTodoCreatedAt(x.created_at), x.at, x.desc, x.status] }));
     },
   },
 

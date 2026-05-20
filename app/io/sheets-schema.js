@@ -1,4 +1,5 @@
 import { METRICS, RENEWAL_REASONS } from "../schema.js";
+import { normalizeTodoCreatedAt } from "../domain/todo-utils.js";
 
 // ── 成效輸入（暫存區 / Apps Script 寫入） ─────────────────────────────
 // Apps Script 從外部平台拉數據，寫入此分頁。資料期間由使用者自填起訖日，
@@ -249,7 +250,7 @@ export const TABLES = [
     name: "待辦",
     headers: ["id", "建立時間", "動作類型", "描述", "狀態"],
     toRows: (s) => (s.todos || []).map((t) => [
-      t.id, t.created_at, t.action_type, t.description || "", t.status || "pending",
+      t.id, normalizeTodoCreatedAt(t.created_at), t.action_type, t.description || "", t.status || "pending",
     ]),
   },
   {
@@ -497,7 +498,7 @@ export function assembleFromTables(raw) {
     const o = toObj(todoT.headers, r);
     return {
       id: String(o.id || ""),
-      created_at: String(o["建立時間"] || ""),
+      created_at: normalizeTodoCreatedAt(o["建立時間"]),
       action_type: String(o["動作類型"] || ""),
       description: String(o["描述"] || ""),
       status: o["狀態"] === "done" ? "done" : "pending",

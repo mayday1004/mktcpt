@@ -21,6 +21,7 @@ import { showSyncBanner, markSyncDone } from "../lib/sync-banner.js";
 import { TABLE_SYNC_SPECS } from "./sync-specs.js";
 import { addConflict, getConflictCount, subscribeConflicts } from "./conflict-store.js";
 import { logInfo, logWarn, logError } from "../lib/sync-log.js";
+import { normalizeTodoCreatedAt } from "../domain/todo-utils.js";
 
 // ===== 同步狀態廣播(給 sidebar status pill 用)=====
 // 統一一份輕量狀態,有變動時 emit 給所有訂閱者(sidebar / debug overlay 等)。
@@ -115,6 +116,9 @@ function canonicalizeForFingerprint(headers, dataRow, _id) {
     // 2. 設定表特殊欄
     if (h === "value" && _id === "current_month" && /^\d{4}-\d{2}-?\d{0,2}/.test(s)) {
       return s.slice(0, 7);
+    }
+    if (h === "建立時間") {
+      return normalizeTodoCreatedAt(s);
     }
     // 3. ISO timestamp → date-only
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
