@@ -186,7 +186,7 @@ export const TABLES = [
       "開始日期", "結束日期", "攤提天數", "每日攤提(台幣)",
       "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動", "備註",
       "破圈分流配對ID", "破圈分流角色", "段建立時代碼",
-      "廣告文案", "站長聯繫", "縮網址類型", "縮網址參數",
+      "廣告文案", "聯絡用TG號", "站長聯繫", "縮網址類型", "縮網址參數",
       "縮網址舊網域覆寫", "縮網址新網域覆寫", "縮網址舊前綴", "縮網址已通知",
     ],
     toRows: (s) => s.ads.map((a) => [
@@ -207,6 +207,7 @@ export const TABLES = [
       a.split_role || "",
       a.code_at_creation || "",
       a.ad_copy || "",
+      a.contact_tg || "",
       a.contact_info || "",
       a.short_url_type || "",
       a.short_url_param || "",
@@ -423,6 +424,8 @@ export function assembleFromTables(raw) {
         ? { code_at_creation: String(o["段建立時代碼"]) } : {}),
       ...(adT.headers.includes("廣告文案")
         ? { ad_copy: String(o["廣告文案"] || "") } : {}),
+      ...(adT.headers.includes("聯絡用TG號")
+        ? { contact_tg: String(o["聯絡用TG號"] || "") } : {}),
       ...(adT.headers.includes("站長聯繫")
         ? { contact_info: String(o["站長聯繫"] || "") } : {}),
       ...(adT.headers.includes("縮網址類型")

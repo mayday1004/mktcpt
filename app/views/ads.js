@@ -854,17 +854,39 @@ function renderGroup(group, products, opts = {}) {
 
   if (!isOpen) return headRow + weightDetailRow;
 
+  const timelineSegs = currentMonthLatestSegs(segs);
   // 展開時:即使單段也顯示 timeline node(讓備註 / 廣告文案 / 站長 / 短網址資訊有地方看)
   return headRow + weightDetailRow + `
     <tr class="seg-timeline-row">
       <td></td>
       <td colspan="8">
         <div class="seg-timeline">
-          ${segs.map((seg, i) => renderTimelineNode(seg, i, segs, products, { familyScale: opts.familyScale })).join("")}
+          ${timelineSegs.map(({ seg, index }) => renderTimelineNode(seg, index, segs, products, { familyScale: opts.familyScale })).join("")}
         </div>
       </td>
     </tr>
   `;
+}
+
+function currentMonthLatestSegs(segs) {
+  const ym = getState().settings?.current_month || "";
+  if (!/^\d{4}-\d{2}$/.test(ym)) {
+    const last = segs[segs.length - 1];
+    return last ? [{ seg: last, index: segs.length - 1 }] : [];
+  }
+  const monthStart = `${ym}-01`;
+  const [y, m] = ym.split("-").map(Number);
+  const monthEnd = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+  const inMonth = segs
+    .map((seg, index) => ({ seg, index }))
+    .filter(({ seg }) => seg.start_date && seg.end_date && seg.start_date < monthEnd && seg.end_date > monthStart);
+  const pool = inMonth.length > 0 ? inMonth : segs.map((seg, index) => ({ seg, index }));
+  return pool
+    .slice()
+    .sort((a, b) =>
+      (b.seg.start_date || "").localeCompare(a.seg.start_date || "") ||
+      (b.seg.end_date || "").localeCompare(a.seg.end_date || ""))
+    .slice(0, 1);
 }
 
 function renderWeightDetailRow(seg, products, opts = {}) {
@@ -944,6 +966,7 @@ function renderTimelineNode(seg, idx, segs, products, opts = {}) {
 function renderAdExtras(ad) {
   const items = [];
   if (ad.ad_copy) items.push(`<span><strong>文案:</strong> ${esc(ad.ad_copy)}</span>`);
+  if (ad.contact_tg) items.push(`<span><strong>TG:</strong> ${esc(ad.contact_tg)}</span>`);
   if (items.length === 0) return "";
   return `<div class="tl-meta" style="margin-top:4px;font-size:12px;color:var(--ink-2)">${items.join("")}</div>`;
 }
@@ -1802,9 +1825,13 @@ function openEditor(id, renewFrom = null, prefill = null) {
 
     <div class="field-row mt-16">
       <div class="field" style="flex:1">
-        <label>廣告文案<span class="ink-3" style="font-size:11px;font-weight:400;margin-left:6px">(最多 10 字)</span></label>
-        <input id="f-ad-copy" type="text" maxlength="10" value="${esc(a.ad_copy || "")}" placeholder="例:免費下載" />
-        <div class="hint"><span id="ad-copy-count">${(a.ad_copy || "").length}</span> / 10</div>
+        <label>廣告文案<span class="ink-3" style="font-size:11px;font-weight:400;margin-left:6px">(最多 20 字)</span></label>
+        <input id="f-ad-copy" type="text" maxlength="20" value="${esc(a.ad_copy || "")}" placeholder="例:免費下載" />
+        <div class="hint"><span id="ad-copy-count">${(a.ad_copy || "").length}</span> / 20</div>
+      </div>
+      <div class="field" style="flex:1">
+        <label>聯絡用 TG 號</label>
+        <input id="f-contact-tg" type="text" value="${esc(a.contact_tg || "")}" placeholder="例:@abc123" />
       </div>
       <div class="field" style="flex:2">
         <label>站長聯繫資料(選填)</label>
@@ -2150,6 +2177,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
 
     // 廣告文案 / 站長聯繫 / 縮網址類型 / 縮網址參數
     const adCopy = (q("#f-ad-copy").value || "").trim();
+    const contactTg = (q("#f-contact-tg").value || "").trim();
     const contactInfo = (q("#f-contact-info").value || "").trim();
     const shortUrlTypeRadio = dlg.querySelector('input[name="f-short-url-type"]:checked');
     const shortUrlType = shortUrlTypeRadio ? shortUrlTypeRadio.value : "";
@@ -2172,6 +2200,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
       weights,
       purchase_mode: purchaseMode,
       ad_copy: adCopy,
+      contact_tg: contactTg,
       contact_info: contactInfo,
       short_url_type: shortUrlType,
       short_url_param: shortUrlParam,
@@ -2243,6 +2272,11 @@ function openEditor(id, renewFrom = null, prefill = null) {
           daily_amort_twd: poquanTwd / days,
           weights: { ...splitWeights.poquan },
           purchase_mode: tvPurchaseMode,
+          ad_copy: adCopy,
+          contact_tg: contactTg,
+          contact_info: contactInfo,
+          short_url_type: shortUrlType,
+          short_url_param: shortUrlParam,
           renewal_of: null,
           renewal_reason: "初始",
           notes: `自動拆 t 配對(由 ${splitCodes.parentCode} 觸發,新增當下偵測到同家族碰撞)`,
@@ -2265,7 +2299,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
           id: uid("todo"),
           created_at: nowTaipeiStamp(),
           action_type: id ? "手動改權重" : "新增廣告",
-          description: buildTodoDesc(finalPatch, splitWeights ? splitWeights.normal : weights, st.products, id ? origWeights : null)
+          description: buildTodoDesc(finalPatch, splitWeights ? splitWeights.normal : weights, st.products, id ? origWeights : null, finalPatch.start_date)
             + (splitWeights ? `\n\n自動拆 t:建立 ${splitCodes.tVariantCode} ${poquanCny.toLocaleString()} RMB / ${splitSummary}` : ""),
           status: "pending",
           undo_payload: { ad_snapshots, added_ad_ids },
@@ -2345,7 +2379,7 @@ function weightsDiff(a, b) {
 }
 
 // 給待辦的描述：列出 ad code + name + 權重變化（有 oldWeights 就顯示 old→new diff）
-function buildTodoDesc(ad, weights, products, oldWeights = null) {
+function buildTodoDesc(ad, weights, products, oldWeights = null, effectiveDate = "") {
   const nameOf = (pid) => products.find((p) => p.id === pid)?.name || pid;
 
   if (!oldWeights || Object.keys(oldWeights).length === 0) {
@@ -2378,7 +2412,14 @@ function buildTodoDesc(ad, weights, products, oldWeights = null) {
       .join("、");
     return `${ad.ad_code} ${ad.ad_name}｜${parts}｜請至連結隨機縮網址後台調整權重`;
   }
-  return `${ad.ad_code} ${ad.ad_name}｜權重變化：${changes.join("、")}｜請至連結隨機縮網址後台調整權重`;
+  const prefix = formatTodoDate(effectiveDate || ad.start_date);
+  return `${prefix ? `${prefix} ` : ""}${ad.ad_code} ${ad.ad_name}｜權重變化：${changes.join("、")}｜請至連結隨機縮網址後台調整權重`;
+}
+
+function formatTodoDate(ymd) {
+  const m = String(ymd || "").match(/^\d{4}-(\d{2})-(\d{2})/);
+  if (!m) return "";
+  return `${Number(m[1])}/${Number(m[2])}`;
 }
 
 // ── 生命週期動作：權重調整 ─────────────────────────────────────────
@@ -2515,7 +2556,7 @@ function openWeightAdjust(seg) {
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
         action_type: "手動改權重",
-        description: buildTodoDesc(seg, newWeights, st.products, seg.weights)
+        description: buildTodoDesc(seg, newWeights, st.products, seg.weights, eff)
           + (result.mode === "split"
             ? `\n\n⚙️ 自動拆 t:${result.sourceRename.from} → ${result.sourceRename.to}(同家族碰撞觸發)`
             : ""),
@@ -2737,6 +2778,15 @@ function openFamilyWeightAdjust(pairId) {
           weights: newParentInternal,
           lock_perf_adjust: !!liveParent.lock_perf_adjust,
           lock_full: !!liveParent.lock_full,
+          ad_copy: liveParent.ad_copy || "",
+          contact_tg: liveParent.contact_tg || "",
+          contact_info: liveParent.contact_info || "",
+          short_url_type: liveParent.short_url_type || "",
+          short_url_param: liveParent.short_url_param || "",
+          short_url_old_override: liveParent.short_url_old_override || "",
+          short_url_new_override: liveParent.short_url_new_override || "",
+          short_url_old_prefix: liveParent.short_url_old_prefix || "",
+          short_url_notified: !!liveParent.short_url_notified,
           eliminated: !!liveParent.eliminated,
           split_pair_id: pairId,
           split_role: "parent",
@@ -2777,6 +2827,15 @@ function openFamilyWeightAdjust(pairId) {
           weights: newTvInternal,
           lock_perf_adjust: !!liveTv.lock_perf_adjust,
           lock_full: !!liveTv.lock_full,
+          ad_copy: liveTv.ad_copy || "",
+          contact_tg: liveTv.contact_tg || "",
+          contact_info: liveTv.contact_info || "",
+          short_url_type: liveTv.short_url_type || "",
+          short_url_param: liveTv.short_url_param || "",
+          short_url_old_override: liveTv.short_url_old_override || "",
+          short_url_new_override: liveTv.short_url_new_override || "",
+          short_url_old_prefix: liveTv.short_url_old_prefix || "",
+          short_url_notified: !!liveTv.short_url_notified,
           eliminated: !!liveTv.eliminated,
           split_pair_id: pairId,
           split_role: "t_variant",
@@ -2798,7 +2857,7 @@ function openFamilyWeightAdjust(pairId) {
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
         action_type: "手動改權重",
-        description: `${parentSeg.ad_code} / ${tVariantSeg.ad_code} 整體視角調整｜${desc}｜請至連結後台調整權重`,
+        description: `${formatTodoDate(eff)} ${parentSeg.ad_code} / ${tVariantSeg.ad_code} 整體視角調整｜${desc}｜請至連結後台調整權重`,
         status: "pending",
         undo_payload: { ad_snapshots, added_ad_ids },
       });

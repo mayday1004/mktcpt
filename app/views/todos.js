@@ -32,7 +32,10 @@ export function render(root) {
     el.onclick = () => {
       update((st) => {
         const t = st.todos.find((x) => x.id === el.dataset.done);
-        if (t) t.status = "done";
+        if (t) {
+          t.status = "done";
+          keepEliminatedAdsDone(st, t);
+        }
       }, "完成待辦");
       toast("已標記完成", "ok");
     };
@@ -81,6 +84,20 @@ export function render(root) {
       }
     };
   });
+}
+
+function keepEliminatedAdsDone(state, todo) {
+  if (todo?.action_type !== "淘汰廣告") return;
+  const codes = new Set();
+  for (const snap of (todo.undo_payload?.ad_snapshots || [])) {
+    if (snap?.ad_code) codes.add(snap.ad_code);
+  }
+  const firstLine = String(todo.description || "").trim().split(/\s|\n|：|:/)[0];
+  if (firstLine) codes.add(firstLine);
+  if (codes.size === 0) return;
+  for (const ad of (state.ads || [])) {
+    if (codes.has(ad.ad_code)) ad.eliminated = true;
+  }
 }
 
 function listHtml(todos, isDone) {

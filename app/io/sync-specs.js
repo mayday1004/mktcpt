@@ -315,7 +315,8 @@ export const TABLE_SYNC_SPECS = [
       "幣別", "原幣金額", "原幣→RMB匯率",
       "人民幣金額", "匯率", "台幣金額",
       "開始日期", "結束日期", "攤提天數", "每日攤提(台幣)",
-      "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動", "備註", "已淘汰",
+      "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動",
+      "廣告文案", "聯絡用TG號", "站長聯繫", "備註", "已淘汰",
     ],
     flatten: (s) => (s.ads || []).map((a) => ({
       _id: a.id,
@@ -331,6 +332,9 @@ export const TABLE_SYNC_SPECS = [
         a.renewal_reason || "初始",
         a.lock_perf_adjust ? "Y" : "",
         a.lock_full ? "Y" : "",
+        a.ad_copy || "",
+        a.contact_tg || "",
+        a.contact_info || "",
         a.notes || "",
         a.eliminated ? "Y" : "",
       ],
@@ -361,6 +365,9 @@ export const TABLE_SYNC_SPECS = [
       a.renewal_reason = RENEWAL_REASONS.includes(reason) ? reason : "初始";
       a.lock_perf_adjust = String(obj["鎖定不調整"] || "").toUpperCase() === "Y";
       a.lock_full = String(obj["禁止挪動"] || "").toUpperCase() === "Y";
+      if (Object.prototype.hasOwnProperty.call(obj, "廣告文案")) a.ad_copy = String(obj["廣告文案"] || "");
+      if (Object.prototype.hasOwnProperty.call(obj, "聯絡用TG號")) a.contact_tg = String(obj["聯絡用TG號"] || "");
+      if (Object.prototype.hasOwnProperty.call(obj, "站長聯繫")) a.contact_info = String(obj["站長聯繫"] || "");
       a.notes = String(obj["備註"] || "");
       a.eliminated = String(obj["已淘汰"] || "").toUpperCase() === "Y";
     },
@@ -394,6 +401,9 @@ export const TABLE_SYNC_SPECS = [
             RENEWAL_REASONS.includes(reason) ? reason : "初始",
             String(r[idx("鎖定不調整")] || "").toUpperCase() === "Y" ? "Y" : "",
             idx("禁止挪動") >= 0 && String(r[idx("禁止挪動")] || "").toUpperCase() === "Y" ? "Y" : "",
+            idx("廣告文案") >= 0 ? String(r[idx("廣告文案")] || "") : "",
+            idx("聯絡用TG號") >= 0 ? String(r[idx("聯絡用TG號")] || "") : "",
+            idx("站長聯繫") >= 0 ? String(r[idx("站長聯繫")] || "") : "",
             String(r[idx("備註")] || ""),
             "",
           ],
