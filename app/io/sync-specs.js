@@ -341,26 +341,44 @@ export const TABLE_SYNC_SPECS = [
       ],
     })),
     upsertInState(state, _id, obj) {
-      const a = ensureAd(state, _id);
+      // 拒絕「空白 ghost row」:沒 ad_code、沒名稱、沒金額、沒日期 → 不建 ad
+      // 避免 sheets 有殘留空 row 時被無腦讀回來建一堆空 ad(已知 bug,2026-05-21 修)
+      const adCode = String(obj["廣告代碼"] || "");
+      const adName = String(obj["廣告名稱"] || "");
       const cny = numOr(obj["人民幣金額"]);
+      const startDate = String(obj["開始日期"] || "");
+      const endDate = String(obj["結束日期"] || "");
+      if (!adCode && !adName && !cny && !startDate && !endDate) {
+        // 全空 row,且 state 裡也沒這 id → 直接 skip,不建 ghost
+        const existing = state.ads?.find((x) => x.id === _id);
+        if (!existing) return;
+        // 已存在但被 sync 推來空 row → 也別動,等下次推有資料的版本
+        return;
+      }
+
+      const a = ensureAd(state, _id);
       const currency = String(obj["幣別"] || "CNY").toUpperCase() === "USDT" ? "USDT" : "CNY";
       const amountOrig = numOr(obj["原幣金額"], cny);
       const currencyRate = numOr(obj["原幣→RMB匯率"], 1);
       const reason = String(obj["調整原因"] || "初始");
       a.id = _id;
-      a.ad_code = String(obj["廣告代碼"] || "");
-      a.ad_name = String(obj["廣告名稱"] || "");
+      a.ad_code = adCode;
+      a.ad_name = adName;
       a.group = String(obj["廣告分組"] || "");
       a.currency = currency;
       a.amount_orig = amountOrig > 0 ? amountOrig : cny;
       a.currency_rate = currencyRate > 0 ? currencyRate : 1;
       a.amount_cny = cny;
       a.exchange_rate = numOr(obj["匯率"], 4.7);
-      a.amount_twd = numOr(obj["台幣金額"]);
-      a.start_date = String(obj["開始日期"] || "").slice(0, 10);
-      a.end_date = String(obj["結束日期"] || "").slice(0, 10);
+      // 台幣金額 fallback:sheets 那欄空白或 0 時,改用 amount_cny × exchange_rate 重算
+      // 避免 sheets 一旦該欄被洗成 0,後續 sync 就把 ad.amount_twd 也固定成 0,潰爛不可逆
+      const twdFromSheet = numOr(obj["台幣金額"]);
+      a.amount_twd = twdFromSheet > 0 ? twdFromSheet : Math.round(cny * a.exchange_rate * 1000) / 1000;
+      a.start_date = startDate.slice(0, 10);
+      a.end_date = endDate.slice(0, 10);
       a.amortize_days = numOr(obj["攤提天數"], 30);
-      a.daily_amort_twd = numOr(obj["每日攤提(台幣)"]);
+      const dailyFromSheet = numOr(obj["每日攤提(台幣)"]);
+      a.daily_amort_twd = dailyFromSheet > 0 ? dailyFromSheet : (a.amortize_days > 0 ? a.amount_twd / a.amortize_days : 0);
       a.purchase_mode = String(obj["購買模式"] || "shared");
       a.renewal_of = obj["續費來源"] ? String(obj["續費來源"]) : null;
       a.renewal_reason = RENEWAL_REASONS.includes(reason) ? reason : "初始";
