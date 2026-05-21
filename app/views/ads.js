@@ -857,17 +857,17 @@ function renderFamily(fam, products) {
 
 function renderGroup(group, products, opts = {}) {
   const { code, segs } = group;
-  // 「最新一段」優先選 filter 內 active 的最新段(以 start_date 排序),
-  // filter 內沒有 active 段才 fallback 取全段最新
-  const inFilterForRender = (s) =>
-    (!filterStart && !filterEnd) ||
-    (s.start_date && s.end_date &&
-      (!filterEnd || s.start_date <= filterEnd) &&
-      (!filterStart || s.end_date > filterStart));
-  const inFilterSegs = segs.filter(inFilterForRender);
-  const latest = inFilterSegs.length > 0
-    ? inFilterSegs[inFilterSegs.length - 1]
-    : segs[segs.length - 1];
+  // 「最新段」選擇規則:
+  //   - 在某產品 tab → 挑「該產品 weight > 0 的最新段」(兄弟廣告每個產品各自的最新)
+  //   - 全部 tab → 整 group 最新段(segs 已按 start_date 升序排,取最後一個)
+  // filter 只決定「哪些 group 顯示」,不影響 group 內 latest 的選擇 — 否則 filter 卡過去日期時,
+  // 摺疊列會顯示舊段(忽略後續續費),按鈕指錯段。
+  let latest;
+  if (activeTab && activeTab !== "all") {
+    const tabSegs = segs.filter((s) => Number(s.weights?.[activeTab]) > 0);
+    if (tabSegs.length > 0) latest = tabSegs[tabSegs.length - 1];
+  }
+  if (!latest) latest = segs[segs.length - 1];
   // 不在 family 渲染情境(opts.familyScale 沒給)時,若 ad 是 t-variant,自動算「占整體合約 %」
   // 讓使用者切到「愛威奶破圈」等產品分頁時,看到的權重就是占整體合約的比例,而不是 ad 自身 100%
   if (opts.familyScale == null && latest.split_pair_id && latest.split_role === "t_variant") {
@@ -949,7 +949,7 @@ function renderGroup(group, products, opts = {}) {
       <td class="num">${Math.round(latest.daily_amort_twd || 0).toLocaleString()}</td>
       <td>${weightSummary(latest, products, "bar", { code, open: weightsOpen, allSegs: segs, filterStart, filterEnd, familyScale: opts.familyScale })}</td>
       <td class="actions-cell right nowrap">
-        ${actionButtons(segs[segs.length - 1], /*compact=*/true)}
+        ${actionButtons(latest, /*compact=*/true)}
       </td>
     </tr>
   `;
