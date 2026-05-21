@@ -972,6 +972,11 @@ function renderGroup(group, products, opts = {}) {
   `;
 }
 
+// 展開時的 timeline 只顯示「每個產品在當月各自最新的一段」。
+// 例:952 黄油网站 同代碼下 AV9 / JK / HYC 各自獨立採買,
+//     5 月各自最新段是 AV9 4/23-5/23、JK 4/24-5/24、HYC 5/2-6/2 → 顯示 3 段
+//     不會把所有歷史段(例 3 月以前的)一起展開
+// 共購段(weights 多個產品)→ 多個產品都會指向同一段,只算一次(用 Set 去重)
 function currentMonthLatestSegs(segs) {
   const ym = getState().settings?.current_month || "";
   if (!/^\d{4}-\d{2}$/.test(ym)) {
@@ -981,19 +986,39 @@ function currentMonthLatestSegs(segs) {
   const monthStart = `${ym}-01`;
   const [y, m] = ym.split("-").map(Number);
   const monthEnd = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
-  const inMonth = segs
-    .map((seg, index) => ({ seg, index }))
-    .filter(({ seg }) => seg.start_date && seg.end_date && seg.start_date < monthEnd && seg.end_date > monthStart);
-  const pool = inMonth.length > 0 ? inMonth : segs.map((seg, index) => ({ seg, index }));
-  const latest = pool
-    .slice()
-    .sort((a, b) =>
-      (b.seg.start_date || "").localeCompare(a.seg.start_date || "") ||
-      (b.seg.end_date || "").localeCompare(a.seg.end_date || ""))[0];
-  if (!latest) return [];
-  return pool.filter(({ seg }) =>
-    seg.start_date === latest.seg.start_date && seg.end_date === latest.seg.end_date
+
+  const indexed = segs.map((seg, index) => ({ seg, index }));
+  const inMonth = indexed.filter(({ seg }) =>
+    seg.start_date && seg.end_date && seg.start_date < monthEnd && seg.end_date > monthStart
   );
+  if (inMonth.length === 0) {
+    // 當月沒 active 段 → fallback 顯示整 group 最新一段(避免空 timeline)
+    const last = segs[segs.length - 1];
+    return last ? [{ seg: last, index: segs.length - 1 }] : [];
+  }
+
+  // 收集當月內所有出現過的產品
+  const productIds = new Set();
+  for (const { seg } of inMonth) {
+    for (const pid of Object.keys(seg.weights || {})) {
+      if (Number(seg.weights[pid]) > 0) productIds.add(pid);
+    }
+  }
+
+  // 對每個產品,找其 weight>0 + 當月 active 的段中 start_date 最大者
+  const pickedIndices = new Set();
+  for (const pid of productIds) {
+    const productSegs = inMonth.filter(({ seg }) => Number(seg.weights?.[pid]) > 0);
+    if (productSegs.length === 0) continue;
+    productSegs.sort((a, b) =>
+      (b.seg.start_date || "").localeCompare(a.seg.start_date || "") ||
+      (b.seg.end_date || "").localeCompare(a.seg.end_date || "")
+    );
+    pickedIndices.add(productSegs[0].index);
+  }
+
+  // 依 segs 原順序回傳(讓 timeline 上下排列穩定)
+  return indexed.filter(({ index }) => pickedIndices.has(index));
 }
 
 function renderWeightDetailRow(seg, products, opts = {}) {
