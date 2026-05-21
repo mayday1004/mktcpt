@@ -64,8 +64,25 @@ function spawnFrom(source, patch) {
 // 「轉移」事件已併入此函式（CLAUDE.md §3.4），新段一律 renewal_reason='權重調整'，
 // 跨產品的細節在備註欄記錄。
 export function buildWeightAdjust(source, effectiveDate, newWeights, notes) {
-  if (effectiveDate <= source.start_date || effectiveDate >= source.end_date) {
+  if (effectiveDate < source.start_date || effectiveDate >= source.end_date) {
     throw new Error(`生效日 ${effectiveDate} 必須落在原段區間 (${source.start_date} ~ ${source.end_date}) 之間`);
+  }
+  // 邊界 case:生效日 = 段第一天 → 直接覆寫 source 的 weights、不切段
+  // (避免產生長度 0 的空段,並讓「續費當天改權重」這種常見情境自然處理)
+  // renewal_reason 保留原值(例:剛續費那段仍標「續費」),todo 仍會記錄權重變化
+  if (effectiveDate === source.start_date) {
+    const updated = {
+      ...source,
+      weights: { ...newWeights },
+      purchase_mode: pickPurchaseMode(newWeights),
+    };
+    if (notes != null && String(notes).trim()) {
+      const trimmed = String(notes).trim();
+      updated.notes = (source.notes || "").trim()
+        ? `${source.notes}\n${trimmed}`
+        : trimmed;
+    }
+    return { closed: updated, segments: [] };
   }
   const closed = trimEnd(source, effectiveDate);
   const patch = {
@@ -104,7 +121,7 @@ export function buildWeightAdjust(source, effectiveDate, newWeights, notes) {
 //      + 設 code_at_creation 為原代碼(如果還沒設)
 export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, newWeights, options) {
   const { notes, allSegsOfSource } = options || {};
-  if (effectiveDate <= source.start_date || effectiveDate >= source.end_date) {
+  if (effectiveDate < source.start_date || effectiveDate >= source.end_date) {
     throw new Error(`生效日 ${effectiveDate} 必須落在原段區間 (${source.start_date} ~ ${source.end_date}) 之間`);
   }
   const products = state.products || [];
@@ -124,6 +141,10 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
   }
 
   // Case C: 沒在 pair + 有碰撞 → 觸發拆 t
+  // 拆 t 需要真實切點(避免空段),所以這裡仍要求 effectiveDate > source.start_date
+  if (effectiveDate === source.start_date) {
+    throw new Error(`生效日 ${effectiveDate} 等於段起始日,無法在當天觸發自動拆 t(會產生空段);請改用「編輯」修正權重,或把生效日往後挪一天`);
+  }
   const { normal, poquan, normalSum, poquanSum } = splitWeightsByFamily(newWeights, products);
   if (normalSum <= 0 || poquanSum <= 0) {
     // 理論上 detectFamilyCollision === true 必然兩側都有,這是保險

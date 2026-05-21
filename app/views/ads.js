@@ -1913,6 +1913,18 @@ function openEditor(id, renewFrom = null, prefill = null) {
       <div class="hint" id="f-daily-hint"></div>
     </div>
 
+    ${id ? `
+    <h3 class="mt-16">權重分配（唯讀）</h3>
+    <div class="hint" style="padding:8px 10px;background:#fff4e6;border:1px solid #ffd9a8;border-radius:6px;font-size:12px;line-height:1.6;margin-bottom:8px">
+      ⚠️ 編輯模式不能改權重 — 為了保留 traceability，所有 weights 變動一律走「<strong>權重調整</strong>」按鈕（自動建 todo + 撤回 + 切段紀錄）。
+    </div>
+    <div class="weights-readonly" style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 10px;background:#f7f7f7;border:1px solid #e1e1e1;border-radius:6px">
+      ${Object.entries(a.weights || {}).filter(([,w]) => Number(w) > 0).map(([pid, w]) => {
+        const p = s.products.find((x) => x.id === pid);
+        return `<span style="padding:3px 8px;background:#fff;border:1px solid #ddd;border-radius:4px;font-size:12px"><strong>${esc(p?.name || pid)}</strong> ${Number(w)}%</span>`;
+      }).join("") || `<span class="ink-3" style="font-size:12px">（未分配權重）</span>`}
+    </div>
+    ` : `
     <h3 class="mt-16" style="display:flex;justify-content:space-between;align-items:center">
       <span>權重分配</span>
       <button id="btn-suggest" style="font-size:12px;padding:4px 10px">🤖 依剩餘預算自動建議</button>
@@ -1920,6 +1932,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
     <div id="suggest-reasons" class="suggest-reasons"></div>
     <div id="weights"></div>
     <div class="weight-sum" id="weight-sum">合計：<span id="wsum-val">0</span>%</div>
+    `}
 
     ${!id && !renewFrom && s.products.some((p) => p.is_poquan) ? `
     <div class="hint mt-8" style="padding:8px 10px;background:#f0f7ff;border:1px solid #cfe1f5;border-radius:6px;font-size:12px;line-height:1.5">
@@ -2205,35 +2218,38 @@ function openEditor(id, renewFrom = null, prefill = null) {
   q("#f-currency").onchange = () => { applyCurrencyMode(); recalcDaily(); };
   applyCurrencyMode();
   recalcDaily();
-  renderWeights();
-
-  q("#btn-suggest").onclick = (e) => {
-    e.preventDefault();
-    const start = q("#f-start").value;
-    const end = q("#f-end").value;
-    const days = Number(q("#f-days").value) || 0;
-    const cny = Number(q("#f-cny").value) || 0;
-    const rate = Number(q("#f-rate").value) || 0;
-    const twd = cny * rate;
-    if (!start || !end || days <= 0 || twd <= 0) {
-      toast("先填起訖日、攤提天數、金額", "bad");
-      return;
-    }
-    const newAd = { start_date: start, end_date: end, amortize_days: days, daily_amort_twd: twd / days };
-    const otherAds = id ? s.ads.filter((x) => x.id !== id) : s.ads;
-    const { weights: suggested, reasons } = suggestWeights(s, s.products, otherAds, s.settings.current_month, newAd);
-    for (const k of Object.keys(weights)) delete weights[k];
-    Object.assign(weights, suggested);
+  // 編輯模式下 weights 區塊改為唯讀(HTML 內 inline 顯示),不 render 編輯 UI、不綁建議按鈕
+  if (!id) {
     renderWeights();
-    const rbox = q("#suggest-reasons");
-    if (Object.keys(suggested).length === 0) {
-      rbox.innerHTML = `<div class="hint" style="color:var(--bad)">無法建議：${reasons.join("；") || "查無可分配產品"}</div>`;
-    } else if (reasons.length) {
-      rbox.innerHTML = `<div class="hint">建議已套用。備註：${reasons.join("；")}</div>`;
-    } else {
-      rbox.innerHTML = `<div class="hint" style="color:var(--ok)">建議已套用（依各產品剩餘預算比例）</div>`;
-    }
-  };
+
+    q("#btn-suggest").onclick = (e) => {
+      e.preventDefault();
+      const start = q("#f-start").value;
+      const end = q("#f-end").value;
+      const days = Number(q("#f-days").value) || 0;
+      const cny = Number(q("#f-cny").value) || 0;
+      const rate = Number(q("#f-rate").value) || 0;
+      const twd = cny * rate;
+      if (!start || !end || days <= 0 || twd <= 0) {
+        toast("先填起訖日、攤提天數、金額", "bad");
+        return;
+      }
+      const newAd = { start_date: start, end_date: end, amortize_days: days, daily_amort_twd: twd / days };
+      const otherAds = s.ads;
+      const { weights: suggested, reasons } = suggestWeights(s, s.products, otherAds, s.settings.current_month, newAd);
+      for (const k of Object.keys(weights)) delete weights[k];
+      Object.assign(weights, suggested);
+      renderWeights();
+      const rbox = q("#suggest-reasons");
+      if (Object.keys(suggested).length === 0) {
+        rbox.innerHTML = `<div class="hint" style="color:var(--bad)">無法建議：${reasons.join("；") || "查無可分配產品"}</div>`;
+      } else if (reasons.length) {
+        rbox.innerHTML = `<div class="hint">建議已套用。備註：${reasons.join("；")}</div>`;
+      } else {
+        rbox.innerHTML = `<div class="hint" style="color:var(--ok)">建議已套用（依各產品剩餘預算比例）</div>`;
+      }
+    };
+  }
 
   q("#cancel").onclick = () => modal.close();
   q("#save").onclick = () => {
@@ -2257,9 +2273,9 @@ function openEditor(id, renewFrom = null, prefill = null) {
       toast(`權重合計 ${wSum.toFixed(2)}% 必須 = 100%`, "bad"); return;
     }
 
-    // 自動拆 t 偵測(只在新增 / 續費 / 編輯沒在 pair 內時觸發;§5.7.2)
-    // detect 引用 auto-split.js
-    const collision = (!id || !(s.ads.find((x) => x.id === id)?.split_pair_id))
+    // 自動拆 t 偵測(只在新增 / 續費 觸發;§5.7.2)
+    // 編輯模式 weights 改為唯讀,不會產生新碰撞 → 跳過 detect
+    const collision = !id
       ? detectFamilyCollision(weights, s.products)
       : { collision: false };
     const splitWeights = collision.collision
@@ -2663,6 +2679,13 @@ function openWeightAdjust(seg) {
         if (result.mode === "in_pair") {
           for (const ns of result.segments) {
             const inAds = st.ads.find((a) => a.id === ns.id);
+            const rebal = inAds ? rebalanceSplitPair(st, inAds) : null;
+            if (rebal?.newLinkedSegId) added_ad_ids.push(rebal.newLinkedSegId);
+          }
+          // 邊界 case (effective == start_date):buildWeightAdjust 走 in-place,segments 為空,
+          // 改的是 source 本身 → 對 source 直接 rebalance,讓配對另一側同步更新
+          if (result.segments.length === 0) {
+            const inAds = st.ads.find((a) => a.id === seg.id);
             const rebal = inAds ? rebalanceSplitPair(st, inAds) : null;
             if (rebal?.newLinkedSegId) added_ad_ids.push(rebal.newLinkedSegId);
           }
