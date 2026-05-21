@@ -2586,9 +2586,16 @@ function openWeightAdjust(seg) {
 
   const renderWeights = () => {
     q("#weights").innerHTML = s.products.map((p) => `
-      <div class="weight-grid">
-        <div>${esc(p.name)} <span class="ink-3 mono" style="font-size:11px">${esc(p.id)}</span></div>
-        <input type="number" min="0" max="100" step="1" data-pid="${esc(p.id)}" value="${newWeights[p.id] ?? ""}" placeholder="0" />
+      <div class="weight-grid ad-weight-card ${Number(newWeights[p.id] || 0) > 0 ? "active" : ""}" style="--w:${Math.max(0, Math.min(100, Number(newWeights[p.id]) || 0))}">
+        <div class="ad-weight-main">
+          <span class="ad-weight-name">${esc(p.name)}</span>
+          <span class="ad-weight-id mono">${esc(p.id)}</span>
+        </div>
+        <div class="ad-weight-control">
+          <input type="number" min="0" max="100" step="1" data-pid="${esc(p.id)}" value="${newWeights[p.id] ?? ""}" placeholder="0" />
+          <span class="ad-weight-unit">%</span>
+        </div>
+        <div class="ad-weight-bar" aria-hidden="true"><span></span></div>
       </div>
     `).join("");
     q("#weights").querySelectorAll("input[data-pid]").forEach((inp) => {
@@ -2596,6 +2603,12 @@ function openWeightAdjust(seg) {
         const v = inp.value === "" ? 0 : Number(inp.value);
         if (v > 0) newWeights[inp.dataset.pid] = v;
         else delete newWeights[inp.dataset.pid];
+        const card = inp.closest(".ad-weight-card");
+        if (card) {
+          const pct = Math.max(0, Math.min(100, Number(v) || 0));
+          card.style.setProperty("--w", pct);
+          card.classList.toggle("active", pct > 0);
+        }
         recalcSum();
       };
     });
@@ -2798,9 +2811,16 @@ function openFamilyWeightAdjust(pairId) {
 
   const renderWeights = () => {
     q("#weights").innerHTML = s.products.map((p) => `
-      <div class="weight-grid">
-        <div>${esc(p.name)} <span class="ink-3 mono" style="font-size:11px">${esc(p.id)}${p.is_poquan ? " · 破圈" : ""}</span></div>
-        <input type="number" min="0" max="100" step="1" data-pid="${esc(p.id)}" value="${newWeights[p.id] ?? ""}" placeholder="0" />
+      <div class="weight-grid ad-weight-card ${Number(newWeights[p.id] || 0) > 0 ? "active" : ""}" style="--w:${Math.max(0, Math.min(100, Number(newWeights[p.id]) || 0))}">
+        <div class="ad-weight-main">
+          <span class="ad-weight-name">${esc(p.name)}${p.is_poquan ? ` <span class="ink-3" style="font-size:11px;font-weight:400">· 破圈</span>` : ""}</span>
+          <span class="ad-weight-id mono">${esc(p.id)}</span>
+        </div>
+        <div class="ad-weight-control">
+          <input type="number" min="0" max="100" step="1" data-pid="${esc(p.id)}" value="${newWeights[p.id] ?? ""}" placeholder="0" />
+          <span class="ad-weight-unit">%</span>
+        </div>
+        <div class="ad-weight-bar" aria-hidden="true"><span></span></div>
       </div>
     `).join("");
     q("#weights").querySelectorAll("input[data-pid]").forEach((inp) => {
@@ -2808,6 +2828,12 @@ function openFamilyWeightAdjust(pairId) {
         const v = inp.value === "" ? 0 : Number(inp.value);
         if (v > 0) newWeights[inp.dataset.pid] = v;
         else delete newWeights[inp.dataset.pid];
+        const card = inp.closest(".ad-weight-card");
+        if (card) {
+          const pct = Math.max(0, Math.min(100, Number(v) || 0));
+          card.style.setProperty("--w", pct);
+          card.classList.toggle("active", pct > 0);
+        }
         recalcSum();
       };
     });
