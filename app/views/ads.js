@@ -662,19 +662,43 @@ function renderExpiringItem(g, nameOf, allAds) {
   `;
 }
 
+// chain-aware grouping(2026-05):
+// 同一個 ad_code 可能有「兄弟廣告」(獨立採買 N 個產品,每個產品自己一條 renewal chain),
+// 例:952 黄油网站 同時被 AV9 / JK / HYC 各自買一份(三條獨立 chain,renewal_of 互不連通)。
+// 若只按 ad_code 分 group,摺疊列只能挑一筆 → 其他兩個產品的最新段被隱藏。
+// 修法:按「ad_code + chain root」分 group,讓每條獨立 chain 各自一行摺疊列。
 function groupByCode(ads) {
+  const adById = new Map(ads.map((a) => [a.id, a]));
+  // 沿 renewal_of 往上追到 root(renewal_of=null 或 parent 不存在),回傳 root.id
+  const rootIdOf = (a) => {
+    let cur = a;
+    const visited = new Set();
+    while (cur.renewal_of && adById.has(cur.renewal_of) && !visited.has(cur.id)) {
+      visited.add(cur.id);
+      cur = adById.get(cur.renewal_of);
+    }
+    return cur.id;
+  };
+
+  // 用 (ad_code, rootId) 當 key 分 group;ad_code 帶入避免 chain 中途改名(自動拆 t)時跨 group 串
   const map = new Map();
   for (const a of ads) {
-    if (!map.has(a.ad_code)) map.set(a.ad_code, []);
-    map.get(a.ad_code).push(a);
+    const key = (a.ad_code || "") + "|" + rootIdOf(a);
+    if (!map.has(key)) map.set(key, { code: a.ad_code, segs: [] });
+    map.get(key).segs.push(a);
   }
-  // 段內依 start_date 排序；group 之間依「最早 start」排序穩定
+
+  // 段內依 start_date 排序;group 之間先按 ad_code(兄弟 chain 彼此相鄰),次按「最早 start」
   const out = [];
-  for (const [code, segs] of map.entries()) {
+  for (const { code, segs } of map.values()) {
     segs.sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""));
     out.push({ code, segs });
   }
-  out.sort((a, b) => (a.segs[0].start_date || "").localeCompare(b.segs[0].start_date || ""));
+  out.sort((a, b) => {
+    const codeCmp = (a.code || "").localeCompare(b.code || "");
+    if (codeCmp !== 0) return codeCmp;
+    return (a.segs[0].start_date || "").localeCompare(b.segs[0].start_date || "");
+  });
   return out;
 }
 
@@ -721,6 +745,9 @@ function groupByFamily(groups) {
       familyBase: fam,
       members,
       hasMultipleMembers: members.length > 1,
+      // 「真正家族」= members 涵蓋多種 ad_code(stXXX + stXXXt 拆 t 配對 / 第二位等)
+      // 「兄弟 chain」= members 全部同代碼(同 ad_code 多條獨立採買鏈)→ 不渲染家族 header
+      hasMultipleCodes: new Set(members.map((m) => m.code)).size > 1,
     });
   }
   // 家族之間用「家族內最早 start」排序
@@ -736,9 +763,14 @@ function groupByFamily(groups) {
 //  - 多支:上方加家族 header(B)、每張卡頭加 link badge 指向兄弟(C)
 //  - 單支:直接渲染那張卡
 function renderFamily(fam, products) {
-  const { familyBase, members, hasMultipleMembers } = fam;
+  const { familyBase, members, hasMultipleMembers, hasMultipleCodes } = fam;
   if (!hasMultipleMembers) {
     return renderGroup(members[0], products, {});
+  }
+  // 「兄弟 chain」(members 全部同代碼,例 952 黄油网站 三個產品各自獨立採買一條 chain)
+  // 不渲染家族 header,各 chain 直接以獨立 row 呈現 — 維持 chain-aware grouping 的本意
+  if (!hasMultipleCodes) {
+    return members.map((m) => renderGroup(m, products, {})).join("");
   }
   // 共購家族(有破圈成員,如 stXXXt):一般 + 破圈 = 合約總額(carve-out),套 familyScale
   // 兄弟廣告(無破圈,只有一般 + 第二位 dh 等):各自獨立採買,不套 scale,各權重維持 100%
