@@ -949,7 +949,7 @@ function renderGroup(group, products, opts = {}) {
       <td class="num">${Math.round(latest.daily_amort_twd || 0).toLocaleString()}</td>
       <td>${weightSummary(latest, products, "bar", { code, open: weightsOpen, allSegs: segs, filterStart, filterEnd, familyScale: opts.familyScale })}</td>
       <td class="actions-cell right nowrap">
-        ${actionButtons(latest, /*compact=*/true)}
+        ${actionButtons(segs[segs.length - 1], /*compact=*/true)}
       </td>
     </tr>
   `;
