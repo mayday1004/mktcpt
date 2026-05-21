@@ -1497,9 +1497,19 @@ function productLabelOfWeights(weights, products) {
 
 function openRenewalWizard(adCode) {
   const s = getState();
-  const tails = findRenewalTails(s, adCode);
+  // 排除「結束超過 14 天」的斷檔鏈尾:同代碼可能有歷史的兄弟鏈早就停了
+  // (例 st287 有 4/8-4/10 那條老鏈,跟現在 5/13-5/22 在跑的鏈無關),
+  // 不該被續費 wizard 一起拉進來變成多步驟。
+  const today = todayTaipei();
+  const cutoff = addDays(today, -14);
+  const allTails = findRenewalTails(s, adCode);
+  const tails = allTails.filter((a) => (a.end_date || "") >= cutoff);
   if (tails.length === 0) {
-    toast("找不到可續費的廣告段", "bad");
+    if (allTails.length > 0) {
+      toast(`找不到 14 天內的可續費段(${adCode} 的合約都已斷檔 14+ 天,請改用「新增廣告」)`, "bad");
+    } else {
+      toast("找不到可續費的廣告段", "bad");
+    }
     return;
   }
 
