@@ -348,8 +348,8 @@ function computeChurnStats(allAds, productFilter, filterStart, filterEnd, today)
     // 沒被算淘汰時記錄原因(明細展開用)
     let notElimReason = "";
     if (!isEliminated) {
-      if (!latestEnd) notElimReason = "無 end_date";
-      else notElimReason = `仍在跑(最晚 end ${latestEnd} > today ${today},且未按淘汰)`;
+      if (!latestEnd) notElimReason = "無結束日";
+      else notElimReason = `仍在跑(最晚結束日 ${latestEnd} > 今日 ${today},且未按淘汰)`;
     } else if (spendForCode <= 0) {
       notElimReason = "已淘汰但區間內無花費";
     }
@@ -412,7 +412,7 @@ function renderChurnCard(state, productFilter, filterStart, filterEnd) {
     .filter((d) => d.isElim)
     .map((d) => {
       const reason = d.anyEliminated && d.latestEnd > today
-        ? `已按淘汰(原 end ${d.latestEnd})`
+        ? `已按淘汰(原結束日 ${d.latestEnd})`
         : `自然到期 ${d.latestEnd}`;
       return `<tr>
         <td class="mono">${esc(d.code)}</td>
@@ -474,10 +474,10 @@ function renderChurnCard(state, productFilter, filterStart, filterEnd) {
                 <th>代碼</th>
                 <th>名稱</th>
                 <th>淘汰原因</th>
-                <th class="num">overlap 天數</th>
-                <th class="num">daily TWD</th>
-                <th class="num">${productFilter === "all" ? "權重" : "本產品 weight"}</th>
-                <th class="num">區間貢獻</th>
+                <th class="num">區間天數</th>
+                <th class="num">每日攤提(台幣)</th>
+                <th class="num">${productFilter === "all" ? "權重" : "本產品權重"}</th>
+                <th class="num">區間貢獻(台幣)</th>
               </tr>
             </thead>
             <tbody>
