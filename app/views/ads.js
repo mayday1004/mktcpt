@@ -363,7 +363,7 @@ function computeChurnStats(allAds, productFilter, filterStart, filterEnd, today)
       adName,
       earliestStart,
       latestEnd,
-      hasEnded,
+      hasEnded: naturallyExpired,
       anyEliminated,
       effectiveStopDate,
       isNew,
