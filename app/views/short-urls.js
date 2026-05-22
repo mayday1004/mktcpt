@@ -103,12 +103,11 @@ export function render(root) {
   const s = getState();
   const today = todayYmd();
   // 過濾條件(2026-05):
-  //   1. 未淘汰
-  //   2. short_url_type 不為空(= 採用 L1/L3/L5,「不採用」會是空字串)
-  //   3. 未過期(end_date > 今天;end_date 不含當日,所以 end_date = 今天時已經是最後一天無效)
-  //   4. 家族配對只顯示 parent(一般側)作為代表 — 一般 + 破圈是同一份合約共用一條鏈結
+  //   1. short_url_type 不為空(= 採用 L1/L3/L5,「不採用」會是空字串)
+  //   2. 未過期(end_date > 今天;end_date 不含當日,所以 end_date = 今天時已經是最後一天無效)
+  //      — 不再排除「已淘汰」:按了淘汰但結束日還沒到的廣告仍在跑,縮網址也要顯示讓使用者通知站長
+  //   3. 家族配對只顯示 parent(一般側)作為代表 — 一般 + 破圈是同一份合約共用一條鏈結
   const ads = (s.ads || []).filter((a) =>
-    !a.eliminated &&
     !!a.short_url_type &&
     (!a.end_date || a.end_date > today) &&
     a.split_role !== "t_variant"
