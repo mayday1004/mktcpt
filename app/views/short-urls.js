@@ -402,12 +402,11 @@ function renderRow(a, s, { inGroup = false } = {}) {
 
 // 縮網址前綴對應彈窗:編輯 settings.short_url_prefix_map
 // 業務 slot 永遠是 L1/L3/L5,實際 URL 子網域前綴可以另外設定(例如 L1 → L7)
-// 可選擇「同時換網域」一次完成 l7.uqbzn.com → l3.sepql.com 這類組合切換
+// 可選擇是否把目前的新連結 snapshot 成舊連結(預設不勾,舊連結保持原樣)
 function openPrefixMapModal() {
   const s = getState();
   const map = { ...DEFAULT_PREFIX_MAP, ...(s.settings.short_url_prefix_map || {}) };
-  const currentDomain = s.settings.short_url_new_domain || "";
-  const domainSample = currentDomain || "abc.com";
+  const domainSample = s.settings.short_url_new_domain || "abc.com";
   const html = `
     <h2>🔧 縮網址前綴</h2>
     <p class="ink-2" style="font-size:13px;line-height:1.6">
@@ -417,32 +416,27 @@ function openPrefixMapModal() {
     <div class="field">
       <label>L1 (權重)</label>
       <input id="pf-L1" type="text" value="${esc(map.L1)}" />
-      <div class="hint">範例 URL:https://<strong id="pf-L1-preview">${esc(map.L1).toLowerCase()}</strong>.<span class="pf-dom-preview">${esc(domainSample)}</span>/foo</div>
+      <div class="hint">範例 URL:https://<strong id="pf-L1-preview">${esc(map.L1).toLowerCase()}</strong>.${esc(domainSample)}/foo</div>
     </div>
     <div class="field mt-8">
       <label>L3 (APK)</label>
       <input id="pf-L3" type="text" value="${esc(map.L3)}" />
-      <div class="hint">範例 URL:https://<strong id="pf-L3-preview">${esc(map.L3).toLowerCase()}</strong>.<span class="pf-dom-preview">${esc(domainSample)}</span>/foo</div>
+      <div class="hint">範例 URL:https://<strong id="pf-L3-preview">${esc(map.L3).toLowerCase()}</strong>.${esc(domainSample)}/foo</div>
     </div>
     <div class="field mt-8">
       <label>L5 (小島)</label>
       <input id="pf-L5" type="text" value="${esc(map.L5)}" />
-      <div class="hint">範例 URL:https://<strong id="pf-L5-preview">${esc(map.L5).toLowerCase()}</strong>.<span class="pf-dom-preview">${esc(domainSample)}</span>/foo</div>
+      <div class="hint">範例 URL:https://<strong id="pf-L5-preview">${esc(map.L5).toLowerCase()}</strong>.${esc(domainSample)}/foo</div>
     </div>
 
     <div style="margin-top:14px;padding:12px 14px;background:#f6f7f9;border:1px solid var(--line);border-radius:6px">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;font-size:13px">
-        <input id="pf-also-domain" type="checkbox" style="margin:0" />
-        <span>同時換網域(覆蓋全站新網域)</span>
+        <input id="pf-overwrite-old" type="checkbox" style="margin:0" />
+        <span>同時把目前新連結覆蓋為舊連結</span>
       </label>
       <div class="hint" style="margin-top:6px;line-height:1.6">
-        勾起來可以一次完成「換前綴 + 換網域」,例如 <span class="mono">l7.uqbzn.com → l3.sepql.com</span>。<br>
-        舊連結會用「<strong>套用前的舊網域 + 舊前綴</strong>」snapshot,所以舊網址記得正確。
-      </div>
-      <div id="pf-domain-wrap" class="field" style="margin-top:10px;display:none">
-        <label>新網域(僅輸入網域,如 abc.com)</label>
-        <input id="pf-domain" type="text" placeholder="例:sepql.com" value="${esc(currentDomain)}" />
-        <div class="hint">目前全站網域:<span class="mono">${esc(currentDomain || "(空)")}</span></div>
+        <strong>勾起來</strong>:把目前的新連結 snapshot 成舊連結(站長要被通知前綴改了),通知狀態重置。<br>
+        <strong>不勾</strong>:舊連結維持不變,只更新前綴 map。適合「之前已經換過網域、舊連結要保留」的情境。
       </div>
     </div>
 
@@ -461,22 +455,6 @@ function openPrefixMapModal() {
       pv.textContent = (inp.value.trim() || slot).toLowerCase();
     };
   });
-  const alsoDomainChk = q("#pf-also-domain");
-  const domainWrap = q("#pf-domain-wrap");
-  const domainInput = q("#pf-domain");
-  const domainPreviews = dlg.querySelectorAll(".pf-dom-preview");
-  const updateDomainPreview = () => {
-    const v = alsoDomainChk.checked
-      ? (domainInput.value.trim() || domainSample)
-      : domainSample;
-    domainPreviews.forEach((el) => { el.textContent = v; });
-  };
-  alsoDomainChk.onchange = () => {
-    domainWrap.style.display = alsoDomainChk.checked ? "" : "none";
-    updateDomainPreview();
-  };
-  domainInput.oninput = updateDomainPreview;
-
   q("#pf-cancel").onclick = () => window.modal.close();
   q("#pf-save").onclick = () => {
     const newMap = {
@@ -492,60 +470,42 @@ function openPrefixMapModal() {
     }
     const oldMap = { ...DEFAULT_PREFIX_MAP, ...(s.settings.short_url_prefix_map || {}) };
     const changedSlots = Object.keys(newMap).filter((slot) => newMap[slot] !== oldMap[slot]);
-
-    const alsoDomain = alsoDomainChk.checked;
-    const newDomain = alsoDomain
-      ? domainInput.value.trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "")
-      : "";
-    const domainChanged = alsoDomain && newDomain !== currentDomain;
-
-    if (changedSlots.length === 0 && !domainChanged) {
+    if (changedSlots.length === 0) {
       window.modal.close();
-      window.toast("前綴與網域都沒有變更", "");
+      window.toast("前綴沒有變更", "");
       return;
     }
-
-    // 受影響廣告:前綴有改的 slot 全部,或者(若同時換網域)所有有 param 的廣告
-    const affectedAds = (s.ads || []).filter((a) => {
-      if (!a.short_url_param) return false;
-      if (domainChanged) return true;
-      return changedSlots.includes(a.short_url_type);
-    });
-
-    const prefixSummary = changedSlots
+    const overwriteOld = q("#pf-overwrite-old").checked;
+    const affectedAds = (s.ads || []).filter((a) =>
+      changedSlots.includes(a.short_url_type) && a.short_url_param
+    );
+    const summary = changedSlots
       .map((slot) => `${slot}: ${oldMap[slot]} → ${newMap[slot]}`).join("、");
-    const parts = [];
-    if (changedSlots.length > 0) parts.push(`更新 ${changedSlots.length} 個 slot 前綴(${prefixSummary})`);
-    if (domainChanged) parts.push(`網域 ${currentDomain || "(空)"} → ${newDomain || "(空)"}`);
-    const confirmMsg = `將${parts.join("、")}。\n` +
-      `${affectedAds.length} 支廣告的「目前 URL」會 snapshot 為各自的舊連結(用套用前的網域 + 舊前綴),通知狀態重置為未通知。確定?`;
+    const confirmMsg = `將更新 ${changedSlots.length} 個 slot 前綴(${summary})。\n` +
+      (overwriteOld
+        ? `${affectedAds.length} 支廣告的「目前 URL」會 snapshot 為各自的舊連結,通知狀態重置為未通知。確定?`
+        : `${affectedAds.length} 支廣告的舊連結維持不變,只更新前綴 map(通知狀態不變)。確定?`);
     if (!window.confirm(confirmMsg)) return;
-
     update((st) => {
-      const previousGlobalNew = st.settings.short_url_new_domain || "";
-      for (const ad of st.ads || []) {
-        const slot = ad.short_url_type;
-        if (!slot || !ad.short_url_param) continue;
-        const prefixChanged = changedSlots.includes(slot);
-        if (!prefixChanged && !domainChanged) continue;
-        // snapshot 用「套用前」的網域 + 舊前綴
-        const currentNewDomain = ad.short_url_new_override || previousGlobalNew;
-        if (currentNewDomain) ad.short_url_old_override = currentNewDomain;
-        // 只在前綴有變時凍結舊前綴;純換網域時讓舊 URL 跟著當前 slot 前綴(此刻新舊前綴相同)
-        if (prefixChanged) ad.short_url_old_prefix = oldMap[slot];
-        else delete ad.short_url_old_prefix;
-        // 同時換網域時,清掉 per-ad 新網域覆寫,讓所有廣告統一吃新全站值
-        delete ad.short_url_new_override;
-        ad.short_url_notified = false;
+      if (overwriteOld) {
+        const previousGlobalNew = st.settings.short_url_new_domain || "";
+        for (const ad of st.ads || []) {
+          const slot = ad.short_url_type;
+          if (!slot || !changedSlots.includes(slot)) continue;
+          if (!ad.short_url_param) continue;
+          const currentNewDomain = ad.short_url_new_override || previousGlobalNew;
+          if (currentNewDomain) ad.short_url_old_override = currentNewDomain;
+          ad.short_url_old_prefix = oldMap[slot];
+          delete ad.short_url_new_override;
+          ad.short_url_notified = false;
+        }
       }
-      if (changedSlots.length > 0) st.settings.short_url_prefix_map = newMap;
-      if (domainChanged) {
-        st.settings.short_url_new_domain = newDomain;
-        st.settings.short_url_old_domain = "";
-      }
-    }, domainChanged ? "更新縮網址前綴 + 網域" : "更新縮網址前綴對應");
+      st.settings.short_url_prefix_map = newMap;
+    }, overwriteOld ? "更新縮網址前綴(覆蓋舊連結)" : "更新縮網址前綴(舊連結保留)");
     window.modal.close();
-    window.toast(`已套用(${affectedAds.length} 支廣告 snapshot 為舊連結,通知狀態已重置)`, "ok");
+    window.toast(overwriteOld
+      ? `已套用前綴更新(${affectedAds.length} 支廣告 snapshot 為舊連結,通知狀態已重置)`
+      : `已套用前綴更新(舊連結保持不變)`, "ok");
   };
 }
 
