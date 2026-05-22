@@ -1484,11 +1484,15 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
   border: 1px solid #dde4ec;
   border-radius: 8px;
   padding: 12px 14px;
-  display: flex; flex-direction: column; gap: 10px;
+}
+.done-filter-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
 }
 .done-filter-search {
   position: relative;
   display: flex; align-items: center;
+  flex: 1 1 240px;   /* 搜尋框吃剩餘空間,最小 240px;太窄就 wrap 到下一行 */
+  min-width: 240px;
 }
 .done-filter-search .done-filter-icon {
   position: absolute; left: 12px; font-size: 14px; pointer-events: none;
@@ -1496,8 +1500,8 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
 }
 .done-filter-search input[type="text"] {
   width: 100%;
-  padding: 9px 38px 9px 36px;
-  font-size: 14px;
+  padding: 8px 36px 8px 34px;
+  font-size: 13px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
@@ -1510,7 +1514,7 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
 }
 .done-filter-search-clear {
   position: absolute; right: 8px;
-  width: 24px; height: 24px;
+  width: 22px; height: 22px;
   display: flex; align-items: center; justify-content: center;
   background: #e8edf3; color: var(--ink-2);
   border: none; border-radius: 50%;
@@ -1518,9 +1522,6 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
   padding: 0;
 }
 .done-filter-search-clear:hover { background: #d4dae3; color: var(--ink); }
-.done-filter-controls {
-  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-}
 .done-filter-group {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 12px;

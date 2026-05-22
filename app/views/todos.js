@@ -57,12 +57,7 @@ export function render(root) {
       <div class="card">
         <h2>已完成（${hasFilter ? `<span style="color:var(--accent)">${doneFiltered.length}</span> / ${done.length}` : done.length}）</h2>
         <div class="done-filter">
-          <div class="done-filter-search">
-            <span class="done-filter-icon">🔍</span>
-            <input type="text" id="df-search" value="${escape(doneFilter.search)}" placeholder="搜尋類型、內容、日期…(例:破解 / 權重 / 2026-05)" autocomplete="off" />
-            ${doneFilter.search ? `<button class="done-filter-search-clear" id="df-search-clear" title="清除搜尋">✕</button>` : ""}
-          </div>
-          <div class="done-filter-controls">
+          <div class="done-filter-row">
             <div class="done-filter-group">
               <span class="done-filter-label">📅 期間</span>
               <input type="date" id="df-start" value="${doneFilter.startDate}" />
@@ -75,6 +70,11 @@ export function render(root) {
                 <option value="">全部</option>
                 ${typeOptions.map((a) => `<option value="${escape(a)}" ${doneFilter.actionType === a ? "selected" : ""}>${escape(a)}</option>`).join("")}
               </select>
+            </div>
+            <div class="done-filter-search">
+              <span class="done-filter-icon">🔍</span>
+              <input type="text" id="df-search" value="${escape(doneFilter.search)}" placeholder="搜尋類型、內容、日期…(例:破解 / 權重 / 2026-05)" autocomplete="off" />
+              ${doneFilter.search ? `<button class="done-filter-search-clear" id="df-search-clear" title="清除搜尋">✕</button>` : ""}
             </div>
             ${hasFilter ? `<button class="done-filter-clear" id="df-clear">✕ 清除全部</button>` : ""}
           </div>
