@@ -8,14 +8,20 @@ let doneFilter = {
   startDate: "",    // YYYY-MM-DD,空 = 不限
   endDate: "",      // YYYY-MM-DD,空 = 不限
   actionType: "",   // 空 = 全部類型
+  search: "",       // 模糊搜尋 description / action_type / created_at
 };
 
 function filterDoneTodos(done) {
+  const q = doneFilter.search.trim().toLowerCase();
   return done.filter((t) => {
     if (doneFilter.actionType && t.action_type !== doneFilter.actionType) return false;
     const day = (t.created_at || "").slice(0, 10);   // YYYY-MM-DD
     if (doneFilter.startDate && day && day < doneFilter.startDate) return false;
     if (doneFilter.endDate && day && day > doneFilter.endDate) return false;
+    if (q) {
+      const hay = `${t.description || ""} ${t.action_type || ""} ${t.created_at || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
 }
@@ -29,7 +35,7 @@ export function render(root) {
   // 類型下拉:從已完成資料中實際出現過的 action_type + 預設清單合併,unique
   const typesInData = [...new Set(done.map((t) => t.action_type).filter(Boolean))];
   const typeOptions = [...new Set([...ACTION_TYPES, ...typesInData])];
-  const hasFilter = !!(doneFilter.startDate || doneFilter.endDate || doneFilter.actionType);
+  const hasFilter = !!(doneFilter.startDate || doneFilter.endDate || doneFilter.actionType || doneFilter.search);
 
   root.innerHTML = `
     <div class="view-head">
@@ -50,21 +56,32 @@ export function render(root) {
     ${done.length ? `
       <div class="card">
         <h2>已完成（${hasFilter ? `<span style="color:var(--accent)">${doneFiltered.length}</span> / ${done.length}` : done.length}）</h2>
-        <div class="filter-row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;margin-top:8px;padding:10px 12px;background:#f6f7f9;border-radius:6px;border:1px solid var(--line)">
-          <span style="font-size:12px;color:var(--ink-3)">期間</span>
-          <input type="date" id="df-start" value="${doneFilter.startDate}" style="font-size:13px;padding:4px 8px" />
-          <span style="color:var(--ink-3)">~</span>
-          <input type="date" id="df-end" value="${doneFilter.endDate}" style="font-size:13px;padding:4px 8px" />
-          <span style="font-size:12px;color:var(--ink-3);margin-left:8px">類型</span>
-          <select id="df-type" style="font-size:13px;padding:4px 8px">
-            <option value="">全部</option>
-            ${typeOptions.map((a) => `<option value="${escape(a)}" ${doneFilter.actionType === a ? "selected" : ""}>${escape(a)}</option>`).join("")}
-          </select>
-          ${hasFilter ? `<button id="df-clear" style="font-size:12px;margin-left:auto">清除篩選</button>` : ""}
+        <div class="done-filter">
+          <div class="done-filter-search">
+            <span class="done-filter-icon">🔍</span>
+            <input type="text" id="df-search" value="${escape(doneFilter.search)}" placeholder="搜尋類型、內容、日期…(例:破解 / 權重 / 2026-05)" autocomplete="off" />
+            ${doneFilter.search ? `<button class="done-filter-search-clear" id="df-search-clear" title="清除搜尋">✕</button>` : ""}
+          </div>
+          <div class="done-filter-controls">
+            <div class="done-filter-group">
+              <span class="done-filter-label">📅 期間</span>
+              <input type="date" id="df-start" value="${doneFilter.startDate}" />
+              <span class="done-filter-sep">~</span>
+              <input type="date" id="df-end" value="${doneFilter.endDate}" />
+            </div>
+            <div class="done-filter-group">
+              <span class="done-filter-label">🏷 類型</span>
+              <select id="df-type">
+                <option value="">全部</option>
+                ${typeOptions.map((a) => `<option value="${escape(a)}" ${doneFilter.actionType === a ? "selected" : ""}>${escape(a)}</option>`).join("")}
+              </select>
+            </div>
+            ${hasFilter ? `<button class="done-filter-clear" id="df-clear">✕ 清除全部</button>` : ""}
+          </div>
         </div>
         ${doneFiltered.length === 0
-          ? `<div class="empty" style="padding:30px 0">沒有符合條件的紀錄<br><span class="ink-3" style="font-size:12px">調整上方期間 / 類型試試</span></div>`
-          : listHtml(doneFiltered, true)}
+          ? `<div class="empty" style="padding:30px 0">沒有符合條件的紀錄<br><span class="ink-3" style="font-size:12px">調整上方條件試試</span></div>`
+          : listHtml(doneFiltered, true, doneFilter.search.trim())}
       </div>
     ` : ""}
   `;
@@ -73,12 +90,31 @@ export function render(root) {
   const startInp = root.querySelector("#df-start");
   const endInp = root.querySelector("#df-end");
   const typeSel = root.querySelector("#df-type");
+  const searchInp = root.querySelector("#df-search");
   if (startInp) startInp.onchange = () => { doneFilter.startDate = startInp.value; render(root); };
   if (endInp) endInp.onchange = () => { doneFilter.endDate = endInp.value; render(root); };
   if (typeSel) typeSel.onchange = () => { doneFilter.actionType = typeSel.value; render(root); };
+  // 搜尋:用 input 事件即時更新,但用 debounce 避免每打一個字就 re-render
+  if (searchInp) {
+    let debounceTimer = null;
+    searchInp.oninput = () => {
+      clearTimeout(debounceTimer);
+      const val = searchInp.value;
+      debounceTimer = setTimeout(() => {
+        doneFilter.search = val;
+        const focusPos = searchInp.selectionStart;
+        render(root);
+        // re-render 後重新聚焦在搜尋框,保留 cursor 位置
+        const newInp = root.querySelector("#df-search");
+        if (newInp) { newInp.focus(); newInp.setSelectionRange(focusPos, focusPos); }
+      }, 180);
+    };
+  }
+  const searchClear = root.querySelector("#df-search-clear");
+  if (searchClear) searchClear.onclick = () => { doneFilter.search = ""; render(root); };
   const clearBtn = root.querySelector("#df-clear");
   if (clearBtn) clearBtn.onclick = () => {
-    doneFilter = { startDate: "", endDate: "", actionType: "" };
+    doneFilter = { startDate: "", endDate: "", actionType: "", search: "" };
     render(root);
   };
 
@@ -142,7 +178,7 @@ export function render(root) {
   });
 }
 
-function listHtml(todos, isDone) {
+function listHtml(todos, isDone, searchTerm = "") {
   return `
     <div class="table-wrap">
       <table>
@@ -152,9 +188,9 @@ function listHtml(todos, isDone) {
         <tbody>
           ${todos.map((t) => `
             <tr>
-              <td class="mono ink-2" style="font-size:12px">${t.created_at}</td>
-              <td><span class="pill">${escape(t.action_type)}</span></td>
-              <td style="white-space:pre-wrap;line-height:1.6">${highlightTodoDesc(t.description)}</td>
+              <td class="mono ink-2" style="font-size:12px">${highlightMatch(t.created_at, searchTerm)}</td>
+              <td><span class="pill">${highlightMatch(t.action_type, searchTerm)}</span></td>
+              <td style="white-space:pre-wrap;line-height:1.6">${highlightTodoDesc(t.description, searchTerm)}</td>
               <td class="right nowrap">
                 ${isDone
                   ? `<button data-undo="${t.id}">↺ 重新打開</button>`
@@ -223,9 +259,28 @@ function escape(v) {
 }
 
 // 渲染 todo description：把 " → " 後面（直到行尾）標粗體深綠 — 強調權重調整後的新狀態
-function highlightTodoDesc(desc) {
+// 若帶 searchTerm,將命中字串包 <mark> 高亮
+function highlightTodoDesc(desc, searchTerm = "") {
   if (!desc) return "<span class='ink-3'>—</span>";
-  const escaped = escape(desc);
-  return escaped.replace(/( → )([^\n]+)/g, (m, arrow, after) =>
+  let escaped = escape(desc);
+  escaped = escaped.replace(/( → )([^\n]+)/g, (m, arrow, after) =>
     `${arrow}<strong style="color:#1f7a3a">${after}</strong>`);
+  return applySearchHighlight(escaped, searchTerm);
+}
+
+// 一般欄位的搜尋高亮(時間 / 類型 等);desc 用上面那個版本
+function highlightMatch(text, searchTerm = "") {
+  if (!text) return "";
+  return applySearchHighlight(escape(text), searchTerm);
+}
+
+// 在已 escape 過的 HTML 上做搜尋字串高亮:case-insensitive,包 <mark>
+function applySearchHighlight(escapedHtml, searchTerm) {
+  const q = (searchTerm || "").trim();
+  if (!q) return escapedHtml;
+  // searchTerm 也要 escape 一次,並去掉 regex 特殊字元
+  const escQ = escape(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!escQ) return escapedHtml;
+  const re = new RegExp(escQ, "gi");
+  return escapedHtml.replace(re, (m) => `<mark style="background:#fff39a;padding:0 2px;border-radius:2px">${m}</mark>`);
 }

@@ -1477,6 +1477,91 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
 }
 .link-btn:hover { color: #1f4fa3; }
 
+/* ============ 待辦已完成區的篩選工具列 ============ */
+.done-filter {
+  margin: 10px 0 14px;
+  background: linear-gradient(to bottom, #f8fafd, #f2f5f9);
+  border: 1px solid #dde4ec;
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.done-filter-search {
+  position: relative;
+  display: flex; align-items: center;
+}
+.done-filter-search .done-filter-icon {
+  position: absolute; left: 12px; font-size: 14px; pointer-events: none;
+  color: var(--ink-3);
+}
+.done-filter-search input[type="text"] {
+  width: 100%;
+  padding: 9px 38px 9px 36px;
+  font-size: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.done-filter-search input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(43, 92, 173, 0.12);
+}
+.done-filter-search-clear {
+  position: absolute; right: 8px;
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  background: #e8edf3; color: var(--ink-2);
+  border: none; border-radius: 50%;
+  font-size: 11px; cursor: pointer;
+  padding: 0;
+}
+.done-filter-search-clear:hover { background: #d4dae3; color: var(--ink); }
+.done-filter-controls {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+}
+.done-filter-group {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.done-filter-label {
+  font-size: 12px; color: var(--ink-2); font-weight: 500;
+  white-space: nowrap;
+}
+.done-filter-group input[type="date"],
+.done-filter-group select {
+  font-size: 13px;
+  padding: 4px 8px;
+  border: 1px solid #e0e6ee;
+  border-radius: 4px;
+  background: #fafbfc;
+  color: var(--ink);
+}
+.done-filter-group input[type="date"]:focus,
+.done-filter-group select:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: #fff;
+}
+.done-filter-sep {
+  color: var(--ink-3); font-size: 12px;
+}
+.done-filter-clear {
+  margin-left: auto;
+  padding: 6px 14px;
+  font-size: 12px;
+  background: #fff;
+  color: #c43;
+  border: 1px solid #f0c4bb;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.done-filter-clear:hover { background: #fff3f0; border-color: #d96b56; }
+
 /* ============ Perf-adjust 帶寬校正提示 ============ */
 .band-cap-notes {
   background: #fff5e0; border: 1px solid var(--warn); border-radius: 6px;
