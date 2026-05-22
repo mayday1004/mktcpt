@@ -59,12 +59,17 @@ const numOr = (v, fallback = 0) => {
 
 export const TABLE_SYNC_SPECS = [
   // ── 1. 產品（id = product.id） ─────────────────────────────────────
+  // 2026-05-22 補同步:is_poquan / parent_product_id(家族卡片歸位)
   {
     sheetName: "產品",
-    dataHeaders: ["id", "名稱", "類型", "不檢查每日帶寬"],
+    dataHeaders: ["id", "名稱", "類型", "不檢查每日帶寬", "是破圈", "母產品ID"],
     flatten: (s) => (s.products || []).map((p) => ({
       _id: p.id,
-      dataRow: [p.id, p.name, p.type, p.no_band ? "Y" : ""],
+      dataRow: [
+        p.id, p.name, p.type, p.no_band ? "Y" : "",
+        p.is_poquan ? "Y" : "",
+        p.parent_product_id || "",
+      ],
     })),
     upsertInState(state, _id, obj) {
       const p = ensureProduct(state, _id);
@@ -72,6 +77,13 @@ export const TABLE_SYNC_SPECS = [
       p.name = String(obj["名稱"] || p.name || "");
       p.type = (obj["類型"] === "island") ? "island" : "app";
       p.no_band = String(obj["不檢查每日帶寬"] || "").toUpperCase() === "Y";
+      // hasOwnProperty 保護:舊 sheet 還沒這兩欄時不蓋掉本機既有值
+      if (Object.prototype.hasOwnProperty.call(obj, "是破圈")) {
+        p.is_poquan = String(obj["是破圈"] || "").toUpperCase() === "Y";
+      }
+      if (Object.prototype.hasOwnProperty.call(obj, "母產品ID")) {
+        p.parent_product_id = String(obj["母產品ID"] || "");
+      }
     },
     removeFromState(state, _id) {
       state.products = (state.products || []).filter((p) => p.id !== _id);
@@ -79,6 +91,7 @@ export const TABLE_SYNC_SPECS = [
     legacyParse(headers, rows) {
       const idx = (h) => headers.indexOf(h);
       const iId = idx("id"), iName = idx("名稱"), iType = idx("類型"), iNb = idx("不檢查每日帶寬");
+      const iPoq = idx("是破圈"), iParent = idx("母產品ID");
       return rows
         .map((r) => ({
           id: String(r[iId] || ""),
@@ -86,9 +99,11 @@ export const TABLE_SYNC_SPECS = [
           type: String(r[iType] || "app"),
           // 舊 sheet 沒這欄 → iNb=-1 → 取出 undefined → 預設 ""
           nb: iNb >= 0 && String(r[iNb] || "").toUpperCase() === "Y" ? "Y" : "",
+          poq: iPoq >= 0 && String(r[iPoq] || "").toUpperCase() === "Y" ? "Y" : "",
+          parent: iParent >= 0 ? String(r[iParent] || "") : "",
         }))
         .filter((p) => p.id)
-        .map((p) => ({ _id: p.id, dataRow: [p.id, p.name, p.type, p.nb] }));
+        .map((p) => ({ _id: p.id, dataRow: [p.id, p.name, p.type, p.nb, p.poq, p.parent] }));
     },
   },
 
@@ -309,6 +324,7 @@ export const TABLE_SYNC_SPECS = [
   },
 
   // ── 6. 廣告（id = ad.id；不含 weights — 那是分開的 sheet） ─────
+  // 2026-05-22 補同步:縮網址(6 欄)、code_at_creation(時間軸對照)、split_pair(配對)
   {
     sheetName: "廣告",
     dataHeaders: [
@@ -318,6 +334,8 @@ export const TABLE_SYNC_SPECS = [
       "開始日期", "結束日期", "攤提天數", "每日攤提(台幣)",
       "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動",
       "廣告文案", "聯絡用TG號", "站長聯繫", "備註", "已淘汰",
+      "縮網址類型", "縮網址參數", "縮網址舊網域", "縮網址舊前綴", "縮網址新網域", "縮網址已通知",
+      "段建立代碼", "配對ID", "配對角色",
     ],
     flatten: (s) => (s.ads || []).map((a) => ({
       _id: a.id,
@@ -338,6 +356,15 @@ export const TABLE_SYNC_SPECS = [
         a.contact_info || "",
         a.notes || "",
         a.eliminated ? "Y" : "",
+        a.short_url_type || "",
+        a.short_url_param || "",
+        a.short_url_old_override || "",
+        a.short_url_old_prefix || "",
+        a.short_url_new_override || "",
+        a.short_url_notified ? "Y" : "",
+        a.code_at_creation || "",
+        a.split_pair_id || "",
+        a.split_role || "",
       ],
     })),
     upsertInState(state, _id, obj) {
@@ -389,6 +416,21 @@ export const TABLE_SYNC_SPECS = [
       if (Object.prototype.hasOwnProperty.call(obj, "站長聯繫")) a.contact_info = String(obj["站長聯繫"] || "");
       a.notes = String(obj["備註"] || "");
       a.eliminated = String(obj["已淘汰"] || "").toUpperCase() === "Y";
+      // 2026-05-22 補同步:縮網址 + code_at_creation + split_pair
+      // 用 hasOwnProperty 判斷 — sheet 還沒 migrate 到新 headers 時這些 key 不在 obj 裡,
+      // 跳過寫入,保留本機原值;migrate 後 sheet 有欄位就會寫入(空字串 = 該廣告本來就沒設)
+      if (Object.prototype.hasOwnProperty.call(obj, "縮網址類型")) a.short_url_type = String(obj["縮網址類型"] || "");
+      if (Object.prototype.hasOwnProperty.call(obj, "縮網址參數")) a.short_url_param = String(obj["縮網址參數"] || "");
+      if (Object.prototype.hasOwnProperty.call(obj, "縮網址舊網域")) a.short_url_old_override = String(obj["縮網址舊網域"] || "");
+      if (Object.prototype.hasOwnProperty.call(obj, "縮網址舊前綴")) a.short_url_old_prefix = String(obj["縮網址舊前綴"] || "");
+      if (Object.prototype.hasOwnProperty.call(obj, "縮網址新網域")) a.short_url_new_override = String(obj["縮網址新網域"] || "");
+      if (Object.prototype.hasOwnProperty.call(obj, "縮網址已通知")) a.short_url_notified = String(obj["縮網址已通知"] || "").toUpperCase() === "Y";
+      if (Object.prototype.hasOwnProperty.call(obj, "段建立代碼")) a.code_at_creation = String(obj["段建立代碼"] || "");
+      if (Object.prototype.hasOwnProperty.call(obj, "配對ID")) a.split_pair_id = String(obj["配對ID"] || "") || null;
+      if (Object.prototype.hasOwnProperty.call(obj, "配對角色")) {
+        const role = String(obj["配對角色"] || "");
+        a.split_role = (role === "parent" || role === "t_variant") ? role : null;
+      }
       applyDoneEliminateTodos(state);
     },
     removeFromState(state, _id) {
@@ -426,6 +468,16 @@ export const TABLE_SYNC_SPECS = [
             idx("站長聯繫") >= 0 ? String(r[idx("站長聯繫")] || "") : "",
             String(r[idx("備註")] || ""),
             "",
+            // 9 個新欄位:legacyParse 從舊 sheet 拉時補空(舊 sheet 沒這些 column)
+            idx("縮網址類型") >= 0 ? String(r[idx("縮網址類型")] || "") : "",
+            idx("縮網址參數") >= 0 ? String(r[idx("縮網址參數")] || "") : "",
+            idx("縮網址舊網域") >= 0 ? String(r[idx("縮網址舊網域")] || "") : "",
+            idx("縮網址舊前綴") >= 0 ? String(r[idx("縮網址舊前綴")] || "") : "",
+            idx("縮網址新網域") >= 0 ? String(r[idx("縮網址新網域")] || "") : "",
+            idx("縮網址已通知") >= 0 && String(r[idx("縮網址已通知")] || "").toUpperCase() === "Y" ? "Y" : "",
+            idx("段建立代碼") >= 0 ? String(r[idx("段建立代碼")] || "") : "",
+            idx("配對ID") >= 0 ? String(r[idx("配對ID")] || "") : "",
+            idx("配對角色") >= 0 ? String(r[idx("配對角色")] || "") : "",
           ],
         });
       }
@@ -568,13 +620,27 @@ export const TABLE_SYNC_SPECS = [
   },
 
   // ── 9. 待辦（id = todo.id） ────────────────────────────────────────
+  // 2026-05-22 補同步:undo_payload(JSON.stringify;> 30KB 跳過,避免爆 cell)
   {
     sheetName: "待辦",
-    dataHeaders: ["id", "建立時間", "動作類型", "描述", "狀態"],
-    flatten: (s) => (s.todos || []).map((t) => ({
-      _id: t.id,
-      dataRow: [t.id, normalizeTodoCreatedAt(t.created_at), t.action_type || "", t.description || "", t.status || "pending"],
-    })),
+    dataHeaders: ["id", "建立時間", "動作類型", "描述", "狀態", "撤回資料JSON"],
+    flatten: (s) => (s.todos || []).map((t) => {
+      // undo_payload 太大就跳過(Google Sheets cell 限 50000 char,留安全邊際)
+      let undoJson = "";
+      if (t.undo_payload) {
+        try {
+          const s = JSON.stringify(t.undo_payload);
+          if (s.length <= 30000) undoJson = s;
+        } catch { /* ignore */ }
+      }
+      return {
+        _id: t.id,
+        dataRow: [
+          t.id, normalizeTodoCreatedAt(t.created_at), t.action_type || "",
+          t.description || "", t.status || "pending", undoJson,
+        ],
+      };
+    }),
     upsertInState(state, _id, obj) {
       state.todos = state.todos || [];
       const idx = state.todos.findIndex((t) => t.id === _id);
@@ -585,6 +651,19 @@ export const TABLE_SYNC_SPECS = [
         description: String(obj["描述"] || ""),
         status: obj["狀態"] === "done" ? "done" : "pending",
       };
+      // undo_payload:hasOwnProperty 保護,沒這欄就保留本機既有(同 ad 處理方式)
+      if (Object.prototype.hasOwnProperty.call(obj, "撤回資料JSON")) {
+        const raw = String(obj["撤回資料JSON"] || "").trim();
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object") rec.undo_payload = parsed;
+          } catch { /* 解析失敗 → 不寫 undo_payload,保 todo 本身 */ }
+        }
+      } else if (idx >= 0 && state.todos[idx].undo_payload) {
+        // 舊 sheet 沒這欄 → 保留本機既有的 undo_payload
+        rec.undo_payload = state.todos[idx].undo_payload;
+      }
       if (idx >= 0) state.todos[idx] = rec;
       else state.todos.push(rec);
       applyDoneEliminateTodos(state);
@@ -601,9 +680,10 @@ export const TABLE_SYNC_SPECS = [
           at: String(r[idx("動作類型")] || ""),
           desc: String(r[idx("描述")] || ""),
           status: String(r[idx("狀態")] || "pending"),
+          undo: idx("撤回資料JSON") >= 0 ? String(r[idx("撤回資料JSON")] || "") : "",
         }))
         .filter((x) => x.id)
-        .map((x) => ({ _id: x.id, dataRow: [x.id, normalizeTodoCreatedAt(x.created_at), x.at, x.desc, x.status] }));
+        .map((x) => ({ _id: x.id, dataRow: [x.id, normalizeTodoCreatedAt(x.created_at), x.at, x.desc, x.status, x.undo] }));
     },
   },
 
@@ -631,6 +711,15 @@ export const TABLE_SYNC_SPECS = [
           if (Number.isFinite(v) && v > 0) push(`monthly_rate::${ym}::${kind}`, v);
         }
       }
+      // 2026-05-22 補同步:縮網址全站設定
+      if (settings.short_url_new_domain) push("short_url_new_domain", settings.short_url_new_domain);
+      if (settings.short_url_old_domain) push("short_url_old_domain", settings.short_url_old_domain);
+      if (settings.short_url_prefix_map && typeof settings.short_url_prefix_map === "object") {
+        // 整個 prefix_map 一筆 row,value 用 JSON 序列化(map 只有 3 個 key,塞得下)
+        try {
+          push("short_url_prefix_map", JSON.stringify(settings.short_url_prefix_map));
+        } catch { /* ignore */ }
+      }
       return out;
     },
     upsertInState(state, _id, obj) {
@@ -645,6 +734,17 @@ export const TABLE_SYNC_SPECS = [
       else if (_id === "income_rate") state.settings.income_rate = numOr(v, 4.6);
       else if (_id === "usdt_to_cny_rate") state.settings.usdt_to_cny_rate = numOr(v, 7);
       else if (_id === "usd_to_twd_rate") state.settings.usd_to_twd_rate = numOr(v, 32);
+      else if (_id === "short_url_new_domain") state.settings.short_url_new_domain = String(v ?? "");
+      else if (_id === "short_url_old_domain") state.settings.short_url_old_domain = String(v ?? "");
+      else if (_id === "short_url_prefix_map") {
+        const raw = String(v ?? "").trim();
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object") state.settings.short_url_prefix_map = parsed;
+          } catch { /* 解析失敗 → 不動 */ }
+        }
+      }
       else if (_id.startsWith("monthly_rate::")) {
         const [, ym, kind] = _id.split("::");
         if (!/^\d{4}-\d{2}$/.test(ym)) return;
@@ -662,6 +762,9 @@ export const TABLE_SYNC_SPECS = [
       else if (_id === "income_rate") state.settings.income_rate = 4.6;
       else if (_id === "usdt_to_cny_rate") state.settings.usdt_to_cny_rate = 7;
       else if (_id === "usd_to_twd_rate") state.settings.usd_to_twd_rate = 32;
+      else if (_id === "short_url_new_domain") state.settings.short_url_new_domain = "";
+      else if (_id === "short_url_old_domain") state.settings.short_url_old_domain = "";
+      else if (_id === "short_url_prefix_map") delete state.settings.short_url_prefix_map;
       else if (_id.startsWith("monthly_rate::")) {
         const [, ym, kind] = _id.split("::");
         if (state.settings.monthly_rates?.[ym]) {
@@ -735,6 +838,67 @@ export const TABLE_SYNC_SPECS = [
         }))
         .filter((x) => x.id && x.name && x.formula)
         .map((x) => ({ _id: x.id, dataRow: [x.id, x.pid, x.pname, x.name, x.formula, x.pct] }));
+    },
+  },
+
+  // ── 12. 報表設定（id = product.id） ───────────────────────────────
+  // 2026-05-22 新增:同步 report_config[pid] 的 hidden_metrics + user_configured flags。
+  // custom_metrics 在 sheet 11(報表自訂欄位),per-metric row;這張 sheet 是 per-product row。
+  {
+    sheetName: "報表設定",
+    dataHeaders: ["產品ID", "產品名稱", "隱藏欄位", "已自訂隱藏", "已自訂自訂"],
+    flatten: (s) => {
+      const out = [];
+      const nameOf = Object.fromEntries((s.products || []).map((p) => [p.id, p.name]));
+      for (const [pid, cfg] of Object.entries(s.report_config || {})) {
+        if (!cfg) continue;
+        const hidden = Array.isArray(cfg.hidden_metrics) ? cfg.hidden_metrics : [];
+        const hiddenConfigured = cfg.hidden_metrics_user_configured === true;
+        const customConfigured = cfg.custom_metrics_user_configured === true;
+        // 全空白(沒隱藏 + 沒 flag)→ 跳過,避免推一堆空 row
+        if (hidden.length === 0 && !hiddenConfigured && !customConfigured) continue;
+        out.push({
+          _id: pid,
+          dataRow: [
+            pid, nameOf[pid] || "",
+            hidden.join(","),
+            hiddenConfigured ? "Y" : "",
+            customConfigured ? "Y" : "",
+          ],
+        });
+      }
+      return out;
+    },
+    upsertInState(state, _id, obj) {
+      if (!_id) return;
+      state.report_config = state.report_config || {};
+      if (!state.report_config[_id]) state.report_config[_id] = { hidden_metrics: [], custom_metrics: [] };
+      const cfg = state.report_config[_id];
+      const hiddenStr = String(obj["隱藏欄位"] || "").trim();
+      cfg.hidden_metrics = hiddenStr ? hiddenStr.split(",").map((s) => s.trim()).filter(Boolean) : [];
+      cfg.hidden_metrics_user_configured = String(obj["已自訂隱藏"] || "").toUpperCase() === "Y";
+      cfg.custom_metrics_user_configured = String(obj["已自訂自訂"] || "").toUpperCase() === "Y";
+    },
+    removeFromState(state, _id) {
+      if (!state.report_config?.[_id]) return;
+      const cfg = state.report_config[_id];
+      cfg.hidden_metrics = [];
+      delete cfg.hidden_metrics_user_configured;
+      delete cfg.custom_metrics_user_configured;
+      // 留著 cfg(custom_metrics 可能還在)
+    },
+    legacyParse(headers, rows) {
+      const idx = (h) => headers.indexOf(h);
+      return rows
+        .map((r) => ({
+          pid: String(r[idx("產品ID")] || ""),
+          pname: String(r[idx("產品名稱")] || ""),
+          hidden: String(r[idx("隱藏欄位")] || ""),
+          hc: idx("已自訂隱藏") >= 0 && String(r[idx("已自訂隱藏")] || "").toUpperCase() === "Y" ? "Y" : "",
+          cc: idx("已自訂自訂") >= 0 && String(r[idx("已自訂自訂")] || "").toUpperCase() === "Y" ? "Y" : "",
+        }))
+        .filter((x) => x.pid)
+        .map((x) => ({ _id: x.pid, dataRow: [x.pid, x.pname, x.hidden, x.hc, x.cc] }));
     },
   },
 ];
