@@ -436,7 +436,7 @@ function scenarioFor(state, ym) {
   if (spendScenario !== "renewal") {
     return { state, virtualRenewals: [], excludedPoorPerf: [] };
   }
-  const projection = projectAdsWithRenewals(state, ym, { fromDate: getBasisDate(), excludePoorPerf: true });
+  const projection = projectAdsWithRenewals(state, ym, { fromDate: getBasisDate(), excludePoorPerf: false });
   return {
     state: { ...state, ads: projection.ads },
     virtualRenewals: projection.virtualRenewals,

@@ -48,6 +48,8 @@ let detailDate = null;
 // 「產品 × 廣告分組」卡片視圖：'monthly'（月度摘要）/ 'daily'（每日摘要）
 let groupView = "daily";
 let dailyProjectionMode = "renewal";
+// 每日攤提 grid 看哪個月:'current'(當月)/ 'next'(下月)
+let dailyGridMonth = "current";
 // 每日摘要選的產品（'all' = 全部產品合計；其他 = 特定產品 id）
 let groupDailyPid = "all";
 
@@ -183,6 +185,9 @@ function bindDetailHandlers(root) {
   });
   root.querySelectorAll("[data-daily-mode]").forEach((el) => {
     el.onclick = () => { dailyProjectionMode = el.dataset.dailyMode; render(root); };
+  });
+  root.querySelectorAll("[data-daily-grid-month]").forEach((el) => {
+    el.onclick = () => { dailyGridMonth = el.dataset.dailyGridMonth; render(root); };
   });
 }
 
@@ -1066,98 +1071,79 @@ function productRow(state, product, ym, spent) {
 
 function renderDailyGrid(s, ym) {
   const nextYm = nextMonthYm(ym);
+  const showYm = dailyGridMonth === "next" ? nextYm : ym;
+  // projection 一律跑到下月,確保跨月續費段在下月也存在(grid 只用 showYm 切片)
   const projection = dailyProjectionMode === "renewal"
     ? projectAdsWithRenewals(s, ym, { fromDate: todayStr(), toMonth: nextYm, excludePoorPerf: false })
     : { ads: s.ads, virtualRenewals: [], excludedPoorPerf: [] };
+  const computedGrid = dailySpendGrid(projection.ads, showYm);
   const products = s.products;
+  // 每個產品的「每一日」帶寬(forward-only 分段)
+  const dayBandsByPid = Object.fromEntries(products.map((p) => [p.id, bandsForMonth(s, p, showYm)]));
+
+  const days = [...daysOfMonth(showYm)];
+  if (days.length === 0) return "";
+
+  const monthTotals = Object.fromEntries(products.map((p) => [p.id, 0]));
+  let grandTotal = 0;
+
+  // 紀錄每個 pid 的「段切換日」(用於 daily grid 在切換日加分隔線)
+  const segChangeDays = Object.fromEntries(products.map((p) => {
+    const dbands = dayBandsByPid[p.id];
+    const set = new Set();
+    let prev = null;
+    for (const d of days) {
+      const ca = dbands?.[d]?.change_at;
+      if (ca && ca !== `${showYm}-01` && ca !== prev) set.add(ca);
+      prev = ca;
+    }
+    return [p.id, set];
+  }));
+
   const today = todayStr();
-
-  // 每月一份:grid / bands / 段切換日 / 月合計
-  function buildMonthCtx(monthYm) {
-    const grid = dailySpendGrid(projection.ads, monthYm);
-    const bands = Object.fromEntries(products.map((p) => [p.id, bandsForMonth(s, p, monthYm)]));
-    const days = [...daysOfMonth(monthYm)];
-    const segChange = Object.fromEntries(products.map((p) => {
-      const dbands = bands[p.id];
-      const set = new Set();
-      let prev = null;
-      for (const d of days) {
-        const ca = dbands?.[d]?.change_at;
-        if (ca && ca !== `${monthYm}-01` && ca !== prev) set.add(ca);
-        prev = ca;
-      }
-      return [p.id, set];
-    }));
-    const totals = Object.fromEntries(products.map((p) => [p.id, 0]));
-    return { ym: monthYm, grid, bands, days, segChange, totals };
-  }
-
-  const ctxA = buildMonthCtx(ym);
-  const ctxB = buildMonthCtx(nextYm);
-  if (ctxA.days.length === 0) return "";
-
-  function renderDayRow(d, ctx) {
-    const row = ctx.grid[d] || {};
+  const bodyRows = days.map((d) => {
+    const row = computedGrid[d] || {};
     let dayTotal = 0;
     const cells = products.map((p) => {
       const amt = row[p.id] || 0;
       dayTotal += amt;
-      ctx.totals[p.id] += amt;
-      const b = ctx.bands[p.id]?.[d];
+      monthTotals[p.id] += amt;
+      const b = dayBandsByPid[p.id]?.[d];
       // 只在「當日及未來」標色 — 過去日已花掉,無法調整,標色只會徒增噪音
       const isFuture = d >= today;
       const checkBand = isFuture && b && b.budget_set && !isNoBand(p) && amt > 0;
       const amtRounded = Math.round(amt);
       const isUnder = checkBand && amtRounded < Math.round(b.lower);
       const isOver = checkBand && amtRounded > Math.round(b.upper);
-      const isSegStart = ctx.segChange[p.id].has(d);
+      const isSegStart = segChangeDays[p.id].has(d);
       const cls = `num ${isUnder ? "dg-under-band" : ""} ${isOver ? "dg-over-band" : ""} ${isSegStart ? "dg-seg-start" : ""} ${d < today ? "dg-past" : ""}`;
       const title = b && b.budget_set
-        ? `建議日花費 ${Math.round(b.avg).toLocaleString()} (${Math.round(b.lower).toLocaleString()}~${Math.round(b.upper).toLocaleString()})${b.change_at && b.change_at !== `${ctx.ym}-01` ? ` · 段起 ${b.change_at}` : ""}${d < today ? " · 已過(不警示)" : ""}`
+        ? `建議日花費 ${Math.round(b.avg).toLocaleString()} (${Math.round(b.lower).toLocaleString()}~${Math.round(b.upper).toLocaleString()})${b.change_at && b.change_at !== `${showYm}-01` ? ` · 段起 ${b.change_at}` : ""}${d < today ? " · 已過(不警示)" : ""}`
         : "";
       return `<td class="${cls}" title="${title}">${amt ? Math.round(amt).toLocaleString() : "<span class='ink-3'>—</span>"}</td>`;
     }).join("");
+    grandTotal += dayTotal;
     const todayCls = d === today ? " dg-today" : "";
     return `<tr class="${todayCls.trim()}">
       <td class="mono">${d.slice(5)}${d === today ? " <span class='pill' style='font-size:10px;padding:0 4px;margin-left:2px;background:#111;color:#fff'>今天</span>" : ""}</td>
       ${cells}
       <td class="num"><strong>${Math.round(dayTotal).toLocaleString()}</strong></td>
     </tr>`;
-  }
+  }).join("");
 
-  function renderMonthSummary(ctx, label) {
-    const cells = products.map((p) => {
-      const total = ctx.totals[p.id];
-      const budget = getMonthlyBudget(s, p.id, ctx.ym) || 0;
-      const diff = total - budget;
-      const diffClass = !budget ? "ink-3" : checkMonthlyTotal(total, budget, p.type).kind;
-      return `<td class="num dg-foot">
-        <strong>${Math.round(total).toLocaleString()}</strong>
-        ${budget ? `<div class="dg-foot-sub ${diffClass}">${diff >= 0 ? "+" : ""}${Math.round(diff).toLocaleString()}</div>` : ""}
-      </td>`;
-    }).join("");
-    const monthTotal = Object.values(ctx.totals).reduce((sum, v) => sum + v, 0);
-    return `<tr class="dg-foot-row">
-      <td><strong>${label}</strong><div class="ink-3" style="font-size:11px">${ctx.ym} · vs 預算</div></td>
-      ${cells}
-      <td class="num dg-foot"><strong>${Math.round(monthTotal).toLocaleString()}</strong></td>
-    </tr>`;
-  }
-
-  function renderMonthDivider(label) {
-    return `<tr class="dg-month-divider">
-      <td colspan="${products.length + 2}" style="background:#eef3f9;color:#34465a;text-align:center;padding:10px 12px;font-weight:600;border-top:2px solid #c5d4e3;border-bottom:1px solid #c5d4e3">── ${label} ──</td>
-    </tr>`;
-  }
-
-  const bodyA = ctxA.days.map((d) => renderDayRow(d, ctxA)).join("");
-  const bodyB = ctxB.days.map((d) => renderDayRow(d, ctxB)).join("");
-  const summaryA = renderMonthSummary(ctxA, `${ctxA.ym} 月合計`);
-  const summaryB = renderMonthSummary(ctxB, `${ctxB.ym} 月合計`);
-  const dividerB = renderMonthDivider(`下個月預估 ${ctxB.ym}`);
+  const footerCells = products.map((p) => {
+    const total = monthTotals[p.id];
+    const budget = getMonthlyBudget(s, p.id, showYm) || 0;
+    const diff = total - budget;
+    const diffClass = !budget ? "ink-3" : checkMonthlyTotal(total, budget, p.type).kind;
+    return `<td class="num dg-foot">
+      <strong>${Math.round(total).toLocaleString()}</strong>
+      ${budget ? `<div class="dg-foot-sub ${diffClass}">${diff >= 0 ? "+" : ""}${Math.round(diff).toLocaleString()}</div>` : ""}
+    </td>`;
+  }).join("");
 
   const headerCells = products.map((p) => {
-    const target = getTargetDailyBudget(s, p.id, ym);
+    const target = getTargetDailyBudget(s, p.id, showYm);
     const sub = target != null
       ? `<div class="ink-3" style="font-size:10px;font-weight:400">${Math.round(target).toLocaleString()}/日</div>`
       : "";
@@ -1170,19 +1156,26 @@ function renderDailyGrid(s, ym) {
       <button class="filter-chip ${dailyProjectionMode === "actual" ? "active" : ""}" data-daily-mode="actual">實際資料</button>
     </div>
   `;
+  const monthTabs = `
+    <div class="tabs" style="margin-bottom:10px">
+      <button class="tab ${dailyGridMonth === "current" ? "active" : ""}" data-daily-grid-month="current">當月(${ym})</button>
+      <button class="tab ${dailyGridMonth === "next" ? "active" : ""}" data-daily-grid-month="next">下月(${nextYm})</button>
+    </div>
+  `;
   const modeNote = dailyProjectionMode === "renewal"
-    ? `假設今日後到期的終端廣告會持續續費(僅跳過已淘汰)。已加入 ${projectedCodes.length} 支預估續費,顯示範圍延長到下個月。`
-    : `只計算已存在的廣告段;未手動續費的廣告到期後停止攤提。顯示範圍延長到下個月。`;
+    ? `假設今日後到期的終端廣告會持續續費(僅跳過已淘汰)。已加入 ${projectedCodes.length} 支預估續費。`
+    : "只計算已存在的廣告段;未手動續費的廣告到期後停止攤提。";
 
   return `
     <div class="card">
       <div class="card-head">
-        <h2>每日攤提(台幣)</h2>
+        <h2>每日攤提(${showYm},台幣)</h2>
         ${modeTabs}
       </div>
       <div class="ink-3" style="margin-bottom:8px;font-size:12px">${modeNote}</div>
+      ${monthTabs}
       <div class="ink-3" style="margin-bottom:8px;font-size:12px">橘 = 少花太多(低於建議日花費下限);紅 = 多花太多(超出上限);過去日不警示。</div>
-      <div class="table-wrap" style="max-height:680px;overflow:auto">
+      <div class="table-wrap" style="max-height:560px;overflow:auto">
         <table>
           <thead>
             <tr>
@@ -1191,7 +1184,14 @@ function renderDailyGrid(s, ym) {
               <th class="num">當日合計</th>
             </tr>
           </thead>
-          <tbody>${bodyA}${summaryA}${dividerB}${bodyB}${summaryB}</tbody>
+          <tbody>${bodyRows}</tbody>
+          <tfoot>
+            <tr class="dg-foot-row">
+              <td><strong>月合計</strong><div class="ink-3" style="font-size:11px">vs 預算</div></td>
+              ${footerCells}
+              <td class="num dg-foot"><strong>${Math.round(grandTotal).toLocaleString()}</strong></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>

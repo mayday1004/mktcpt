@@ -55,7 +55,7 @@ function scenarioFor(state, ym) {
   if (spendScenario !== "renewal") {
     return { state, virtualRenewals: [], excludedPoorPerf: [] };
   }
-  const projection = projectAdsWithRenewals(state, ym, { fromDate: todayTaipei(), excludePoorPerf: true });
+  const projection = projectAdsWithRenewals(state, ym, { fromDate: todayTaipei(), excludePoorPerf: false });
   return {
     state: { ...state, ads: projection.ads },
     virtualRenewals: projection.virtualRenewals,
@@ -464,7 +464,7 @@ function renderAmortGridCard(state, products, scenarioAds, today) {
   // renewal 模式時 scenarioAds 已經有續費 projection。若切到「next month」,需要對 next month 也跑一次 projection。
   let monthAds = scenarioAds;
   if (viewMonth === "next" && spendScenario === "renewal") {
-    const nextProj = projectAdsWithRenewals(state, ymNext, { fromDate: today, excludePoorPerf: true });
+    const nextProj = projectAdsWithRenewals(state, ymNext, { fromDate: today, excludePoorPerf: false });
     monthAds = nextProj.ads;
   } else if (viewMonth === "next") {
     monthAds = state.ads;

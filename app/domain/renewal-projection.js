@@ -30,15 +30,15 @@ function cloneRenewal(ad, start, end, index) {
   };
 }
 
-// 給 detect / plan 等「決策層」函式用的 state — 預設套用續費 projection,
-// 並排除「全爛廣告」(成效全部 < 0.3,視同預設淘汰,不會被預估續費)。
+// 給 detect / plan 等「決策層」函式用的 state — 預設套用續費 projection。
+// 2026-05 改:不再排除「成效全爛」廣告,沒按淘汰的一律當會續費(跟畫面顯示一致)。
 // settings.current_month 沒設或 fromDate 無效時退回原 state。
 export function projectedDecisionState(state) {
   const ym = state?.settings?.current_month;
   if (!ym) return state;
   const projection = projectAdsWithRenewals(state, ym, {
     fromDate: todayTaipei(),
-    excludePoorPerf: true,
+    excludePoorPerf: false,
   });
   return { ...state, ads: projection.ads };
 }
@@ -46,7 +46,8 @@ export function projectedDecisionState(state) {
 // options:
 //   fromDate          — 只續還沒到期的廣告(end_date >= fromDate)
 //   toMonth           — 預估上限月份(YYYY-MM),預設 = ym。傳更晚的月份可以把預估延長到後續月份
-//   excludePoorPerf   — 是否排除「成效全爛」廣告(視同預設淘汰)。預設 true;dashboard 概覽 false
+//   excludePoorPerf   — 是否排除「成效全爛」廣告(視同預設淘汰)。預設 true(歷史行為);
+//                       2026-05 起 view + 決策層都改 false,沒按淘汰的一律當會續費
 export function projectAdsWithRenewals(state, ym, options = {}) {
   const fromDate = options.fromDate || todayTaipei();
   const toMonth = options.toMonth || ym;

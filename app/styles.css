@@ -1810,19 +1810,17 @@ tr.dg-in-buy-period td { background: rgba(34, 197, 94, 0.06); }
 /* 該格有「新採買貢獻」時左側加綠色細條 */
 td.dg-new-contrib { border-left: 2px solid rgba(34, 197, 94, 0.5); }
 
-/* 月合計 row — 原本只在 tfoot,改成 tbody 內也能上色(每月有自己的小計) */
-tfoot .dg-foot, tfoot .dg-foot-row td,
-tbody tr.dg-foot-row td, tbody td.dg-foot {
+tfoot .dg-foot, tfoot .dg-foot-row td {
   background: #f0f4fb;
   border-top: 2px solid var(--accent);
   font-family: var(--mono);
+  position: sticky; bottom: 0;
 }
-tfoot .dg-foot, tfoot .dg-foot-row td { position: sticky; bottom: 0; }
-.dg-foot-sub { font-size: 11px; margin-top: 2px; font-weight: 400; }
-.dg-foot-sub.ok { color: var(--ok); }
-.dg-foot-sub.warn { color: var(--warn); }
-.dg-foot-sub.bad { color: var(--bad); }
-.dg-foot-sub.ink-3 { color: var(--ink-3); }
+tfoot .dg-foot-sub { font-size: 11px; margin-top: 2px; font-weight: 400; }
+tfoot .dg-foot-sub.ok { color: var(--ok); }
+tfoot .dg-foot-sub.warn { color: var(--warn); }
+tfoot .dg-foot-sub.bad { color: var(--bad); }
+tfoot .dg-foot-sub.ink-3 { color: var(--ink-3); }
 
 /* ============ RWD ============ */
 @media (max-width: 900px) {
