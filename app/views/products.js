@@ -420,8 +420,12 @@ function openEditor(id, ym) {
       t.goal_value = Number(t.goal_value) || 0;
     }
     // 依類型收集當月預算（APP→只有 monthly；小島→只有 daily）
+    // 同時記下「本次表單實際出現的月份」(formMonths) — 儲存時 merge 用,
+    // 沒在 formMonths 裡的月份保留原 state(避免之前整個 dict 被覆寫造成其他月份消失)
     const newMonthly = {};
     const newDaily = {};
+    const formMonths = new Set();
+    formMonths.add(ym);
     const isIsland = patch.type === "island";
     if (isIsland) {
       const dayStr = dlg.querySelector("#f-budget-daily")?.value.trim() || "";
@@ -435,6 +439,7 @@ function openEditor(id, ym) {
     // 其他月份：依當前類型只收集對應 mode 的輸入
     dlg.querySelectorAll("[data-budget-month]").forEach((inp) => {
       const m = inp.dataset.budgetMonth;
+      formMonths.add(m);
       const mode = inp.dataset.budgetMode;
       const v = Number(inp.value);
       if (!Number.isFinite(v) || v <= 0) return;
@@ -454,22 +459,34 @@ function openEditor(id, ym) {
       }
       if (!st.monthly_budgets) st.monthly_budgets = {};
       if (!st.daily_budgets) st.daily_budgets = {};
+      const oldMonthly = id ? (st.monthly_budgets[pid] || {}) : {};
+      const oldDaily = id ? (st.daily_budgets[pid] || {}) : {};
+
+      // Merge：只動本次表單上實際出現的月份(formMonths)
+      //   - 表單上有輸入新值 → 寫入
+      //   - 表單上有欄位但被清空 → 刪掉該月（使用者明確意圖）
+      //   - 不在 formMonths 裡 → 完全不動（保留 state 既有值，防止其他月份被覆寫消失）
+      const mergedMonthly = { ...oldMonthly };
+      const mergedDaily = { ...oldDaily };
+      for (const m of formMonths) {
+        if (newMonthly[m] != null) mergedMonthly[m] = newMonthly[m];
+        else delete mergedMonthly[m];
+        if (newDaily[m] != null) mergedDaily[m] = newDaily[m];
+        else delete mergedDaily[m];
+      }
+
       // 比對哪些月份預算「實質變動」了 — 變動的月份才清 budget_changes
       // 沒變動的月份保留時序紀錄（避免使用者修個成效目標就丟失預算分段）
-      const oldMonthly = id ? (st.monthly_budgets?.[pid] || {}) : {};
-      const oldDaily = id ? (st.daily_budgets?.[pid] || {}) : {};
       const changedMonths = new Set();
-      const allMonths = new Set([
-        ...Object.keys(oldMonthly), ...Object.keys(newMonthly),
-        ...Object.keys(oldDaily), ...Object.keys(newDaily),
-      ]);
-      for (const m of allMonths) {
-        if ((oldMonthly[m] || 0) !== (newMonthly[m] || 0) || (oldDaily[m] || 0) !== (newDaily[m] || 0)) {
+      for (const m of formMonths) {
+        if ((oldMonthly[m] || 0) !== (mergedMonthly[m] || 0) ||
+            (oldDaily[m] || 0) !== (mergedDaily[m] || 0)) {
           changedMonths.add(m);
         }
       }
-      st.monthly_budgets[pid] = newMonthly;
-      st.daily_budgets[pid] = newDaily;
+
+      st.monthly_budgets[pid] = mergedMonthly;
+      st.daily_budgets[pid] = mergedDaily;
       if (changedMonths.size > 0 && st.budget_changes?.[pid]) {
         for (const m of changedMonths) delete st.budget_changes[pid][m];
         if (Object.keys(st.budget_changes[pid]).length === 0) delete st.budget_changes[pid];
