@@ -1,5 +1,5 @@
 import { getState, update, uid } from "../state.js";
-import { isNoBand, getMonthlyBudget, compareProductOrder } from "../schema.js";
+import { isNoBand, getMonthlyBudget, compareProductOrder, getTargetDailyBudget } from "../schema.js";
 import { buildAdPivot, computeProductBudgetStatus } from "../domain/perf-adjust.js";
 import { buildWeightAdjust } from "../domain/lifecycle.js";
 import { rebalanceSplitPair } from "../domain/split-pair.js";
@@ -561,7 +561,13 @@ function renderImpactDailyGrid(state, ym, effectiveWeightsByAd, scenario = null)
     </td>`;
   }).join("");
 
-  const headerCells = products.map((p) => `<th class="num">${esc(p.name)}</th>`).join("");
+  const headerCells = products.map((p) => {
+    const target = getTargetDailyBudget(state, p.id, ym);
+    const sub = target != null
+      ? `<div class="ink-3" style="font-size:10px;font-weight:400">${Math.round(target).toLocaleString()}/日</div>`
+      : "";
+    return `<th class="num">${esc(p.name)}${sub}</th>`;
+  }).join("");
 
   const subhint = anyChanged
     ? "綠色 = 套用後增加,紅色 = 減少。紅底 = 該日超出建議花費上限,橘底 = 低於下限。"

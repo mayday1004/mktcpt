@@ -352,3 +352,19 @@ function _prevMonth(ym) {
   const [y, m] = ym.split("-").map(Number);
   return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
 }
+
+// 每日攤提表頭用:取「該產品該月的目標日花費」
+//   APP   → 月預算 / 月天數(均攤)
+//   小島  → 日預算(原值)
+// 用途:概覽 / 權重調整預覽 / 採買建議的表頭下方顯示目標,跟實際比對。
+// 沒設預算回 null,呼叫端自己決定要不要顯示。
+export function getTargetDailyBudget(state, pid, ym) {
+  const product = state?.products?.find((p) => p.id === pid);
+  if (!product) return null;
+  if (product.type === "island") {
+    return getDailyBudget(state, pid, ym);
+  }
+  const m = getMonthlyBudget(state, pid, ym);
+  if (m == null || m <= 0) return null;
+  return m / _daysInMonth(ym);
+}

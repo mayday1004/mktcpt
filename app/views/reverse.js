@@ -2,7 +2,7 @@ import { getState } from "../state.js";
 import { suggestWeights } from "../domain/suggest.js";
 import { dailySpendGrid, dailySpendForAd, monthlyTotals } from "../domain/spending.js";
 import { addDays, monthOf, todayTaipei, diffDays, daysOfMonth, daysInMonth } from "../lib/dates.js";
-import { getMonthlyBudget, getDailyBudget, getLatestBudget, isNoBand } from "../schema.js";
+import { getMonthlyBudget, getDailyBudget, getLatestBudget, isNoBand, getTargetDailyBudget } from "../schema.js";
 import { bandsForMonth, bandFor } from "../domain/budget.js";
 import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
 
@@ -477,7 +477,13 @@ function renderAmortGridCard(state, products, scenarioAds, today) {
   const monthTotals = Object.fromEntries(products.map((p) => [p.id, 0]));
   let grandTotal = 0;
 
-  const headerCells = products.map((p) => `<th class="num">${esc(p.name)}</th>`).join("");
+  const headerCells = products.map((p) => {
+    const target = getTargetDailyBudget(state, p.id, ym);
+    const sub = target != null
+      ? `<div class="ink-3" style="font-size:10px;font-weight:400">${Math.round(target).toLocaleString()}/日</div>`
+      : "";
+    return `<th class="num">${esc(p.name)}${sub}</th>`;
+  }).join("");
 
   const bodyRows = monthDays.map((d) => {
     const row = grid[d] || {};

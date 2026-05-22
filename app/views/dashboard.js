@@ -2,7 +2,7 @@ import { getState } from "../state.js";
 import { bandFor, bandsForMonth, checkMonthlyTotal } from "../domain/budget.js";
 import { monthlyTotals, dailySpendGrid, adContributionPerMonth, dailySpendForAd } from "../domain/spending.js";
 import { daysOfMonth, daysInMonth, isInRange, todayTaipei } from "../lib/dates.js";
-import { getMonthlyBudget, getDailyBudget, getBudgetSource, isNoBand, isNoBandPid, getReportVars } from "../schema.js";
+import { getMonthlyBudget, getDailyBudget, getBudgetSource, isNoBand, isNoBandPid, getReportVars, getTargetDailyBudget } from "../schema.js";
 import { scoreRecord } from "../domain/perf-adjust.js";
 import { expiringAds } from "../domain/alerts.js";
 import { detectFutureGaps, detectShortfalls, detectAppMonthlyUnderspend } from "../domain/gift-days.js";
@@ -510,7 +510,8 @@ function upcomingAds(state, days = 10) {
   const earliestByCode = new Map();
   for (const a of state.ads) {
     if (a.eliminated) continue;
-    if (!a.start_date || a.start_date <= today || a.start_date > horizon) continue;
+    // start_date == today 也算「即將上架」(仍未跑、需要關注),只排除過去日
+    if (!a.start_date || a.start_date < today || a.start_date > horizon) continue;
     const cur = earliestByCode.get(a.ad_code);
     if (!cur || a.start_date < cur.start_date) earliestByCode.set(a.ad_code, a);
   }
@@ -1134,7 +1135,13 @@ function renderDailyGrid(s, ym) {
     </td>`;
   }).join("");
 
-  const headerCells = products.map((p) => `<th class="num">${esc(p.name)}</th>`).join("");
+  const headerCells = products.map((p) => {
+    const target = getTargetDailyBudget(s, p.id, ym);
+    const sub = target != null
+      ? `<div class="ink-3" style="font-size:10px;font-weight:400">${Math.round(target).toLocaleString()}/日</div>`
+      : "";
+    return `<th class="num">${esc(p.name)}${sub}</th>`;
+  }).join("");
   const projectedCodes = uniqueByCode(projection.virtualRenewals);
   const excludedCodes = uniqueByCode(projection.excludedPoorPerf);
   const modeTabs = `
