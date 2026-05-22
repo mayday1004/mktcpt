@@ -353,18 +353,26 @@ function _prevMonth(ym) {
   return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
 }
 
-// 每日攤提表頭用:取「該產品該月的目標日花費」
-//   APP   → 月預算 / 月天數(均攤)
-//   小島  → 日預算(原值)
+// 每日攤提表頭用:取「該產品該月的目標日花費」— 以「最新段」為準
+//   APP   → 取最新段金額(月度 TWD)/ 月天數;若最新段是 daily mode 則直接用
+//   小島  → 取最新段金額(日 TWD);若最新段是 monthly mode 則 /月天數
 // 用途:概覽 / 權重調整預覽 / 採買建議的表頭下方顯示目標,跟實際比對。
+//
+// 為什麼要看「最新段」:
+//   小島如果用「+加預算」改過(例:5/1 4000/日 → 5/6 5000/日),目標應該是
+//   最新值 5000,而不是月初基準 4000。getBudgetChanges 在沒紀錄時會 fallback
+//   到 monthly_budgets/daily_budgets 推出單段,所以單段情境也對。
+//
 // 沒設預算回 null,呼叫端自己決定要不要顯示。
 export function getTargetDailyBudget(state, pid, ym) {
   const product = state?.products?.find((p) => p.id === pid);
   if (!product) return null;
-  if (product.type === "island") {
-    return getDailyBudget(state, pid, ym);
-  }
-  const m = getMonthlyBudget(state, pid, ym);
-  if (m == null || m <= 0) return null;
-  return m / _daysInMonth(ym);
+  const changes = getBudgetChanges(state, pid, ym);
+  if (changes.length === 0) return null;
+  const last = changes[changes.length - 1];
+  if (!Number.isFinite(last.amount) || last.amount <= 0) return null;
+  const mode = last.mode || (product.type === "island" ? "daily" : "monthly");
+  if (mode === "daily") return last.amount;
+  // monthly → 均攤到日
+  return last.amount / _daysInMonth(ym);
 }
