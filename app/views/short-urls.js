@@ -259,25 +259,28 @@ export function render(root) {
     };
   }
 
+  // 同 (ad_code, short_url_param) 視為「同一條鏈結」— 標記通知要對所有此組合的 segments 一起標
+  const linkKey = (ad) => `${ad.ad_code}|${ad.short_url_param || ""}`;
+
   // 群組複製 + 標記已通知
   root.querySelectorAll("[data-group-copy]").forEach((btn) => {
     btn.onclick = () => {
-      const codes = btn.dataset.groupCopy.split(",").filter(Boolean);
-      const adsInGroup = codes.map((c) => rows.find((r) => r.ad_code === c)).filter(Boolean);
+      const ids = btn.dataset.groupCopy.split(",").filter(Boolean);
+      const adsInGroup = ids.map((id) => rows.find((r) => r.id === id)).filter(Boolean);
       if (adsInGroup.length === 0) return;
       const text = buildGroupCopyText(adsInGroup, s);
       copyToClipboard(text)
         .then(() => {
-          // 標記已通知(對所有同代碼 segments)
-          const codeSet = new Set(codes);
+          // 標記已通知:用 (ad_code, short_url_param) 配對覆蓋該 row 的所有歷史 segments
+          const keys = new Set(adsInGroup.map(linkKey));
           update((st) => {
             for (const ad of st.ads || []) {
-              if (codeSet.has(ad.ad_code)) ad.short_url_notified = true;
+              if (keys.has(linkKey(ad))) ad.short_url_notified = true;
             }
-          }, `標記已通知 ${codes.length} 筆`);
+          }, `標記已通知 ${adsInGroup.length} 筆`);
           window.toast(
             adsInGroup.length === 1
-              ? `已複製 ${codes[0]} 的通知文字,標記為已通知`
+              ? `已複製 ${adsInGroup[0].ad_code} 的通知文字,標記為已通知`
               : `已複製 ${adsInGroup.length} 筆通知文字(${(adsInGroup[0].contact_info || "")}),全部標記為已通知`,
             "ok"
           );
@@ -289,14 +292,15 @@ export function render(root) {
   // 群組通知狀態手動 toggle
   root.querySelectorAll("[data-group-toggle]").forEach((btn) => {
     btn.onclick = () => {
-      const codes = btn.dataset.groupToggle.split(",").filter(Boolean);
+      const ids = btn.dataset.groupToggle.split(",").filter(Boolean);
+      const adsInGroup = ids.map((id) => rows.find((r) => r.id === id)).filter(Boolean);
       const nextState = btn.dataset.toState === "true";  // "true" 字串 → true
-      const codeSet = new Set(codes);
+      const keys = new Set(adsInGroup.map(linkKey));
       update((st) => {
         for (const ad of st.ads || []) {
-          if (codeSet.has(ad.ad_code)) ad.short_url_notified = nextState;
+          if (keys.has(linkKey(ad))) ad.short_url_notified = nextState;
         }
-      }, `${nextState ? "標記已通知" : "標記未通知"} ${codes.length} 筆`);
+      }, `${nextState ? "標記已通知" : "標記未通知"} ${adsInGroup.length} 筆`);
       window.toast(`已標記為${nextState ? "已通知" : "未通知"}`, "ok");
     };
   });
@@ -317,16 +321,16 @@ function renderGroup(group, s) {
 }
 
 function renderGroupHeader(group, s) {
-  const codes = group.ads.map((a) => a.ad_code);
-  const codesAttr = codes.join(",");
+  // 用 ad.id(每段唯一)當識別碼,避免同 ad_code 不同 short_url_param 的多筆 row 被當成同一筆
+  const idsAttr = group.ads.map((a) => a.id).join(",");
   const count = group.ads.length;
   const allNotified = group.ads.every((a) => !!a.short_url_notified);
   const statusBadge = allNotified
     ? `<span class="pill ok" style="font-size:11px">✅ 已通知</span>`
     : `<span class="pill warn" style="font-size:11px">⏳ 未通知</span>`;
   const toggleBtn = allNotified
-    ? `<button class="su-btn" data-group-toggle="${esc(codesAttr)}" data-to-state="false" title="標記為未通知">↺ 標未通知</button>`
-    : `<button class="su-btn" data-group-toggle="${esc(codesAttr)}" data-to-state="true" title="手動標為已通知(不複製)">✓ 標已通知</button>`;
+    ? `<button class="su-btn" data-group-toggle="${esc(idsAttr)}" data-to-state="false" title="標記為未通知">↺ 標未通知</button>`
+    : `<button class="su-btn" data-group-toggle="${esc(idsAttr)}" data-to-state="true" title="手動標為已通知(不複製)">✓ 標已通知</button>`;
   return `
     <tr class="su-group-header">
       <td colspan="8" style="background:#eef3f9;padding:10px 14px;border-top:2px solid #c5d4e3;border-bottom:1px solid #c5d4e3">
@@ -336,7 +340,7 @@ function renderGroupHeader(group, s) {
           <span class="ink-3" style="font-size:12px">(${count} 筆)</span>
           ${statusBadge}
           <div style="margin-left:auto;display:flex;gap:8px">
-            <button class="primary su-btn" data-group-copy="${esc(codesAttr)}" title="複製此站長的所有廣告通知文字,並標記為已通知">📋 通知此站長 (${count})</button>
+            <button class="primary su-btn" data-group-copy="${esc(idsAttr)}" title="複製此站長的所有廣告通知文字,並標記為已通知">📋 通知此站長 (${count})</button>
             ${toggleBtn}
           </div>
         </div>
@@ -369,10 +373,10 @@ function renderRow(a, s, { inGroup = false } = {}) {
     const copyLabel = isNewCollab ? "📋 新合作" : "📋 複製";
     const copyTitle = isNewCollab ? "複製「新合作」通知文字並標記已通知" : "複製通知站長更換鏈接的文字並標記已通知";
     const toggleBtn = notified
-      ? `<button class="link-btn" data-group-toggle="${esc(a.ad_code)}" data-to-state="false" style="font-size:11px" title="標記為未通知">↺ 標未通知</button>`
-      : `<button class="link-btn" data-group-toggle="${esc(a.ad_code)}" data-to-state="true" style="font-size:11px" title="手動標為已通知(不複製)">✓ 標已通知</button>`;
+      ? `<button class="link-btn" data-group-toggle="${esc(a.id)}" data-to-state="false" style="font-size:11px" title="標記為未通知">↺ 標未通知</button>`
+      : `<button class="link-btn" data-group-toggle="${esc(a.id)}" data-to-state="true" style="font-size:11px" title="手動標為已通知(不複製)">✓ 標已通知</button>`;
     sendCell = `
-      <button class="su-btn" data-group-copy="${esc(a.ad_code)}" title="${copyTitle}">${copyLabel}</button>
+      <button class="su-btn" data-group-copy="${esc(a.id)}" title="${copyTitle}">${copyLabel}</button>
       <div style="margin-top:4px;display:flex;flex-direction:column;align-items:center;gap:2px">
         <span class="pill ${notified ? "ok" : "warn"}" style="font-size:10px">${notified ? "✅ 已通知" : "⏳ 未通知"}</span>
         ${toggleBtn}
