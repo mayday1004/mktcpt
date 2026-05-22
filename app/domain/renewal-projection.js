@@ -43,9 +43,15 @@ export function projectedDecisionState(state) {
   return { ...state, ads: projection.ads };
 }
 
+// options:
+//   fromDate          — 只續還沒到期的廣告(end_date >= fromDate)
+//   toMonth           — 預估上限月份(YYYY-MM),預設 = ym。傳更晚的月份可以把預估延長到後續月份
+//   excludePoorPerf   — 是否排除「成效全爛」廣告(視同預設淘汰)。預設 true;dashboard 概覽 false
 export function projectAdsWithRenewals(state, ym, options = {}) {
   const fromDate = options.fromDate || todayTaipei();
-  const monthEndExclusive = nextDay(`${ym}-${String(daysInMonth(ym)).padStart(2, "0")}`);
+  const toMonth = options.toMonth || ym;
+  const monthEndExclusive = nextDay(`${toMonth}-${String(daysInMonth(toMonth)).padStart(2, "0")}`);
+  const projectionWindowStart = `${ym}-01`;
   const ads = state.ads || [];
   const projected = [];
   const excludedPoorPerf = [];
@@ -66,7 +72,7 @@ export function projectAdsWithRenewals(state, ym, options = {}) {
     let index = 1;
     while (start < monthEndExclusive) {
       const end = addDays(start, span);
-      if (end > `${ym}-01` && start < monthEndExclusive) {
+      if (end > projectionWindowStart && start < monthEndExclusive) {
         projected.push(cloneRenewal(ad, start, end, index));
       }
       start = end;
