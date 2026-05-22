@@ -3,10 +3,33 @@ import { nowTaipeiStamp } from "../lib/dates.js";
 import { applyUndo } from "../domain/undo.js";
 import { applyDoneEliminateTodos } from "../domain/todo-utils.js";
 
+// 已完成事件紀錄的篩選狀態(留在 module level,切頁回來保留)
+let doneFilter = {
+  startDate: "",    // YYYY-MM-DD,空 = 不限
+  endDate: "",      // YYYY-MM-DD,空 = 不限
+  actionType: "",   // 空 = 全部類型
+};
+
+function filterDoneTodos(done) {
+  return done.filter((t) => {
+    if (doneFilter.actionType && t.action_type !== doneFilter.actionType) return false;
+    const day = (t.created_at || "").slice(0, 10);   // YYYY-MM-DD
+    if (doneFilter.startDate && day && day < doneFilter.startDate) return false;
+    if (doneFilter.endDate && day && day > doneFilter.endDate) return false;
+    return true;
+  });
+}
+
 export function render(root) {
   const s = getState();
   const pending = s.todos.filter((t) => t.status === "pending");
   const done = s.todos.filter((t) => t.status === "done");
+  const doneFiltered = filterDoneTodos(done);
+
+  // 類型下拉:從已完成資料中實際出現過的 action_type + 預設清單合併,unique
+  const typesInData = [...new Set(done.map((t) => t.action_type).filter(Boolean))];
+  const typeOptions = [...new Set([...ACTION_TYPES, ...typesInData])];
+  const hasFilter = !!(doneFilter.startDate || doneFilter.endDate || doneFilter.actionType);
 
   root.innerHTML = `
     <div class="view-head">
@@ -24,8 +47,40 @@ export function render(root) {
       ${pending.length === 0 ? `<div class="empty">目前沒有待辦<br><span class="ink-3" style="font-size:12px">儲存廣告 / 套用成效調整時會自動建立提醒</span></div>` : listHtml(pending, false)}
     </div>
 
-    ${done.length ? `<div class="card"><h2>已完成（${done.length}）</h2>${listHtml(done, true)}</div>` : ""}
+    ${done.length ? `
+      <div class="card">
+        <h2>已完成（${hasFilter ? `<span style="color:var(--accent)">${doneFiltered.length}</span> / ${done.length}` : done.length}）</h2>
+        <div class="filter-row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;margin-top:8px;padding:10px 12px;background:#f6f7f9;border-radius:6px;border:1px solid var(--line)">
+          <span style="font-size:12px;color:var(--ink-3)">期間</span>
+          <input type="date" id="df-start" value="${doneFilter.startDate}" style="font-size:13px;padding:4px 8px" />
+          <span style="color:var(--ink-3)">~</span>
+          <input type="date" id="df-end" value="${doneFilter.endDate}" style="font-size:13px;padding:4px 8px" />
+          <span style="font-size:12px;color:var(--ink-3);margin-left:8px">類型</span>
+          <select id="df-type" style="font-size:13px;padding:4px 8px">
+            <option value="">全部</option>
+            ${typeOptions.map((a) => `<option value="${escape(a)}" ${doneFilter.actionType === a ? "selected" : ""}>${escape(a)}</option>`).join("")}
+          </select>
+          ${hasFilter ? `<button id="df-clear" style="font-size:12px;margin-left:auto">清除篩選</button>` : ""}
+        </div>
+        ${doneFiltered.length === 0
+          ? `<div class="empty" style="padding:30px 0">沒有符合條件的紀錄<br><span class="ink-3" style="font-size:12px">調整上方期間 / 類型試試</span></div>`
+          : listHtml(doneFiltered, true)}
+      </div>
+    ` : ""}
   `;
+
+  // 篩選 inputs
+  const startInp = root.querySelector("#df-start");
+  const endInp = root.querySelector("#df-end");
+  const typeSel = root.querySelector("#df-type");
+  if (startInp) startInp.onchange = () => { doneFilter.startDate = startInp.value; render(root); };
+  if (endInp) endInp.onchange = () => { doneFilter.endDate = endInp.value; render(root); };
+  if (typeSel) typeSel.onchange = () => { doneFilter.actionType = typeSel.value; render(root); };
+  const clearBtn = root.querySelector("#df-clear");
+  if (clearBtn) clearBtn.onclick = () => {
+    doneFilter = { startDate: "", endDate: "", actionType: "" };
+    render(root);
+  };
 
   root.querySelector("#btn-add-todo").onclick = () => openTodoEditor();
 
