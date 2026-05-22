@@ -499,6 +499,17 @@ function openPrefixMapModal() {
           delete ad.short_url_new_override;
           ad.short_url_notified = false;
         }
+      } else {
+        // 不勾覆蓋:把當前的舊前綴凍結到 ad,讓舊連結保持原樣(否則會跟著新 prefix map 變動)。
+        // 只對有 old_override 且還沒凍結過的廣告處理(新合作廣告不需要;已凍結的保留更早的值)。
+        for (const ad of st.ads || []) {
+          const slot = ad.short_url_type;
+          if (!slot || !changedSlots.includes(slot)) continue;
+          if (!ad.short_url_param) continue;
+          if (ad.short_url_old_override && !ad.short_url_old_prefix) {
+            ad.short_url_old_prefix = oldMap[slot];
+          }
+        }
       }
       st.settings.short_url_prefix_map = newMap;
     }, overwriteOld ? "更新縮網址前綴(覆蓋舊連結)" : "更新縮網址前綴(舊連結保留)");
