@@ -25,7 +25,14 @@ let filterMode = "changed";
 // 「展開全部產品」狀態 (CLAUDE.md §5.4.2)：哪些 ad 的權重欄要顯示全部 11 個產品 (含 0%)
 let expandedAds = new Set();
 let spendScenario = "renewal";
+// 「套用後每日攤提預覽」要顯示哪一個月:current / next
+let impactGridMonth = "current";
 let autoAgreedSignature = "";
+
+function nextMonthYm(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
 
 // 「以哪一天為基準」— 整頁演算法把這天當作「今天」。null = 用真實今天。
 // 用途:提前模擬未來日的補缺口 / 權重調整建議。離開頁面後不持久化。
@@ -436,7 +443,7 @@ function scenarioFor(state, ym) {
   if (spendScenario !== "renewal") {
     return { state, virtualRenewals: [], excludedPoorPerf: [] };
   }
-  const projection = projectAdsWithRenewals(state, ym, { fromDate: getBasisDate(), excludePoorPerf: false });
+  const projection = projectAdsWithRenewals(state, ym, { fromDate: getBasisDate(), toMonth: nextMonthYm(ym), excludePoorPerf: false });
   return {
     state: { ...state, ads: projection.ads },
     virtualRenewals: projection.virtualRenewals,
@@ -463,6 +470,8 @@ function uniqueByCode(ads) {
 function renderImpactDailyGrid(state, ym, effectiveWeightsByAd, scenario = null) {
   if (!state || !ym) return "";
   const today = getBasisDate();
+  const nextYm = nextMonthYm(ym);
+  const showYm = impactGridMonth === "next" ? nextYm : ym;
 
   // 把 ads 的 weights 換成 effective(只 patch 有勾選的)
   // ★ 權重變更只影響今日及未來 — 對 active 段在 today 切兩半:過去用原 weights、未來用新 weights
@@ -486,11 +495,11 @@ function renderImpactDailyGrid(state, ym, effectiveWeightsByAd, scenario = null)
     }
   }
 
-  const newGrid = dailySpendGrid(patchedAds, ym);
-  const oldGrid = dailySpendGrid(state.ads, ym);
+  const newGrid = dailySpendGrid(patchedAds, showYm);
+  const oldGrid = dailySpendGrid(state.ads, showYm);
   const products = state.products || [];
-  const monthDays = [...daysOfMonth(ym)];
-  const dayBandsByPid = Object.fromEntries(products.map((p) => [p.id, bandsForMonth(state, p, ym)]));
+  const monthDays = [...daysOfMonth(showYm)];
+  const dayBandsByPid = Object.fromEntries(products.map((p) => [p.id, bandsForMonth(state, p, showYm)]));
 
   // 月合計
   const newTotals = Object.fromEntries(products.map((p) => [p.id, 0]));
@@ -544,7 +553,7 @@ function renderImpactDailyGrid(state, ym, effectiveWeightsByAd, scenario = null)
   const footerCells = products.map((p) => {
     const newT = newTotals[p.id];
     const oldT = oldTotals[p.id];
-    const budget = getMonthlyBudget(state, p.id, ym) || 0;
+    const budget = getMonthlyBudget(state, p.id, showYm) || 0;
     const diff = newT - budget;
     const delta = newT - oldT;
     const diffClass = !budget ? "ink-3" : diff > 10000 ? "bad" : diff > 0 ? "warn" : -diff > 20000 ? "warn" : "ok";
@@ -562,12 +571,19 @@ function renderImpactDailyGrid(state, ym, effectiveWeightsByAd, scenario = null)
   }).join("");
 
   const headerCells = products.map((p) => {
-    const target = getTargetDailyBudget(state, p.id, ym);
+    const target = getTargetDailyBudget(state, p.id, showYm);
     const sub = target != null
       ? `<div class="ink-3" style="font-size:10px;font-weight:400">${Math.round(target).toLocaleString()}/日</div>`
       : "";
     return `<th class="num">${esc(p.name)}${sub}</th>`;
   }).join("");
+
+  const monthTabs = `
+    <div class="tabs" style="margin-bottom:10px">
+      <button class="tab ${impactGridMonth === "current" ? "active" : ""}" data-impact-month="current">當月(${ym})</button>
+      <button class="tab ${impactGridMonth === "next" ? "active" : ""}" data-impact-month="next">下月(${nextYm})</button>
+    </div>
+  `;
 
   const subhint = anyChanged
     ? "綠色 = 套用後增加,紅色 = 減少。紅底 = 該日超出建議花費上限,橘底 = 低於下限。"
@@ -586,9 +602,10 @@ function renderImpactDailyGrid(state, ym, effectiveWeightsByAd, scenario = null)
   return `
     <div class="card" style="margin-top:14px">
       <div class="card-head">
-        <h2>套用後每日攤提預覽 (${ym})</h2>
+        <h2>套用後每日攤提預覽 (${showYm})</h2>
         ${scenarioChips}
       </div>
+      ${monthTabs}
       <div class="ink-3" style="font-size:12px;margin-bottom:6px">${subhint}</div>
       ${scenarioNote}
       <div class="table-wrap" style="max-height:560px;overflow:auto">
@@ -933,6 +950,9 @@ function bindHandlers(root, pivot, newWeightsByAd) {
   });
   root.querySelectorAll("[data-spend-scenario]").forEach((el) => {
     el.onclick = () => { spendScenario = el.dataset.spendScenario; render(root); };
+  });
+  root.querySelectorAll("[data-impact-month]").forEach((el) => {
+    el.onclick = () => { impactGridMonth = el.dataset.impactMonth; render(root); };
   });
   root.querySelectorAll("input.w-input").forEach((inp) => {
     inp.onchange = () => {
