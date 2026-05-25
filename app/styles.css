@@ -523,6 +523,29 @@ dialog#modal::backdrop { background: rgba(15, 20, 30, 0.4); backdrop-filter: blu
   padding: 6px 10px;
   line-height: 1.25;
 }
+.perf-ad-toggle {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+  padding: 0;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+}
+.perf-ad-collapsed-row td {
+  height: 42px;
+  color: var(--ink-3);
+  text-align: center;
+  background: #fbfcfe;
+}
+.perf-ad-collapsed-row:hover td {
+  background: #fbfcfe;
+}
 
 /* ============ Short URLs table ============ */
 .short-urls-table th { font-size: 12px; padding: 10px 12px; }
@@ -626,6 +649,17 @@ dialog#modal::backdrop { background: rgba(15, 20, 30, 0.4); backdrop-filter: blu
 }
 .perf-row-expired .pill {
   opacity: 0.6;
+}
+.perf-row-eliminated-latest td {
+  background: #fde8e8;
+  color: var(--ink);
+}
+.perf-row-eliminated-latest td.num,
+.perf-row-eliminated-latest td .ink-3 {
+  color: #8f3a3a;
+}
+.perf-row-eliminated-latest td:first-child {
+  box-shadow: inset 3px 0 0 var(--bad);
 }
 .perf-detail-row td {
   background: #f7f9fc;

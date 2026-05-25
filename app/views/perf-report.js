@@ -14,12 +14,13 @@ import { METRICS, getExpenseRate, getIncomeRate, getReportVars } from "../schema
 import { evalFormula, validateFormula, REPORT_EXTRA_VARS } from "../lib/formula.js";
 import { bindPerfImportButtons } from "./perf-import-ui.js";
 import { scoreRecord } from "../domain/perf-adjust.js";
-import { todayTaipei } from "../lib/dates.js";
+import { addDays, todayTaipei } from "../lib/dates.js";
 
 let selectedProductId = null;
 let reportFilter = "all";
 let expandedRows = new Set();
 let reportView = "by-product";  // "by-product" | "by-ad"
+let adRowsCollapsed = false;
 
 // 預設設定:依產品 id 給出合理的初始 hidden_metrics + custom_metrics。
 // 使用者按「設定欄位」儲存後就以儲存值為準,即使是空陣列也不會 fallback。
@@ -158,6 +159,12 @@ export function render(root) {
   root.querySelectorAll("[data-report-view]").forEach((el) => {
     el.onclick = () => {
       reportView = el.dataset.reportView;
+      render(root);
+    };
+  });
+  root.querySelectorAll("[data-ad-rows-toggle]").forEach((el) => {
+    el.onclick = () => {
+      adRowsCollapsed = !adRowsCollapsed;
       render(root);
     };
   });
@@ -313,8 +320,25 @@ function renderProductReport(s, product) {
     const maxEnd = maxEndByCode.get(code);
     return !!maxEnd && maxEnd <= today;
   };
+  const latestPeriod = globalPeriods[0] || null;
+  const runDaysByCode = new Map();
+  const eliminatedInLatestByCode = new Map();
+  for (const code of byCode.keys()) {
+    runDaysByCode.set(code, countActiveDaysForCode(s, code, product.id, displayStart, displayEnd));
+    eliminatedInLatestByCode.set(code, isCodeStoppedInPeriod(s, code, product.id, latestPeriod));
+  }
 
-  const rows = perfData.map((r) => buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibleCustom, reportVars, isCodeExpired(r.ad_code)));
+  const rows = perfData.map((r) => buildReportRow(
+    r,
+    visibleMetrics,
+    hiddenMetrics,
+    visibleTargets,
+    visibleCustom,
+    reportVars,
+    isCodeExpired(r.ad_code),
+    runDaysByCode.get(r.ad_code) || 0,
+    eliminatedInLatestByCode.get(r.ad_code) || false
+  ));
   const failedRows = rows.filter((r) => r.status === "bad");
   const okRows = rows.filter((r) => r.status === "ok");
   const noConversionRows = rows.filter((r) => (Number(r.firstOrders) || 0) === 0 && (Number(r.purchaseOrders) || 0) === 0);
@@ -363,8 +387,8 @@ function renderProductReport(s, product) {
   `;
 
   const outsideColumnCount = visibleMetrics.length + visibleCustom.length;
-  // 8 = 期間/代碼/廣告/分組/花費/主要目標/狀態/展開鈕。分組隱藏時 -1。
-  const tableColspan = 8 + outsideColumnCount - (groupVisible ? 0 : 1);
+  // 9 = 期間/天數/代碼/廣告/分組/花費/主要目標/狀態/展開鈕。分組隱藏時 -1。
+  const tableColspan = 9 + outsideColumnCount - (groupVisible ? 0 : 1);
   const metricHeaders = visibleMetrics.map((m) => `<th class="num" title="${esc(m)}">${esc(m)}</th>`).join("");
   const customHeaders = visibleCustom.map((m) => `<th class="num" title="${esc(m.formula)}">${esc(m.name)}</th>`).join("");
   const tableRows = filtered.map((row) => renderSummaryRow(row, primaryLabel, primaryGoal, tableColspan, groupVisible)).join("");
@@ -388,6 +412,7 @@ function renderProductReport(s, product) {
           <thead>
             <tr>
               <th style="width:82px">期間</th>
+              <th class="num" style="width:58px">天數</th>
               <th style="width:92px">代碼</th>
               <th>廣告</th>
               ${groupVisible ? `<th style="width:150px">分組</th>` : ""}
@@ -406,7 +431,34 @@ function renderProductReport(s, product) {
   `;
 }
 
-function buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibleCustom, reportVars, expired = false) {
+function countActiveDaysForCode(state, code, productId, periodStart, periodEnd) {
+  if (!code || !productId || !periodStart || !periodEnd) return 0;
+  const periodEndExclusive = addDays(periodEnd, 1);
+  const days = new Set();
+  for (const ad of (state.ads || [])) {
+    if (ad.ad_code !== code) continue;
+    if (Number(ad.weights?.[productId]) <= 0) continue;
+    if (!ad.start_date || !ad.end_date) continue;
+    let cur = ad.start_date > periodStart ? ad.start_date : periodStart;
+    const end = ad.end_date < periodEndExclusive ? ad.end_date : periodEndExclusive;
+    while (cur < end) {
+      days.add(cur);
+      cur = addDays(cur, 1);
+    }
+  }
+  return days.size;
+}
+
+function isCodeStoppedInPeriod(state, code, productId, period) {
+  if (!code || !productId || !period) return false;
+  const segs = (state.ads || []).filter((a) => a.ad_code === code && Number(a.weights?.[productId]) > 0);
+  if (segs.length === 0) return false;
+  const periodEndExclusive = addDays(period.end, 1);
+  const maxEnd = segs.reduce((m, a) => ((a.end_date || "") > m ? (a.end_date || "") : m), "");
+  return !!maxEnd && maxEnd > period.start && maxEnd <= periodEndExclusive;
+}
+
+function buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibleCustom, reportVars, expired = false, runDays = 0, eliminatedInLatestPeriod = false) {
   const evalVars = { ...r, ...reportVars };
   const targetResults = visibleTargets.map((t) => {
     let actual = null;
@@ -432,6 +484,8 @@ function buildReportRow(r, visibleMetrics, hiddenMetrics, visibleTargets, visibl
     customResults,
     status: failed ? "bad" : passed ? "ok" : "none",
     expired,
+    runDays,
+    eliminatedInLatestPeriod,
     primaryActual: primary?.actual,
     primaryMet: primary?.met,
     spend: pickMetric(r, ["花費", "广告花费", "廣告花費", "spend", "cost"]),
@@ -457,10 +511,12 @@ function renderSummaryRow(row, primaryLabel, primaryGoal, tableColspan, groupVis
   const rowClasses = [
     row.status === "bad" ? "perf-row-bad" : "",
     row.expired ? "perf-row-expired" : "",
+    row.eliminatedInLatestPeriod ? "perf-row-eliminated-latest" : "",
   ].filter(Boolean).join(" ");
   const main = `
     <tr class="${rowClasses}">
       <td class="mono">${compactDateRange(r.period_start, r.period_end)}</td>
+      <td class="num">${row.runDays || "—"}</td>
       <td class="mono">${esc(r.ad_code || "")}</td>
       <td>
         <strong>${esc(r.ad_name || "")}</strong>
@@ -1097,6 +1153,9 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
   if (rows.length === 0) {
     return `<div class="card"><p class="ink-3">上週 ${thisWeek.start}~${thisWeek.end} 沒有任何含小島權重的廣告。</p></div>`;
   }
+  const totalColumns = islandProducts.length + 5;
+  const adRowsToggleLabel = adRowsCollapsed ? "+" : "-";
+  const adRowsToggleTitle = adRowsCollapsed ? "展開廣告資料列" : "收合廣告資料列";
   const lastNote = lastWeek
     ? `vs 上上週 ${lastWeek.start}~${lastWeek.end}`
     : `上上週無資料`;
@@ -1105,7 +1164,13 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
     `<th class="num" title="${esc(p.name)} CPC = 花費/事件計數">${esc(p.name)}<br><span class="ink-3 mono" style="font-size:10px;font-weight:normal">${esc(p.id)}</span></th>`
   ).join("");
 
-  const dataRows = rows.map((row) => {
+  const dataRows = adRowsCollapsed
+    ? `
+      <tr class="perf-ad-collapsed-row">
+        <td colspan="${totalColumns}">已收合 ${rows.length} 筆廣告資料</td>
+      </tr>
+    `
+    : rows.map((row) => {
     const islandCells = islandProducts.map((p) => {
       const v = row.islandCPCs[p.id];
       if (v == null) return `<td class="num"></td>`;
@@ -1163,7 +1228,10 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
         <table class="perf-summary-table perf-ad-table" style="font-size:12px">
           <thead>
             <tr>
-              <th style="width:160px">渠道名稱</th>
+              <th style="width:160px">
+                <button class="icon-btn perf-ad-toggle" type="button" data-ad-rows-toggle aria-expanded="${adRowsCollapsed ? "false" : "true"}" title="${adRowsToggleTitle}">${adRowsToggleLabel}</button>
+                渠道名稱
+              </th>
               <th style="width:90px">代碼</th>
               ${islandHeaders}
               <th class="num" style="width:130px">APP CPI<br><span class="ink-3" style="font-size:10px;font-weight:normal">花費/不重複安裝數</span></th>

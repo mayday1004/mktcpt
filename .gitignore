@@ -24,8 +24,11 @@ Thumbs.db
 *.local.*
 
 # 使用者自己備份的 JSON(buyads_*_backup_*.json 等)
+buyads_*.json
 buyads_*backup*.json
 buyads_*fixed*.json
+restore-*.json
+restore-*.js
 
 # 打包輸出
 node_modules/

@@ -841,64 +841,6 @@ export const TABLE_SYNC_SPECS = [
     },
   },
 
-  // ── 12. 報表設定（id = product.id） ───────────────────────────────
-  // 2026-05-22 新增:同步 report_config[pid] 的 hidden_metrics + user_configured flags。
-  // custom_metrics 在 sheet 11(報表自訂欄位),per-metric row;這張 sheet 是 per-product row。
-  {
-    sheetName: "報表設定",
-    dataHeaders: ["產品ID", "產品名稱", "隱藏欄位", "已自訂隱藏", "已自訂自訂"],
-    flatten: (s) => {
-      const out = [];
-      const nameOf = Object.fromEntries((s.products || []).map((p) => [p.id, p.name]));
-      for (const [pid, cfg] of Object.entries(s.report_config || {})) {
-        if (!cfg) continue;
-        const hidden = Array.isArray(cfg.hidden_metrics) ? cfg.hidden_metrics : [];
-        const hiddenConfigured = cfg.hidden_metrics_user_configured === true;
-        const customConfigured = cfg.custom_metrics_user_configured === true;
-        // 全空白(沒隱藏 + 沒 flag)→ 跳過,避免推一堆空 row
-        if (hidden.length === 0 && !hiddenConfigured && !customConfigured) continue;
-        out.push({
-          _id: pid,
-          dataRow: [
-            pid, nameOf[pid] || "",
-            hidden.join(","),
-            hiddenConfigured ? "Y" : "",
-            customConfigured ? "Y" : "",
-          ],
-        });
-      }
-      return out;
-    },
-    upsertInState(state, _id, obj) {
-      if (!_id) return;
-      state.report_config = state.report_config || {};
-      if (!state.report_config[_id]) state.report_config[_id] = { hidden_metrics: [], custom_metrics: [] };
-      const cfg = state.report_config[_id];
-      const hiddenStr = String(obj["隱藏欄位"] || "").trim();
-      cfg.hidden_metrics = hiddenStr ? hiddenStr.split(",").map((s) => s.trim()).filter(Boolean) : [];
-      cfg.hidden_metrics_user_configured = String(obj["已自訂隱藏"] || "").toUpperCase() === "Y";
-      cfg.custom_metrics_user_configured = String(obj["已自訂自訂"] || "").toUpperCase() === "Y";
-    },
-    removeFromState(state, _id) {
-      if (!state.report_config?.[_id]) return;
-      const cfg = state.report_config[_id];
-      cfg.hidden_metrics = [];
-      delete cfg.hidden_metrics_user_configured;
-      delete cfg.custom_metrics_user_configured;
-      // 留著 cfg(custom_metrics 可能還在)
-    },
-    legacyParse(headers, rows) {
-      const idx = (h) => headers.indexOf(h);
-      return rows
-        .map((r) => ({
-          pid: String(r[idx("產品ID")] || ""),
-          pname: String(r[idx("產品名稱")] || ""),
-          hidden: String(r[idx("隱藏欄位")] || ""),
-          hc: idx("已自訂隱藏") >= 0 && String(r[idx("已自訂隱藏")] || "").toUpperCase() === "Y" ? "Y" : "",
-          cc: idx("已自訂自訂") >= 0 && String(r[idx("已自訂自訂")] || "").toUpperCase() === "Y" ? "Y" : "",
-        }))
-        .filter((x) => x.pid)
-        .map((x) => ({ _id: x.pid, dataRow: [x.pid, x.pname, x.hidden, x.hc, x.cc] }));
-    },
-  },
+  // 報表欄位顯示偏好(hidden_metrics)刻意不進同步。
+  // 各使用者可以保留自己的依產品瀏覽表頭配置；跨裝置共享的公式只走「報表自訂欄位」。
 ];
