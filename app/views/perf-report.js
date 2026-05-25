@@ -412,10 +412,10 @@ function renderProductReport(s, product) {
           <thead>
             <tr>
               <th style="width:82px">期間</th>
-              <th class="num" style="width:58px">天數</th>
               <th style="width:92px">代碼</th>
               <th>廣告</th>
               ${groupVisible ? `<th style="width:150px">分組</th>` : ""}
+              <th class="num" style="width:58px">天數</th>
               <th class="num" style="width:100px">花費</th>
               ${metricHeaders}
               ${customHeaders}
@@ -516,13 +516,13 @@ function renderSummaryRow(row, primaryLabel, primaryGoal, tableColspan, groupVis
   const main = `
     <tr class="${rowClasses}">
       <td class="mono">${compactDateRange(r.period_start, r.period_end)}</td>
-      <td class="num">${row.runDays || "—"}</td>
       <td class="mono">${esc(r.ad_code || "")}</td>
       <td>
         <strong>${esc(r.ad_name || "")}</strong>
         <div class="ink-3" style="font-size:11px">${row.status === "bad" ? "需要檢查投放或淘汰" : row.status === "ok" ? "成效在目標內" : "尚無完整目標判定"}</div>
       </td>
       ${groupVisible ? `<td>${esc(r.group || "")}</td>` : ""}
+      <td class="num">${row.runDays || "—"}</td>
       <td class="num">${fmt(row.spend)}</td>
       ${metricCells}
       ${customCells}
