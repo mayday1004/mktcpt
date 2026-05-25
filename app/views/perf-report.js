@@ -979,26 +979,31 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
   const cpis = [];
   const rates = [];
   for (const p of appProducts) {
-    if (!Number(rep.weights?.[p.id])) continue;
     const r = thisRecs.find((x) => x.product_id === p.id);
-    if (!r) continue;
-    const sp = Number(r["花費"]) || 0;
-    const ins = Number(r["不重複安裝數"]) || 0;
-    const fo = Number(r["首儲訂單數"]) || 0;
-    if (ins <= 0) continue;
+    const r2 = lastRecs.find((x) => x.product_id === p.id);
+    if (!Number(rep.weights?.[p.id]) && !r && !r2) continue;
     const targets = p.performance_targets || [];
-    const score = targets.length > 0 ? scoreRecord(r, targets, reportVars) : null;
+    const score = r && targets.length > 0 ? scoreRecord(r, targets, reportVars) : null;
     const ratio = score?.ratio ?? null;
-    cpis.push({ pid: p.id, name: p.name, cpi: sp / ins, ratio });
+
+    if (r) {
+      const sp = Number(r["花費"]) || 0;
+      const ins = Number(r["不重複安裝數"]) || 0;
+      if (ins > 0) cpis.push({ pid: p.id, name: p.name, cpi: sp / ins, ratio });
+    }
+
     // 首購率只在有「首儲訂單數」概念的產品上算(HYC 沒有 → 排除)
     if (hasFirstPurchaseConcept(state, p)) {
-      rates.push({ pid: p.id, name: p.name, rate: fo / ins, ratio });
+      const rateAgg = aggregateFirstPurchaseRate([r, r2]);
+      if (rateAgg) {
+        rates.push({ pid: p.id, name: p.name, rate: rateAgg.rate, ratio, weeks: rateAgg.weeks });
+      }
     }
   }
-  cpis.sort((a, b) => b.cpi - a.cpi);
-  rates.sort((a, b) => a.rate - b.rate);
-  const worstCPI = cpis[0] || null;
-  const worstRate = rates[0] || null;
+  cpis.sort((a, b) => a.cpi - b.cpi);
+  rates.sort((a, b) => b.rate - a.rate);
+  const bestCPI = cpis[0] || null;
+  const bestRate = rates[0] || null;
 
   const status = computeAdStatus(rep, allSegs, weekRange, today, thisRecs, appProducts, reportVars);
 
@@ -1011,17 +1016,33 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
     islandCPCs, islandCPCsLast,
     islandSpend, islandEvents, islandSpendLast, islandEventsLast,
     islandRatios,
-    worstCPI, worstRate,
-    cpiRatio: worstCPI?.ratio ?? null,
-    rateRatio: worstRate?.ratio ?? null,
+    bestCPI, bestRate,
+    cpiRatio: bestCPI?.ratio ?? null,
+    rateRatio: bestRate?.ratio ?? null,
     status,
     expired,
   };
 }
 
+function aggregateFirstPurchaseRate(records) {
+  let installs = 0;
+  let firstOrders = 0;
+  let weeks = 0;
+  for (const r of records) {
+    if (!r) continue;
+    const ins = Number(r["不重複安裝數"]) || 0;
+    if (ins <= 0) continue;
+    installs += ins;
+    firstOrders += Number(r["首儲訂單數"]) || 0;
+    weeks++;
+  }
+  if (installs <= 0) return null;
+  return { rate: firstOrders / installs, weeks };
+}
+
 function hasFirstPurchaseConcept(state, product) {
   const targets = product.performance_targets || [];
-  const customs = state.report_config?.[product.id]?.custom_metrics || [];
+  const customs = effectiveConfig(state, product).custom_metrics || [];
   return [...targets, ...customs].some((t) =>
     String(t.formula || "").includes("首儲") ||
     String(t.name || "").includes("首購")
@@ -1098,12 +1119,12 @@ function computeColumnStats(rows, islandProducts) {
       avgCpc, avgCpcLast, delta,
     };
   }
-  const cpiUnmet = rows.filter((r) => r.worstCPI && r.cpiRatio != null && r.cpiRatio < 1).map((r) => r.worstCPI.cpi);
+  const cpiUnmet = rows.filter((r) => r.bestCPI && r.cpiRatio != null && r.cpiRatio < 1).map((r) => r.bestCPI.cpi);
   stats.__cpi = {
     unmetMin: cpiUnmet.length > 0 ? Math.min(...cpiUnmet) : 0,
     unmetMax: cpiUnmet.length > 0 ? Math.max(...cpiUnmet) : 0,
   };
-  const rateUnmet = rows.filter((r) => r.worstRate && r.rateRatio != null && r.rateRatio < 1).map((r) => r.worstRate.rate);
+  const rateUnmet = rows.filter((r) => r.bestRate && r.rateRatio != null && r.rateRatio < 1).map((r) => r.bestRate.rate);
   stats.__rate = {
     unmetMin: rateUnmet.length > 0 ? Math.min(...rateUnmet) : 0,
     unmetMax: rateUnmet.length > 0 ? Math.max(...rateUnmet) : 0,
@@ -1156,8 +1177,19 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
   const totalColumns = islandProducts.length + 5;
   const adRowsToggleLabel = adRowsCollapsed ? "+" : "-";
   const adRowsToggleTitle = adRowsCollapsed ? "展開廣告資料列" : "收合廣告資料列";
+  const fmtMd = (ymd, monthPad = true) => {
+    const [, m = "", d = ""] = String(ymd || "").split("-");
+    const mm = monthPad ? m.padStart(2, "0") : String(Number(m) || "");
+    return `${mm}-${d.padStart(2, "0")}`;
+  };
+  const fmtYmd = (ymd, monthPad = true) => {
+    const [y = "", m = "", d = ""] = String(ymd || "").split("-");
+    const mm = monthPad ? m.padStart(2, "0") : String(Number(m) || "");
+    return `${y}-${mm}-${d.padStart(2, "0")}`;
+  };
+  const fmtRange = (range, monthPad = true) => `${fmtMd(range.start, monthPad)}~${fmtMd(range.end, monthPad)}`;
   const lastNote = lastWeek
-    ? `vs 上上週 ${lastWeek.start}~${lastWeek.end}`
+    ? `vs 上上週 ${fmtRange(lastWeek)}`
     : `上上週無資料`;
 
   const islandHeaders = islandProducts.map((p) =>
@@ -1179,12 +1211,12 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
       return `<td class="num" style="${cpcCellStyle(v, ratio, stat.unmetMin, stat.unmetMax)}">${fmtCPC(v)}</td>`;
     }).join("");
 
-    const cpiCell = row.worstCPI
-      ? `<td class="num" title="來源產品:${esc(row.worstCPI.name)}">${fmtCPC(row.worstCPI.cpi)} <span class="ink-3" style="font-size:10px">(${esc(row.worstCPI.pid)})</span></td>`
+    const cpiCell = row.bestCPI
+      ? `<td class="num" title="來源產品:${esc(row.bestCPI.name)}；多產品取較低 CPI">${fmtCPC(row.bestCPI.cpi)} <span class="ink-3" style="font-size:10px">(${esc(row.bestCPI.pid)})</span></td>`
       : `<td class="num ink-3">—</td>`;
 
-    const rateCell = row.worstRate
-      ? `<td class="num" title="來源產品:${esc(row.worstRate.name)}">${fmtRate(row.worstRate.rate)} <span class="ink-3" style="font-size:10px">(${esc(row.worstRate.pid)})</span></td>`
+    const rateCell = row.bestRate
+      ? `<td class="num" title="來源產品:${esc(row.bestRate.name)}；近兩週加權平均，${row.bestRate.weeks || 0} 週有裝機資料；多產品取較高首購率">${fmtRate(row.bestRate.rate)} <span class="ink-3" style="font-size:10px">(${esc(row.bestRate.pid)})</span></td>`
       : `<td class="num ink-3">—</td>`;
 
     const statusCell = row.status.label
@@ -1218,10 +1250,12 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
   return `
     <div class="card">
       <div class="card-head">
-        <h2>依廣告瀏覽 <span class="ink-3" style="font-size:12px;font-weight:normal">廣告 × 小島 CPC 對照表</span></h2>
-        <div class="ink-3" style="font-size:12px">
-          上週 <strong>${thisWeek.start}~${thisWeek.end}</strong> · ${lastNote}<br>
-          本週(自然週 Sun~Sat) <strong>${weekRange.start}~${weekRange.end}</strong>
+        <div>
+          <h2>依廣告瀏覽 <span class="ink-3" style="font-size:12px;font-weight:normal">廣告 × 小島 CPC 對照表</span></h2>
+          <div class="ink-3" style="font-size:12px;margin-top:6px;line-height:1.45">
+            本週 ${fmtYmd(weekRange.start, false)}~${fmtYmd(weekRange.end)}<br>
+            上週 ${fmtRange(thisWeek)} · ${lastNote}
+          </div>
         </div>
       </div>
       <div class="table-wrap" style="max-height:640px">
@@ -1234,8 +1268,8 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
               </th>
               <th style="width:90px">代碼</th>
               ${islandHeaders}
-              <th class="num" style="width:130px">APP CPI<br><span class="ink-3" style="font-size:10px;font-weight:normal">花費/不重複安裝數</span></th>
-              <th class="num" style="width:120px">首購率<br><span class="ink-3" style="font-size:10px;font-weight:normal">首儲訂單/裝機</span></th>
+              <th class="num" style="width:130px">APP CPI<br><span class="ink-3" style="font-size:10px;font-weight:normal">花費/不重複安裝數；取較低</span></th>
+              <th class="num" style="width:120px">首購率<br><span class="ink-3" style="font-size:10px;font-weight:normal">近兩週加權；取較高</span></th>
               <th style="width:130px">到期狀況</th>
             </tr>
           </thead>
