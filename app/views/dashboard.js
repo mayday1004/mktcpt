@@ -1,6 +1,6 @@
 import { getState } from "../state.js";
 import { bandFor, bandsForMonth, checkMonthlyTotal } from "../domain/budget.js";
-import { monthlyTotals, dailySpendGrid, adContributionPerMonth, dailySpendForAd } from "../domain/spending.js";
+import { monthlyTotals, dailySpendGrid, adContributionPerMonth, dailySpendForAd, displayWeightsForAd } from "../domain/spending.js";
 import { daysOfMonth, daysInMonth, isInRange, todayTaipei } from "../lib/dates.js";
 import { getMonthlyBudget, getDailyBudget, getBudgetSource, isNoBand, isNoBandPid, getReportVars, getTargetDailyBudget } from "../schema.js";
 import { scoreRecord } from "../domain/perf-adjust.js";
@@ -660,8 +660,8 @@ function renderDetailPanel(s, ym, pid, date) {
     if (!isInRange(date, a.start_date, a.end_date)) continue;
     const w = Number(a.weights?.[pid]) || 0;
     if (w <= 0) continue;
-    const per = dailySpendForAd(a, date)[pid] || 0;
-    const displayWeights = roundedDisplayWeights(s, a);
+    const per = dailySpendForAd(a, date, s.ads)[pid] || 0;
+    const displayWeights = displayWeightsForAd(a, s.ads, date);
     if (per > 0) contributors.push({ ad: a, weight: displayWeights[pid] ?? w, amount: per });
   }
   contributors.sort((a, b) => b.amount - a.amount);
@@ -837,7 +837,7 @@ function renderGroupBreakdown(s, ym) {
   for (const ad of s.ads) {
     const grp = ad.group || "—";
     // 月度合計（per pid × group）
-    const contrib = adContributionPerMonth(ad, ym);
+    const contrib = adContributionPerMonth(ad, ym, s.ads);
     for (const [pid, amt] of Object.entries(contrib)) {
       if (!amt) continue;
       monthly[pid] = monthly[pid] || {};
@@ -848,7 +848,7 @@ function renderGroupBreakdown(s, ym) {
     }
     // 每日（per pid × date × group）
     for (const day of daysOfMonth(ym)) {
-      const per = dailySpendForAd(ad, day);
+      const per = dailySpendForAd(ad, day, s.ads);
       for (const [pid, amt] of Object.entries(per)) {
         if (!amt) continue;
         if (!daily[pid]) continue;  // 略過不存在的產品（資料不一致時）
@@ -1017,73 +1017,6 @@ function uniqueByCode(ads) {
     out.push(ad);
   }
   return out;
-}
-
-function latestSegment(segs) {
-  return (segs || [])
-    .filter((a) => a.start_date && a.end_date)
-    .slice()
-    .sort((a, b) =>
-      (b.end_date || "").localeCompare(a.end_date || "") ||
-      (b.start_date || "").localeCompare(a.start_date || "")
-    )[0] || null;
-}
-
-function overlaps(a, b) {
-  return !!(a && b && a.start_date < b.end_date && a.end_date > b.start_date);
-}
-
-function splitPairDisplayScale(state, ad) {
-  if (!ad?.split_pair_id) return null;
-  const pairSegs = (state.ads || []).filter((a) => a.split_pair_id === ad.split_pair_id);
-  if (pairSegs.length <= 1) return null;
-
-  const parentLast = latestSegment(pairSegs.filter((a) => a.split_role === "parent")) ||
-    latestSegment(pairSegs.filter((a) => !String(a.ad_code || "").toLowerCase().endsWith("t")));
-  if (!parentLast) return null;
-
-  const scaleByCode = new Map();
-  let total = Number(parentLast.amount_cny) || 0;
-  scaleByCode.set(parentLast.ad_code, total);
-
-  const otherCodes = new Set(pairSegs.filter((a) => a.ad_code !== parentLast.ad_code).map((a) => a.ad_code));
-  for (const code of otherCodes) {
-    const seg = latestSegment(pairSegs.filter((a) => a.ad_code === code));
-    if (!seg || !overlaps(seg, parentLast)) continue;
-    const amt = Number(seg.amount_cny) || 0;
-    total += amt;
-    scaleByCode.set(code, amt);
-  }
-
-  const ownAmt = scaleByCode.get(ad.ad_code);
-  return total > 0 && ownAmt != null ? ownAmt / total : null;
-}
-
-function roundedDisplayWeights(state, ad) {
-  const entries = Object.entries(ad.weights || {})
-    .map(([pid, w]) => ({ pid, weight: Number(w) || 0 }))
-    .filter((e) => e.weight > 0);
-  const raw = Object.fromEntries(entries.map((e) => [e.pid, e.weight]));
-  const scale = splitPairDisplayScale(state, ad);
-  if (!scale || scale <= 0 || scale >= 1 || entries.length === 0) return raw;
-
-  const rawSum = entries.reduce((sum, e) => sum + e.weight, 0);
-  const target = Math.round(rawSum * scale);
-  const scaled = entries.map((e, i) => {
-    const value = e.weight * scale;
-    return { ...e, i, floor: Math.floor(value), frac: value - Math.floor(value) };
-  });
-  const result = scaled.map((e) => e.floor);
-  let diff = target - result.reduce((sum, v) => sum + v, 0);
-  scaled
-    .slice()
-    .sort((a, b) => b.frac - a.frac || a.i - b.i)
-    .forEach((e) => {
-      if (diff <= 0) return;
-      result[e.i] += 1;
-      diff -= 1;
-    });
-  return Object.fromEntries(scaled.map((e) => [e.pid, result[e.i]]));
 }
 
 function productRow(state, product, ym, spent) {
