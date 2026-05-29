@@ -947,14 +947,14 @@ function renderGroup(group, products, opts = {}) {
       <td class="num">${Math.round(latestRmb).toLocaleString()}</td>
       <td class="date-compact mono nowrap">${formatCompactDateRange(latest.start_date, latest.end_date)}</td>
       <td class="num">${Math.round(latest.daily_amort_twd || 0).toLocaleString()}</td>
-      <td>${weightSummary(latest, products, "bar", { code, open: weightsOpen, allSegs: segs, filterStart, filterEnd, familyScale: opts.familyScale })}</td>
+      <td>${weightSummary(latest, products, "bar", { code, open: weightsOpen, allSegs: segs, referenceSeg: latest, familyScale: opts.familyScale })}</td>
       <td class="actions-cell right nowrap">
         ${actionButtons(latest, /*compact=*/true)}
       </td>
     </tr>
   `;
 
-  const weightDetailRow = weightsOpen ? renderWeightDetailRow(latest, products, { allSegs: segs, filterStart, filterEnd, familyScale: opts.familyScale }) : "";
+  const weightDetailRow = weightsOpen ? renderWeightDetailRow(latest, products, { allSegs: segs, referenceSeg: latest, familyScale: opts.familyScale }) : "";
 
   if (!isOpen) return headRow + weightDetailRow;
 
@@ -1023,7 +1023,7 @@ function currentMonthLatestSegs(segs) {
 
 function renderWeightDetailRow(seg, products, opts = {}) {
   const rawEntries = opts.allSegs
-    ? aggregateGroupWeights(opts.allSegs, products, { filterStart: opts.filterStart, filterEnd: opts.filterEnd })
+    ? aggregateGroupWeights(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
     : productWeightEntries(seg, products);
   if (rawEntries.length <= 3) return "";
   const scale = opts.familyScale && opts.familyScale > 0 && opts.familyScale < 1 ? opts.familyScale : null;
@@ -1162,22 +1162,16 @@ function productWeightEntries(seg, products) {
     }));
 }
 
-// 整個 group 的權重彙總:對每個產品,取「以 asOf 為基準仍 active 的段」中最新一段的權重
-// asOf = 濾器結束日 || 濾器開始日 || 今天。沒設濾器時用「今天」當基準。
+// 整個 group 的權重彙總:以列表列頭選到的「最新段」為基準,取同代碼且與它 overlap 的段。
 // 解決兩個問題:
 //   (a) INDEPENDENT 廣告同代碼多產品各自 100%,但只看 latest 段時其他產品看不到
 //   (b) 已被移出的產品(舊段有,新段沒有)不該再出現
-// fallback:若 asOf 完全沒命中任何段(整支廣告已結束),退回「整體 latest seg」避免空白
+//   (c) 未來已建立的新段(例 6/1 權重調整)要立刻顯示,不能被今天 active 的舊段蓋回去
 function aggregateGroupWeights(segs, products, opts = {}) {
-  const today = todayTaipei();
-  // asOf:過濾期間內的「今天」或期間最後一天
-  // 落在所有段之外造成主路徑都 fail
-  let asOf = today;
-  if (opts.filterEnd) {
-    asOf = opts.filterEnd < today ? opts.filterEnd : today;
-  } else if (opts.filterStart) {
-    asOf = opts.filterStart > today ? opts.filterStart : today;
-  }
+  const referenceSeg = opts.referenceSeg || [...segs].sort((a, b) =>
+    (b.start_date || "").localeCompare(a.start_date || "") ||
+    (b.end_date || "").localeCompare(a.end_date || "")
+  )[0];
 
   const collectFrom = (segList) => {
     const m = new Map();
@@ -1195,16 +1189,21 @@ function aggregateGroupWeights(segs, products, opts = {}) {
     return m;
   };
 
-  // 主路徑:只取 asOf 那天 active 的段(理論上至多 1 段,因段不重疊)
-  const activeSegs = segs.filter((seg) =>
-    (!seg.end_date || seg.end_date > asOf) &&
-    (!seg.start_date || seg.start_date <= asOf)
-  );
-  let byPid = collectFrom(activeSegs);
-  // fallback:asOf 落在所有段之外(廣告已結束/未開始)→ 用「最後一段」單獨顯示
+  const snapshotSegs = referenceSeg
+    ? segs.filter((seg) =>
+      seg.start_date && seg.end_date &&
+      referenceSeg.start_date && referenceSeg.end_date &&
+      seg.start_date < referenceSeg.end_date &&
+      seg.end_date > referenceSeg.start_date
+    )
+    : [];
+  let byPid = collectFrom(snapshotSegs.length > 0 ? snapshotSegs : (referenceSeg ? [referenceSeg] : []));
+  // fallback:資料缺日期時,退回「整體 latest seg」避免空白。
   if (byPid.size === 0) {
-    const sorted = [...segs].sort((a, b) => (b.end_date || "").localeCompare(a.end_date || ""));
-    const lastSeg = sorted[0];
+    const lastSeg = [...segs].sort((a, b) =>
+      (b.start_date || "").localeCompare(a.start_date || "") ||
+      (b.end_date || "").localeCompare(a.end_date || "")
+    )[0];
     if (lastSeg) byPid = collectFrom([lastSeg]);
   }
 
@@ -1236,7 +1235,7 @@ function scaleWithLargestRemainder(rawEntries, scale) {
 
 function weightSummary(seg, products, mode = "bar", opts = {}) {
   const rawEntries = (mode === "bar" && opts.allSegs)
-    ? aggregateGroupWeights(opts.allSegs, products, { filterStart: opts.filterStart, filterEnd: opts.filterEnd })
+    ? aggregateGroupWeights(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
     : productWeightEntries(seg, products);
   if (rawEntries.length === 0) return `<span class="ink-3">（無權重）</span>`;
   // 家族成員:weight × familyScale + largest-remainder round,讓加總精確 = round(scale × 100)
