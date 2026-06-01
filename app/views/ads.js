@@ -66,10 +66,12 @@ export function render(root) {
   const validTabs = new Set(["all", ...s.products.map((p) => p.id)]);
   if (!validTabs.has(activeTab)) activeTab = "all";
 
-  // 停損：只顯示「起始日 >= 當月前 2 個月 1 日」的段（避免續費多年累積資料無限滾動）
-  // 例：當月 2026-05 → 起始日 >= 2026-03-01 才顯示；未來續費（如 6 月）也會顯示
+  // 停損：保留「起始日 >= 當月前 2 個月 1 日」或「仍跨過該日」的段。
+  // 例：當月 2026-06 → cutoff=2026-04-01；3/8~6/8 這種季繳續費仍要顯示。
   const cutoffDate = monthCutoffDate(ym);
-  const recentAds = s.ads.filter((a) => (a.start_date || "") >= cutoffDate);
+  const recentAds = s.ads.filter((a) =>
+    (a.start_date || "") >= cutoffDate || (a.end_date || "") > cutoffDate
+  );
   const hiddenOldCount = s.ads.length - recentAds.length;
 
   // 先依日期過濾（任一段重疊即保留整個 ad_code）
