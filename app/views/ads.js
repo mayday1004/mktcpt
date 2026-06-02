@@ -47,6 +47,24 @@ function adOverlapsRange(ad, start, end) {
   return true;
 }
 
+function segOverlapsCurrentFilter(seg) {
+  return (!filterStart && !filterEnd) ||
+    (seg?.start_date && seg?.end_date &&
+      (!filterEnd || seg.start_date <= filterEnd) &&
+      (!filterStart || seg.end_date > filterStart));
+}
+
+function latestSegForCurrentFilter(segs) {
+  const allValid = (segs || []).filter((s) => s.start_date && s.end_date);
+  if (allValid.length === 0) return null;
+  const inRange = allValid.filter(segOverlapsCurrentFilter);
+  const pool = inRange.length > 0 ? inRange : allValid;
+  return pool.slice().sort((a, b) =>
+    (b.start_date || "").localeCompare(a.start_date || "") ||
+    (b.end_date || "").localeCompare(a.end_date || "")
+  )[0] || null;
+}
+
 export function render(root) {
   const s = getState();
   const ym = s.settings.current_month;
@@ -209,7 +227,7 @@ export function render(root) {
       <button id="filt-clear">清除</button>
       ${(filterStart || filterEnd) ? `<span class="ink-3" style="font-size:12px;margin-left:auto">已過濾：${filterStart || "—"} ~ ${filterEnd || "—"}</span>` : ""}
     </div>
-    ${hiddenOldCount > 0 ? `<div class="ink-3" style="font-size:11px;margin:-4px 0 8px 4px">僅顯示起始日 ≥ ${cutoffDate} 的段（隱藏 ${hiddenOldCount} 段歷史資料；停損僅前 2 個月起算）</div>` : ""}
+    ${hiddenOldCount > 0 ? `<div class="ink-3" style="font-size:11px;margin:-4px 0 8px 4px">僅隱藏 ${cutoffDate} 前已結束的歷史段（隱藏 ${hiddenOldCount} 段；跨過 cutoff 的長週期廣告仍會顯示）</div>` : ""}
 
     <div class="ad-filter">
       <span class="ink-3" style="font-size:12px">搜尋：</span>
@@ -784,7 +802,7 @@ function renderFamily(fam, products) {
     } else {
       // 沒 parent member(理論上不會發生),fallback to 原本邏輯
       for (const g of members) {
-        const last = g.segs[g.segs.length - 1];
+        const last = latestSegForCurrentFilter(g.segs) || g.segs[g.segs.length - 1];
         const amt = Number(last.amount_cny) || 0;
         totalContractRmb += amt;
         const role = familyRoleOf(g.code);
@@ -805,7 +823,8 @@ function renderFamily(fam, products) {
   const generalPct = hasPoquan && totalContractRmb > 0 ? Math.round(generalRmb / totalContractRmb * 100) : 0;
   // 家族名稱 = 一般成員的 ad_name(去掉 t 後綴);沒一般時用第一個 member
   const generalMember = members.find((g) => familyRoleOf(g.code) === "一般") || members[0];
-  const baseName = generalMember.segs[generalMember.segs.length - 1].ad_name || "";
+  const generalLatest = latestSegForCurrentFilter(generalMember.segs) || generalMember.segs[generalMember.segs.length - 1];
+  const baseName = generalLatest?.ad_name || "";
   const totalLabel = hasPoquan ? "總額" : "合計";
 
   // 家族列「權重調整」按鈕(§5.7.2):
@@ -843,7 +862,8 @@ function renderFamily(fam, products) {
     const isLast = idx === members.length - 1;
     let familyScale;
     if (hasPoquan) {
-      const lastAmt = Number(m.segs[m.segs.length - 1].amount_cny) || 0;
+      const lastSeg = latestSegForCurrentFilter(m.segs) || m.segs[m.segs.length - 1];
+      const lastAmt = Number(lastSeg.amount_cny) || 0;
       familyScale = totalContractRmb > 0 ? lastAmt / totalContractRmb : 1;
     } else {
       familyScale = 1;  // 兄弟廣告不縮放
@@ -867,9 +887,9 @@ function renderGroup(group, products, opts = {}) {
   let latest;
   if (activeTab && activeTab !== "all") {
     const tabSegs = segs.filter((s) => Number(s.weights?.[activeTab]) > 0);
-    if (tabSegs.length > 0) latest = tabSegs[tabSegs.length - 1];
+    if (tabSegs.length > 0) latest = latestSegForCurrentFilter(tabSegs);
   }
-  if (!latest) latest = segs[segs.length - 1];
+  if (!latest) latest = latestSegForCurrentFilter(segs) || segs[segs.length - 1];
   // 不在 family 渲染情境(opts.familyScale 沒給)時,若 ad 是 t-variant,自動算「占整體合約 %」
   // 讓使用者切到「愛威奶破圈」等產品分頁時,看到的權重就是占整體合約的比例,而不是 ad 自身 100%
   if (opts.familyScale == null && latest.split_pair_id && latest.split_role === "t_variant") {
@@ -993,11 +1013,13 @@ function latestSnapshotSegs(segs, referenceSeg) {
 }
 
 function renderWeightDetailRow(seg, products, opts = {}) {
-  const rawEntries = opts.allSegs
-    ? aggregateGroupWeights(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
-    : productWeightEntries(seg, products);
+  const details = opts.allSegs
+    ? weightSnapshotDetails(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
+    : { entries: productWeightEntries(seg, products), snapshotSegs: [seg], referenceSeg: seg };
+  const rawEntries = details.entries;
   if (rawEntries.length <= 3) return "";
   const scale = opts.familyScale && opts.familyScale > 0 && opts.familyScale < 1 ? opts.familyScale : null;
+  if (!scale && isIndependentWeightSnapshot(details)) return "";
   const scaled = scale ? scaleWithLargestRemainder(rawEntries, scale) : rawEntries;
   // 「完整權重產品」面板的顯示順序依 state.products 陣列(= Sheets「產品」分頁列順序),
   // 不依權重大小排序;未列在 products 的 pid(不該發生)排到最後。
@@ -1138,8 +1160,10 @@ function productWeightEntries(seg, products) {
 //   (a) INDEPENDENT 廣告同代碼多產品各自 100%,但只看 latest 段時其他產品看不到
 //   (b) 已被移出的產品(舊段有,新段沒有)不該再出現
 //   (c) 未來已建立的新段(例 6/1 權重調整)要立刻顯示,不能被今天 active 的舊段蓋回去
-function aggregateGroupWeights(segs, products, opts = {}) {
-  const referenceSeg = opts.referenceSeg || [...segs].sort((a, b) =>
+function weightSnapshotDetails(segs, products, opts = {}) {
+  const allSegs = segs || [];
+  const allProducts = products || [];
+  const referenceSeg = opts.referenceSeg || [...allSegs].sort((a, b) =>
     (b.start_date || "").localeCompare(a.start_date || "") ||
     (b.end_date || "").localeCompare(a.end_date || "")
   )[0];
@@ -1160,8 +1184,8 @@ function aggregateGroupWeights(segs, products, opts = {}) {
     return m;
   };
 
-  const snapshotSegs = referenceSeg
-    ? segs.filter((seg) =>
+  let snapshotSegs = referenceSeg
+    ? allSegs.filter((seg) =>
       seg.start_date && seg.end_date &&
       referenceSeg.start_date && referenceSeg.end_date &&
       seg.start_date < referenceSeg.end_date &&
@@ -1171,20 +1195,81 @@ function aggregateGroupWeights(segs, products, opts = {}) {
   let byPid = collectFrom(snapshotSegs.length > 0 ? snapshotSegs : (referenceSeg ? [referenceSeg] : []));
   // fallback:資料缺日期時,退回「整體 latest seg」避免空白。
   if (byPid.size === 0) {
-    const lastSeg = [...segs].sort((a, b) =>
+    const lastSeg = [...allSegs].sort((a, b) =>
       (b.start_date || "").localeCompare(a.start_date || "") ||
       (b.end_date || "").localeCompare(a.end_date || "")
     )[0];
-    if (lastSeg) byPid = collectFrom([lastSeg]);
+    if (lastSeg) {
+      snapshotSegs = [lastSeg];
+      byPid = collectFrom(snapshotSegs);
+    }
   }
 
-  return [...byPid.entries()]
+  const entries = [...byPid.entries()]
     .map(([pid, info]) => ({
       pid,
-      name: products.find((p) => p.id === pid)?.name || pid,
+      name: allProducts.find((p) => p.id === pid)?.name || pid,
       weight: info.weight,
     }))
     .sort((a, b) => b.weight - a.weight);
+  return { entries, snapshotSegs, referenceSeg };
+}
+
+function aggregateGroupWeights(segs, products, opts = {}) {
+  return weightSnapshotDetails(segs, products, opts).entries;
+}
+
+function isSingleProduct100(seg) {
+  const entries = Object.entries(seg?.weights || {}).filter(([, v]) => Number(v) > 0);
+  if (entries.length !== 1) return false;
+  return Math.round(Number(entries[0][1]) || 0) === 100;
+}
+
+function isIndependentWeightSnapshot(details) {
+  const snapshotSegs = details?.snapshotSegs || [];
+  return snapshotSegs.length > 0 && snapshotSegs.every(isSingleProduct100);
+}
+
+function weightSignature(entries) {
+  return (entries || [])
+    .slice()
+    .sort((a, b) => String(a.pid).localeCompare(String(b.pid)))
+    .map((e) => `${e.pid}:${Math.round(Number(e.weight) || 0)}`)
+    .join("|");
+}
+
+function weightHistoryForReference(segs, products, opts = {}) {
+  const allSegs = segs || [];
+  const referenceSeg = opts.referenceSeg || [...allSegs].sort((a, b) =>
+    (b.start_date || "").localeCompare(a.start_date || "") ||
+    (b.end_date || "").localeCompare(a.end_date || "")
+  )[0];
+  const valid = allSegs
+    .filter((seg) => seg.start_date && seg.end_date)
+    .sort((a, b) =>
+      (a.start_date || "").localeCompare(b.start_date || "") ||
+      (a.end_date || "").localeCompare(b.end_date || "")
+    );
+  const refStart = referenceSeg?.start_date || "";
+  const candidates = referenceSeg
+    ? valid.filter((seg) => (seg.start_date || "") <= refStart)
+    : valid;
+  const history = [];
+  let lastSig = "";
+  for (const candidate of candidates) {
+    const snap = weightSnapshotDetails(allSegs, products, { referenceSeg: candidate });
+    if (snap.entries.length === 0) continue;
+    const sig = weightSignature(snap.entries);
+    if (sig === lastSig) continue;
+    history.push({ ...snap, signature: sig });
+    lastSig = sig;
+  }
+  const current = weightSnapshotDetails(allSegs, products, opts);
+  const currentSig = weightSignature(current.entries);
+  if (current.entries.length > 0 && currentSig !== lastSig) {
+    history.push({ ...current, signature: currentSig });
+  }
+  return history;
 }
 
 // 把 entries 的 weight × scale 並用 largest-remainder method round,讓加總精確 = round(rawSum × scale)
@@ -1204,10 +1289,48 @@ function scaleWithLargestRemainder(rawEntries, scale) {
   return rawEntries.map((e, i) => ({ ...e, weight: final[i], rawWeight: Number(e.weight) || 0 }));
 }
 
+function formatWeightHistoryDate(ymd) {
+  if (!ymd) return "";
+  const m = parseInt(ymd.slice(5, 7), 10);
+  const d = parseInt(ymd.slice(8, 10), 10);
+  if (!Number.isFinite(m) || !Number.isFinite(d)) return "";
+  return `${m}/${d}`;
+}
+
+function renderWeightPills(entries, opts = {}) {
+  const TOP_N = 3;
+  const top = entries.slice(0, TOP_N).map(({ pid, name, weight, rawWeight }, i) => {
+    const pct = `${Math.round(weight)}%`;
+    const tip = rawWeight !== undefined ? ` title="此 ad 內 ${Math.round(rawWeight)}%"` : "";
+    return `<span class="weight-top-item ${i === 0 ? "lead" : ""}" style="border-left:3px solid ${productColor(pid)};padding-left:6px"${tip}>${esc(name)} ${pct}</span>`;
+  }).join("<span class=\"sep\"> · </span>");
+  const moreCount = entries.length - TOP_N;
+  const more = moreCount > 0
+    ? (opts.moreButton
+      ? `<button class="weight-more ${opts.open ? "active" : ""}" data-weight-toggle="${esc(opts.code)}" title="查看完整權重">+${moreCount} 個</button>`
+      : `<span class="more">+${moreCount} 個</span>`)
+    : "";
+  return `<div class="weights-summary">${top}${more}</div>`;
+}
+
+function renderWeightHistoryLine(snapshot, label, cls, scale, opts = {}) {
+  const entries = scale ? scaleWithLargestRemainder(snapshot.entries, scale) : snapshot.entries;
+  const date = formatWeightHistoryDate(snapshot.referenceSeg?.start_date);
+  const reason = snapshot.referenceSeg?.renewal_reason || "";
+  const title = `${label}${snapshot.referenceSeg?.start_date ? ` ${snapshot.referenceSeg.start_date}` : ""}${reason ? ` · ${reason}` : ""}`;
+  return `
+    <div class="weight-history-row ${cls}" title="${esc(title)}">
+      <span class="weight-history-label">${label}${date ? ` ${date}` : ""}</span>
+      ${renderWeightPills(entries, { ...opts, moreButton: cls === "latest" })}
+    </div>
+  `;
+}
+
 function weightSummary(seg, products, mode = "bar", opts = {}) {
-  const rawEntries = (mode === "bar" && opts.allSegs)
-    ? aggregateGroupWeights(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
-    : productWeightEntries(seg, products);
+  const details = (mode === "bar" && opts.allSegs)
+    ? weightSnapshotDetails(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
+    : { entries: productWeightEntries(seg, products), snapshotSegs: [seg], referenceSeg: seg };
+  const rawEntries = details.entries;
   if (rawEntries.length === 0) return `<span class="ink-3">（無權重）</span>`;
   // 家族成員:weight × familyScale + largest-remainder round,讓加總精確 = round(scale × 100)
   const scale = opts.familyScale && opts.familyScale > 0 && opts.familyScale < 1 ? opts.familyScale : null;
@@ -1220,17 +1343,23 @@ function weightSummary(seg, products, mode = "bar", opts = {}) {
     }).join(" ");
   }
 
-  const TOP_N = 3;
-  const top = entries.slice(0, TOP_N).map(({ pid, name, weight, rawWeight }, i) => {
-    const pct = `${Math.round(weight)}%`;
-    const tip = rawWeight !== undefined ? ` title="此 ad 內 ${Math.round(rawWeight)}%"` : "";
-    return `<span class="weight-top-item ${i === 0 ? "lead" : ""}" style="border-left:3px solid ${productColor(pid)};padding-left:6px"${tip}>${esc(name)} ${pct}</span>`;
-  }).join("<span class=\"sep\"> · </span>");
-  const moreCount = entries.length - TOP_N;
-  const moreButton = moreCount > 0
-    ? `<button class="weight-more ${opts.open ? "active" : ""}" data-weight-toggle="${esc(opts.code || seg.ad_code)}" title="查看完整權重">+${moreCount} 個</button>`
-    : "";
-  return `<div class="weights-summary">${top}${moreButton}</div>`;
+  if (!scale && isIndependentWeightSnapshot(details)) {
+    return `<span class="weight-history-empty">-</span>`;
+  }
+
+  const history = opts.allSegs
+    ? weightHistoryForReference(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
+      .filter((snap) => snap.entries.length > 0)
+    : [{ ...details, signature: weightSignature(rawEntries) }];
+  const latest = history[history.length - 1] || details;
+  const previous = history.length > 1 ? history[history.length - 2] : null;
+
+  return `
+    <div class="weight-history">
+      ${previous ? renderWeightHistoryLine(previous, "上筆", "previous", scale, { code: opts.code || seg.ad_code }) : ""}
+      ${renderWeightHistoryLine(latest, "最新", "latest", scale, { code: opts.code || seg.ad_code, open: opts.open })}
+    </div>
+  `;
 }
 
 function actionButtons(seg, compact) {
