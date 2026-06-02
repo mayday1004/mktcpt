@@ -987,7 +987,7 @@ function renderGroup(group, products, opts = {}) {
       <td></td>
       <td colspan="8">
         <div class="seg-timeline">
-          ${timelineSegs.map(({ seg, index }) => renderTimelineNode(seg, index, segs, products, { familyScale: opts.familyScale })).join("")}
+          ${timelineSegs.map(({ seg, index }) => renderTimelineNode(seg, index, segs, products, { familyScale: opts.familyScale, referenceSeg: latest })).join("")}
         </div>
       </td>
     </tr>
@@ -1060,6 +1060,8 @@ function renderTimelineNode(seg, idx, segs, products, opts = {}) {
   // 多段都同步,顯示在最新段避免重複
   const isLatest = idx === segs.length - 1;
   const extraInfo = isLatest ? renderAdExtras(seg) : "";
+  const isReference = opts.referenceSeg?.id ? seg.id === opts.referenceSeg.id : isLatest;
+  const weightHistory = isReference ? renderWeightHistoryPanel(seg, products, { allSegs: segs, referenceSeg: seg, familyScale: opts.familyScale }) : "";
   return `
     <div class="tl-node">
       <div class="tl-rail"></div>
@@ -1076,6 +1078,7 @@ function renderTimelineNode(seg, idx, segs, products, opts = {}) {
           <span>每日攤提 ${Math.round(seg.daily_amort_twd || 0).toLocaleString()}</span>
           <span>${weightSummary(seg, products, "inline", { familyScale: opts.familyScale })}</span>
         </div>
+        ${weightHistory}
         ${(seg.notes && !/^V2 /.test(seg.notes.trim())) ? `<div class="tl-notes ink-2" style="font-size:12px;margin-top:4px;padding:4px 8px;background:#f7f9fc;border-radius:4px">📝 ${esc(seg.notes)}</div>` : ""}
         ${extraInfo}
         <div class="tl-actions">
@@ -1249,6 +1252,89 @@ function renderWeightPills(entries, opts = {}) {
       : `<span class="more">+${moreCount} 個</span>`)
     : "";
   return `<div class="weights-summary">${top}${more}</div>`;
+}
+
+function weightSignature(entries) {
+  return (entries || [])
+    .slice()
+    .sort((a, b) => String(a.pid).localeCompare(String(b.pid)))
+    .map((e) => `${e.pid}:${Math.round(Number(e.weight) || 0)}`)
+    .join("|");
+}
+
+function weightHistoryForReference(segs, products, opts = {}) {
+  const allSegs = segs || [];
+  const referenceSeg = opts.referenceSeg || [...allSegs].sort((a, b) =>
+    (b.start_date || "").localeCompare(a.start_date || "") ||
+    (b.end_date || "").localeCompare(a.end_date || "")
+  )[0];
+  const valid = allSegs
+    .filter((seg) => seg.start_date && seg.end_date)
+    .sort((a, b) =>
+      (a.start_date || "").localeCompare(b.start_date || "") ||
+      (a.end_date || "").localeCompare(b.end_date || "")
+    );
+  const refStart = referenceSeg?.start_date || "";
+  const candidates = referenceSeg
+    ? valid.filter((seg) => (seg.start_date || "") <= refStart)
+    : valid;
+  const history = [];
+  let lastSig = "";
+  for (const candidate of candidates) {
+    const snap = weightSnapshotDetails(allSegs, products, { referenceSeg: candidate });
+    if (snap.entries.length === 0) continue;
+    const sig = weightSignature(snap.entries);
+    if (sig === lastSig) continue;
+    history.push({ ...snap, signature: sig });
+    lastSig = sig;
+  }
+  const current = weightSnapshotDetails(allSegs, products, opts);
+  const currentSig = weightSignature(current.entries);
+  if (current.entries.length > 0 && currentSig !== lastSig) {
+    history.push({ ...current, signature: currentSig });
+  }
+  return history;
+}
+
+function formatWeightHistoryDate(ymd) {
+  if (!ymd) return "";
+  const m = parseInt(ymd.slice(5, 7), 10);
+  const d = parseInt(ymd.slice(8, 10), 10);
+  if (!Number.isFinite(m) || !Number.isFinite(d)) return "";
+  return `${m}/${d}`;
+}
+
+function renderWeightHistoryLine(snapshot, label, cls, scale) {
+  const entries = scale ? scaleWithLargestRemainder(snapshot.entries, scale) : snapshot.entries;
+  const date = formatWeightHistoryDate(snapshot.referenceSeg?.start_date);
+  const reason = snapshot.referenceSeg?.renewal_reason || "";
+  const title = `${label}${snapshot.referenceSeg?.start_date ? ` ${snapshot.referenceSeg.start_date}` : ""}${reason ? ` · ${reason}` : ""}`;
+  return `
+    <div class="weight-history-row ${cls}" title="${esc(title)}">
+      <span class="weight-history-label">${label}${date ? ` ${date}` : ""}</span>
+      ${renderWeightPills(entries, { moreButton: false })}
+    </div>
+  `;
+}
+
+function renderWeightHistoryPanel(seg, products, opts = {}) {
+  const scale = opts.familyScale && opts.familyScale > 0 && opts.familyScale < 1 ? opts.familyScale : null;
+  const details = opts.allSegs
+    ? weightSnapshotDetails(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
+    : { entries: productWeightEntries(seg, products), snapshotSegs: [seg], referenceSeg: seg };
+  const history = opts.allSegs
+    ? weightHistoryForReference(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
+      .filter((snap) => snap.entries.length > 0)
+    : [{ ...details, signature: weightSignature(details.entries) }];
+  if (history.length <= 1) return "";
+  const previous = history[history.length - 2];
+  const latest = history[history.length - 1];
+  return `
+    <div class="tl-weight-history">
+      ${renderWeightHistoryLine(previous, "上筆", "previous", scale)}
+      ${renderWeightHistoryLine(latest, "最新", "latest", scale)}
+    </div>
+  `;
 }
 
 function weightSummary(seg, products, mode = "bar", opts = {}) {

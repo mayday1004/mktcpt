@@ -1208,6 +1208,40 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
 .weights-summary .lead { color: var(--ink); font-weight: 500; }
 .weights-summary .sep { color: var(--ink-3); margin: 0 1px; }
 .weights-summary .more { color: var(--ink-3); margin-left: 4px; }
+.tl-weight-history {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 7px;
+  max-width: 760px;
+}
+.tl-weight-history .weight-history-row {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.tl-weight-history .weight-history-row.previous {
+  opacity: 0.78;
+}
+.tl-weight-history .weight-history-row.latest {
+  padding: 3px 7px 3px 5px;
+  border: 1px solid #cbdcff;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: #eef5ff;
+}
+.tl-weight-history .weight-history-label {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.tl-weight-history .weight-history-row.latest .weight-history-label {
+  color: var(--accent);
+  font-weight: 700;
+}
 .weight-more {
   flex: 0 0 auto;
   border: 1px solid var(--line);
