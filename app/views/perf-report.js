@@ -881,8 +881,23 @@ function renderAdView(state) {
       )
     );
     if (!hasIslandSeg && !hasIslandPerf) continue;
+    const currentWeights = latestSnapshotWeightsForRange(segs, weekRange);
+    const thisWeekWeights = latestSnapshotWeightsForRange(segs, thisWeek);
     const rep = { ...latest, weights: mergedWeights };
-    rows.push(buildAdRowData(state, code, rep, segs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today));
+    rows.push(buildAdRowData(
+      state,
+      code,
+      rep,
+      segs,
+      thisWeek,
+      lastWeek,
+      islandProducts,
+      appProducts,
+      weekRange,
+      today,
+      currentWeights,
+      thisWeekWeights
+    ));
   }
 
   // eliminate-soon(預計淘汰) 和 expire(到期) 同優先序 — 不再因為「成效全爛」就拉前面,
@@ -932,7 +947,43 @@ function formatUTC(dt) {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
-function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today) {
+function latestSnapshotWeightsForRange(segs, range) {
+  const valid = (segs || []).filter((seg) => seg.start_date && seg.end_date);
+  const inRange = range
+    ? valid.filter((seg) => seg.start_date <= range.end && seg.end_date > range.start)
+    : valid;
+  if (inRange.length === 0) return null;
+
+  const referenceSeg = inRange.slice().sort((a, b) =>
+    (b.start_date || "").localeCompare(a.start_date || "") ||
+    (b.end_date || "").localeCompare(a.end_date || "")
+  )[0];
+  if (!referenceSeg) return null;
+
+  const snapshotSegs = valid.filter((seg) =>
+    seg.start_date < referenceSeg.end_date && seg.end_date > referenceSeg.start_date
+  );
+  const weightsByPid = new Map();
+  for (const seg of (snapshotSegs.length > 0 ? snapshotSegs : [referenceSeg])) {
+    for (const [pid, weight] of Object.entries(seg.weights || {})) {
+      const n = Number(weight) || 0;
+      if (n <= 0) continue;
+      const cur = weightsByPid.get(pid);
+      const startDate = seg.start_date || "";
+      if (!cur || startDate >= cur.startDate) {
+        weightsByPid.set(pid, { weight: n, startDate });
+      }
+    }
+  }
+  return Object.fromEntries([...weightsByPid.entries()].map(([pid, info]) => [pid, info.weight]));
+}
+
+function sumWeightsForProducts(weights, products) {
+  if (!weights) return null;
+  return products.reduce((sum, p) => sum + (Number(weights[p.id]) || 0), 0);
+}
+
+function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today, currentWeights = null, thisWeekWeights = null) {
   const reportVars = getReportVars(state);
   const adMatch = (rr) => rr.ad_code === code || rr.ad_id === rep.id || rr.ad_name === rep.ad_name;
   const thisRecs = (state.performance_data || []).filter((r) =>
@@ -1010,6 +1061,11 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
   // 已到期:此 ad_code 跨所有段的最晚 end_date <= today(end_date 是 exclusive)
   const maxEnd = allSegs.reduce((m, a) => ((a.end_date || "") > m ? (a.end_date || "") : m), "");
   const expired = !!maxEnd && maxEnd <= today;
+  const islandWeightPct = sumWeightsForProducts(currentWeights, islandProducts);
+  const thisWeekIslandWeightPct = sumWeightsForProducts(thisWeekWeights, islandProducts);
+  const islandWeightDelta = islandWeightPct != null && thisWeekIslandWeightPct != null
+    ? islandWeightPct - thisWeekIslandWeightPct
+    : null;
 
   return {
     code, rep,
@@ -1021,6 +1077,9 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
     rateRatio: bestRate?.ratio ?? null,
     status,
     expired,
+    islandWeightPct,
+    thisWeekIslandWeightPct,
+    islandWeightDelta,
   };
 }
 
@@ -1170,11 +1229,23 @@ function fmtRate(v) {
   return `${(Math.round(v * 10000) / 100).toLocaleString()}%`;
 }
 
+function fmtPct(v) {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return `${Math.round(v).toLocaleString()}%`;
+}
+
+function fmtPctSigned(v) {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const rounded = Math.round(v);
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded.toLocaleString()}%`;
+}
+
 function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, weekRange) {
   if (rows.length === 0) {
     return `<div class="card"><p class="ink-3">上週 ${thisWeek.start}~${thisWeek.end} 沒有任何含小島權重的廣告。</p></div>`;
   }
-  const totalColumns = islandProducts.length + 5;
+  const totalColumns = islandProducts.length + 7;
   const adRowsToggleLabel = adRowsCollapsed ? "+" : "-";
   const adRowsToggleTitle = adRowsCollapsed ? "展開廣告資料列" : "收合廣告資料列";
   const fmtMd = (ymd, monthPad = true) => {
@@ -1223,6 +1294,15 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
       ? `<td title="${esc(row.status.tooltip || "")}">${row.status.label}</td>`
       : `<td></td>`;
 
+    const islandWeightCell = row.islandWeightPct != null
+      ? `<td class="num" title="本週 ${esc(weekRange.start)}~${esc(weekRange.end)} 最新權重截面的小島產品加總">${fmtPct(row.islandWeightPct)}</td>`
+      : `<td class="num ink-3">—</td>`;
+
+    const islandDeltaCls = row.islandWeightDelta > 0 ? "ok" : row.islandWeightDelta < 0 ? "bad" : "";
+    const islandDeltaCell = row.islandWeightDelta != null
+      ? `<td class="num ${islandDeltaCls}" title="小島權重 ${fmtPct(row.islandWeightPct)} - 上週 ${fmtPct(row.thisWeekIslandWeightPct)}"><strong>${fmtPctSigned(row.islandWeightDelta)}</strong></td>`
+      : `<td class="num ink-3">—</td>`;
+
     return `
       <tr class="${row.expired ? "perf-row-expired" : ""}">
         <td><strong>${esc(row.rep.ad_name || "")}</strong></td>
@@ -1231,6 +1311,8 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
         ${cpiCell}
         ${rateCell}
         ${statusCell}
+        ${islandWeightCell}
+        ${islandDeltaCell}
       </tr>
     `;
   }).join("");
@@ -1271,6 +1353,8 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
               <th class="num" style="width:130px">APP CPI<br><span class="ink-3" style="font-size:10px;font-weight:normal">花費/不重複安裝數；取較低</span></th>
               <th class="num" style="width:120px">首購率<br><span class="ink-3" style="font-size:10px;font-weight:normal">近兩週加權；取較高</span></th>
               <th style="width:130px">到期狀況</th>
+              <th class="num" style="width:100px">小島權重</th>
+              <th class="num" style="width:100px">上週增減</th>
             </tr>
           </thead>
           <tbody>${dataRows}</tbody>
@@ -1278,12 +1362,12 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
             <tr style="background:#f7f9fc">
               <td colspan="2"><strong>平均 CPC（加權）</strong></td>
               ${avgCells}
-              <td colspan="3" class="ink-3"></td>
+              <td colspan="5" class="ink-3"></td>
             </tr>
             <tr style="background:#f7f9fc">
               <td colspan="2"><strong>成本漲幅（vs 上上週，絕對差）</strong></td>
               ${deltaCells}
-              <td colspan="3" class="ink-3"></td>
+              <td colspan="5" class="ink-3"></td>
             </tr>
           </tfoot>
         </table>
