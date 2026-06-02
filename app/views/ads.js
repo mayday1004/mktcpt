@@ -1269,29 +1269,31 @@ function weightHistoryForReference(segs, products, opts = {}) {
     (b.end_date || "").localeCompare(a.end_date || "")
   )[0];
   const valid = allSegs
-    .filter((seg) => seg.start_date && seg.end_date)
+    .map((seg, index) => ({ seg, index }))
+    .filter(({ seg }) => seg.start_date && seg.end_date)
     .sort((a, b) =>
-      (a.start_date || "").localeCompare(b.start_date || "") ||
-      (a.end_date || "").localeCompare(b.end_date || "")
+      (a.seg.start_date || "").localeCompare(b.seg.start_date || "") ||
+      (a.seg.end_date || "").localeCompare(b.seg.end_date || "")
     );
   const refStart = referenceSeg?.start_date || "";
   const candidates = referenceSeg
-    ? valid.filter((seg) => (seg.start_date || "") <= refStart)
+    ? valid.filter(({ seg }) => (seg.start_date || "") <= refStart)
     : valid;
   const history = [];
   let lastSig = "";
-  for (const candidate of candidates) {
+  for (const { seg: candidate, index } of candidates) {
     const snap = weightSnapshotDetails(allSegs, products, { referenceSeg: candidate });
     if (snap.entries.length === 0) continue;
     const sig = weightSignature(snap.entries);
     if (sig === lastSig) continue;
-    history.push({ ...snap, signature: sig });
+    history.push({ ...snap, signature: sig, recordNo: index + 1 });
     lastSig = sig;
   }
   const current = weightSnapshotDetails(allSegs, products, opts);
   const currentSig = weightSignature(current.entries);
   if (current.entries.length > 0 && currentSig !== lastSig) {
-    history.push({ ...current, signature: currentSig });
+    const index = allSegs.findIndex((seg) => seg.id === current.referenceSeg?.id);
+    history.push({ ...current, signature: currentSig, recordNo: index >= 0 ? index + 1 : null });
   }
   return history;
 }
@@ -1304,15 +1306,27 @@ function formatWeightHistoryDate(ymd) {
   return `${m}/${d}`;
 }
 
+function renderWeightHistoryChips(entries) {
+  return `
+    <div class="weight-history-chips">
+      ${entries.map(({ pid, name, weight, rawWeight }) => {
+        const tip = rawWeight !== undefined ? ` title="此 ad 內 ${Math.round(rawWeight)}%"` : "";
+        return `<span class="weight-history-chip" style="border-left:3px solid ${productColor(pid)}"${tip}>${esc(name)} ${Math.round(weight)}%</span>`;
+      }).join("")}
+    </div>
+  `;
+}
+
 function renderWeightHistoryLine(snapshot, label, cls, scale) {
   const entries = scale ? scaleWithLargestRemainder(snapshot.entries, scale) : snapshot.entries;
   const date = formatWeightHistoryDate(snapshot.referenceSeg?.start_date);
   const reason = snapshot.referenceSeg?.renewal_reason || "";
   const title = `${label}${snapshot.referenceSeg?.start_date ? ` ${snapshot.referenceSeg.start_date}` : ""}${reason ? ` · ${reason}` : ""}`;
+  const record = snapshot.recordNo ? ` #${snapshot.recordNo}` : "";
   return `
     <div class="weight-history-row ${cls}" title="${esc(title)}">
-      <span class="weight-history-label">${label}${date ? ` ${date}` : ""}</span>
-      ${renderWeightPills(entries, { moreButton: false })}
+      <span class="weight-history-label">${label}${record}${date ? ` ${date}` : ""}</span>
+      ${renderWeightHistoryChips(entries)}
     </div>
   `;
 }
