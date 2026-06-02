@@ -963,8 +963,9 @@ function latestSnapshotWeightsForRange(segs, range) {
   const snapshotSegs = valid.filter((seg) =>
     seg.start_date < referenceSeg.end_date && seg.end_date > referenceSeg.start_date
   );
+  const activeSnapshotSegs = snapshotSegs.length > 0 ? snapshotSegs : [referenceSeg];
   const weightsByPid = new Map();
-  for (const seg of (snapshotSegs.length > 0 ? snapshotSegs : [referenceSeg])) {
+  for (const seg of activeSnapshotSegs) {
     for (const [pid, weight] of Object.entries(seg.weights || {})) {
       const n = Number(weight) || 0;
       if (n <= 0) continue;
@@ -975,11 +976,25 @@ function latestSnapshotWeightsForRange(segs, range) {
       }
     }
   }
-  return Object.fromEntries([...weightsByPid.entries()].map(([pid, info]) => [pid, info.weight]));
+  return {
+    weights: Object.fromEntries([...weightsByPid.entries()].map(([pid, info]) => [pid, info.weight])),
+    independent100: isIndependent100Snapshot(activeSnapshotSegs),
+  };
 }
 
-function sumWeightsForProducts(weights, products) {
-  if (!weights) return null;
+function isSingleProduct100(seg) {
+  const entries = Object.entries(seg?.weights || {}).filter(([, v]) => Number(v) > 0);
+  if (entries.length !== 1) return false;
+  return Math.round(Number(entries[0][1]) || 0) === 100;
+}
+
+function isIndependent100Snapshot(segs) {
+  return (segs || []).length > 0 && segs.every(isSingleProduct100);
+}
+
+function sumWeightsForProducts(snapshot, products) {
+  if (!snapshot || snapshot.independent100) return null;
+  const weights = snapshot.weights || {};
   return products.reduce((sum, p) => sum + (Number(weights[p.id]) || 0), 0);
 }
 
@@ -1077,6 +1092,7 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
     rateRatio: bestRate?.ratio ?? null,
     status,
     expired,
+    islandWeightIndependent: currentWeights?.independent100 === true,
     islandWeightPct,
     thisWeekIslandWeightPct,
     islandWeightDelta,
@@ -1294,12 +1310,16 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
       ? `<td title="${esc(row.status.tooltip || "")}">${row.status.label}</td>`
       : `<td></td>`;
 
-    const islandWeightCell = row.islandWeightPct != null
+    const islandWeightCell = row.islandWeightIndependent
+      ? `<td class="num ink-3" title="當前截面是單一產品 100% 的獨立採買，不加總顯示">-</td>`
+      : row.islandWeightPct != null
       ? `<td class="num" title="本週 ${esc(weekRange.start)}~${esc(weekRange.end)} 最新權重截面的小島產品加總">${fmtPct(row.islandWeightPct)}</td>`
       : `<td class="num ink-3">—</td>`;
 
     const islandDeltaCls = row.islandWeightDelta > 0 ? "ok" : row.islandWeightDelta < 0 ? "bad" : "";
-    const islandDeltaCell = row.islandWeightDelta != null
+    const islandDeltaCell = row.islandWeightIndependent
+      ? `<td class="num ink-3" title="當前截面為獨立 100%，不計算上週增減">-</td>`
+      : row.islandWeightDelta != null
       ? `<td class="num ${islandDeltaCls}" title="小島權重 ${fmtPct(row.islandWeightPct)} - 上週 ${fmtPct(row.thisWeekIslandWeightPct)}"><strong>${fmtPctSigned(row.islandWeightDelta)}</strong></td>`
       : `<td class="num ink-3">—</td>`;
 

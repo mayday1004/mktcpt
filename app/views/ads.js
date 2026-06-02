@@ -1019,7 +1019,6 @@ function renderWeightDetailRow(seg, products, opts = {}) {
   const rawEntries = details.entries;
   if (rawEntries.length <= 3) return "";
   const scale = opts.familyScale && opts.familyScale > 0 && opts.familyScale < 1 ? opts.familyScale : null;
-  if (!scale && isIndependentWeightSnapshot(details)) return "";
   const scaled = scale ? scaleWithLargestRemainder(rawEntries, scale) : rawEntries;
   // 「完整權重產品」面板的顯示順序依 state.products 陣列(= Sheets「產品」分頁列順序),
   // 不依權重大小排序;未列在 products 的 pid(不該發生)排到最後。
@@ -1219,59 +1218,6 @@ function aggregateGroupWeights(segs, products, opts = {}) {
   return weightSnapshotDetails(segs, products, opts).entries;
 }
 
-function isSingleProduct100(seg) {
-  const entries = Object.entries(seg?.weights || {}).filter(([, v]) => Number(v) > 0);
-  if (entries.length !== 1) return false;
-  return Math.round(Number(entries[0][1]) || 0) === 100;
-}
-
-function isIndependentWeightSnapshot(details) {
-  const snapshotSegs = details?.snapshotSegs || [];
-  return snapshotSegs.length > 0 && snapshotSegs.every(isSingleProduct100);
-}
-
-function weightSignature(entries) {
-  return (entries || [])
-    .slice()
-    .sort((a, b) => String(a.pid).localeCompare(String(b.pid)))
-    .map((e) => `${e.pid}:${Math.round(Number(e.weight) || 0)}`)
-    .join("|");
-}
-
-function weightHistoryForReference(segs, products, opts = {}) {
-  const allSegs = segs || [];
-  const referenceSeg = opts.referenceSeg || [...allSegs].sort((a, b) =>
-    (b.start_date || "").localeCompare(a.start_date || "") ||
-    (b.end_date || "").localeCompare(a.end_date || "")
-  )[0];
-  const valid = allSegs
-    .filter((seg) => seg.start_date && seg.end_date)
-    .sort((a, b) =>
-      (a.start_date || "").localeCompare(b.start_date || "") ||
-      (a.end_date || "").localeCompare(b.end_date || "")
-    );
-  const refStart = referenceSeg?.start_date || "";
-  const candidates = referenceSeg
-    ? valid.filter((seg) => (seg.start_date || "") <= refStart)
-    : valid;
-  const history = [];
-  let lastSig = "";
-  for (const candidate of candidates) {
-    const snap = weightSnapshotDetails(allSegs, products, { referenceSeg: candidate });
-    if (snap.entries.length === 0) continue;
-    const sig = weightSignature(snap.entries);
-    if (sig === lastSig) continue;
-    history.push({ ...snap, signature: sig });
-    lastSig = sig;
-  }
-  const current = weightSnapshotDetails(allSegs, products, opts);
-  const currentSig = weightSignature(current.entries);
-  if (current.entries.length > 0 && currentSig !== lastSig) {
-    history.push({ ...current, signature: currentSig });
-  }
-  return history;
-}
-
 // 把 entries 的 weight × scale 並用 largest-remainder method round,讓加總精確 = round(rawSum × scale)
 function scaleWithLargestRemainder(rawEntries, scale) {
   const rawSum = rawEntries.reduce((s, e) => s + (Number(e.weight) || 0), 0);
@@ -1289,14 +1235,6 @@ function scaleWithLargestRemainder(rawEntries, scale) {
   return rawEntries.map((e, i) => ({ ...e, weight: final[i], rawWeight: Number(e.weight) || 0 }));
 }
 
-function formatWeightHistoryDate(ymd) {
-  if (!ymd) return "";
-  const m = parseInt(ymd.slice(5, 7), 10);
-  const d = parseInt(ymd.slice(8, 10), 10);
-  if (!Number.isFinite(m) || !Number.isFinite(d)) return "";
-  return `${m}/${d}`;
-}
-
 function renderWeightPills(entries, opts = {}) {
   const TOP_N = 3;
   const top = entries.slice(0, TOP_N).map(({ pid, name, weight, rawWeight }, i) => {
@@ -1311,19 +1249,6 @@ function renderWeightPills(entries, opts = {}) {
       : `<span class="more">+${moreCount} 個</span>`)
     : "";
   return `<div class="weights-summary">${top}${more}</div>`;
-}
-
-function renderWeightHistoryLine(snapshot, label, cls, scale, opts = {}) {
-  const entries = scale ? scaleWithLargestRemainder(snapshot.entries, scale) : snapshot.entries;
-  const date = formatWeightHistoryDate(snapshot.referenceSeg?.start_date);
-  const reason = snapshot.referenceSeg?.renewal_reason || "";
-  const title = `${label}${snapshot.referenceSeg?.start_date ? ` ${snapshot.referenceSeg.start_date}` : ""}${reason ? ` · ${reason}` : ""}`;
-  return `
-    <div class="weight-history-row ${cls}" title="${esc(title)}">
-      <span class="weight-history-label">${label}${date ? ` ${date}` : ""}</span>
-      ${renderWeightPills(entries, { ...opts, moreButton: cls === "latest" })}
-    </div>
-  `;
 }
 
 function weightSummary(seg, products, mode = "bar", opts = {}) {
@@ -1343,23 +1268,11 @@ function weightSummary(seg, products, mode = "bar", opts = {}) {
     }).join(" ");
   }
 
-  if (!scale && isIndependentWeightSnapshot(details)) {
-    return `<span class="weight-history-empty">-</span>`;
-  }
-
-  const history = opts.allSegs
-    ? weightHistoryForReference(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
-      .filter((snap) => snap.entries.length > 0)
-    : [{ ...details, signature: weightSignature(rawEntries) }];
-  const latest = history[history.length - 1] || details;
-  const previous = history.length > 1 ? history[history.length - 2] : null;
-
-  return `
-    <div class="weight-history">
-      ${previous ? renderWeightHistoryLine(previous, "上筆", "previous", scale, { code: opts.code || seg.ad_code }) : ""}
-      ${renderWeightHistoryLine(latest, "最新", "latest", scale, { code: opts.code || seg.ad_code, open: opts.open })}
-    </div>
-  `;
+  return renderWeightPills(entries, {
+    code: opts.code || seg.ad_code,
+    open: opts.open,
+    moreButton: true,
+  });
 }
 
 function actionButtons(seg, compact) {
