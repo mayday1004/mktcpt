@@ -1225,22 +1225,11 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
 .tl-weight-history .weight-history-row.previous {
   opacity: 0.78;
 }
-.tl-weight-history .weight-history-row.latest {
-  padding: 5px 8px 5px 6px;
-  border: 1px solid #cbdcff;
-  border-left: 3px solid var(--accent);
-  border-radius: 6px;
-  background: #eef5ff;
-}
 .tl-weight-history .weight-history-label {
   color: var(--ink-3);
   font-size: 10.5px;
   line-height: 22px;
   white-space: nowrap;
-}
-.tl-weight-history .weight-history-row.latest .weight-history-label {
-  color: var(--accent);
-  font-weight: 700;
 }
 .weight-history-chips {
   display: flex;
@@ -1260,10 +1249,6 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
   font-size: 12px;
   line-height: 1.35;
   white-space: nowrap;
-}
-.tl-weight-history .weight-history-row.latest .weight-history-chip {
-  background: #f8fbff;
-  color: var(--ink);
 }
 .weight-more {
   flex: 0 0 auto;

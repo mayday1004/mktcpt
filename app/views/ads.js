@@ -1254,15 +1254,7 @@ function renderWeightPills(entries, opts = {}) {
   return `<div class="weights-summary">${top}${more}</div>`;
 }
 
-function weightSignature(entries) {
-  return (entries || [])
-    .slice()
-    .sort((a, b) => String(a.pid).localeCompare(String(b.pid)))
-    .map((e) => `${e.pid}:${Math.round(Number(e.weight) || 0)}`)
-    .join("|");
-}
-
-function weightHistoryForReference(segs, products, opts = {}) {
+function previousWeightSnapshotForReference(segs, products, opts = {}) {
   const allSegs = segs || [];
   const referenceSeg = opts.referenceSeg || [...allSegs].sort((a, b) =>
     (b.start_date || "").localeCompare(a.start_date || "") ||
@@ -1275,27 +1267,16 @@ function weightHistoryForReference(segs, products, opts = {}) {
       (a.seg.start_date || "").localeCompare(b.seg.start_date || "") ||
       (a.seg.end_date || "").localeCompare(b.seg.end_date || "")
     );
-  const refStart = referenceSeg?.start_date || "";
-  const candidates = referenceSeg
-    ? valid.filter(({ seg }) => (seg.start_date || "") <= refStart)
-    : valid;
-  const history = [];
-  let lastSig = "";
-  for (const { seg: candidate, index } of candidates) {
+  const refPos = referenceSeg?.id
+    ? valid.findIndex(({ seg }) => seg.id === referenceSeg.id)
+    : valid.length - 1;
+  for (let i = refPos - 1; i >= 0; i--) {
+    const { seg: candidate, index } = valid[i];
     const snap = weightSnapshotDetails(allSegs, products, { referenceSeg: candidate });
     if (snap.entries.length === 0) continue;
-    const sig = weightSignature(snap.entries);
-    if (sig === lastSig) continue;
-    history.push({ ...snap, signature: sig, recordNo: index + 1 });
-    lastSig = sig;
+    return { ...snap, recordNo: index + 1 };
   }
-  const current = weightSnapshotDetails(allSegs, products, opts);
-  const currentSig = weightSignature(current.entries);
-  if (current.entries.length > 0 && currentSig !== lastSig) {
-    const index = allSegs.findIndex((seg) => seg.id === current.referenceSeg?.id);
-    history.push({ ...current, signature: currentSig, recordNo: index >= 0 ? index + 1 : null });
-  }
-  return history;
+  return null;
 }
 
 function formatWeightHistoryDate(ymd) {
@@ -1333,20 +1314,13 @@ function renderWeightHistoryLine(snapshot, label, cls, scale) {
 
 function renderWeightHistoryPanel(seg, products, opts = {}) {
   const scale = opts.familyScale && opts.familyScale > 0 && opts.familyScale < 1 ? opts.familyScale : null;
-  const details = opts.allSegs
-    ? weightSnapshotDetails(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
-    : { entries: productWeightEntries(seg, products), snapshotSegs: [seg], referenceSeg: seg };
-  const history = opts.allSegs
-    ? weightHistoryForReference(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
-      .filter((snap) => snap.entries.length > 0)
-    : [{ ...details, signature: weightSignature(details.entries) }];
-  if (history.length <= 1) return "";
-  const previous = history[history.length - 2];
-  const latest = history[history.length - 1];
+  const previous = opts.allSegs
+    ? previousWeightSnapshotForReference(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
+    : null;
+  if (!previous) return "";
   return `
     <div class="tl-weight-history">
       ${renderWeightHistoryLine(previous, "上筆", "previous", scale)}
-      ${renderWeightHistoryLine(latest, "最新", "latest", scale)}
     </div>
   `;
 }
