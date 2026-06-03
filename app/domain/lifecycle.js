@@ -141,10 +141,7 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
   }
 
   // Case C: 沒在 pair + 有碰撞 → 觸發拆 t
-  // 拆 t 需要真實切點(避免空段),所以這裡仍要求 effectiveDate > source.start_date
-  if (effectiveDate === source.start_date) {
-    throw new Error(`生效日 ${effectiveDate} 等於段起始日,無法在當天觸發自動拆 t(會產生空段);請改用「編輯」修正權重,或把生效日往後挪一天`);
-  }
+  // 若生效日等於段起始日,直接原地改成 t-variant 並補 parent,不產生空段。
   const { normal, poquan, normalSum, poquanSum, normalInternal, poquanInternal } = splitWeightsByFamily(newWeights, products);
   if (normalSum <= 0 || poquanSum <= 0) {
     // 理論上 detectFamilyCollision === true 必然兩側都有,這是保險
@@ -159,12 +156,13 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
   const poquanRatio = poquanSum / totalSum;
   const baseDaily = Number(source.daily_amort_twd)
     || (Number(source.amount_twd) / Number(source.amortize_days) || 0);
+  const sameStart = effectiveDate === source.start_date;
 
   // 1) source 段 trim end → effectiveDate
-  const closed = trimEnd(source, effectiveDate);
+  const closed = sameStart ? null : trimEnd(source, effectiveDate);
 
   // 2) source 開新段:破圈側,代碼變 stXXXt
-  const sourceNewSeg = spawnFrom(source, {
+  const poquanPatch = {
     ad_code: tVariantCode,
     ad_name: source.ad_name,  // 名稱不自動加 t,避免污染(若使用者要 visually 區分可手動)
     start_date: effectiveDate,
@@ -174,6 +172,7 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
     amount_twd: (Number(source.amount_twd) || 0) * poquanRatio,
     daily_amort_twd: baseDaily * poquanRatio,
     weights: { ...poquanInternal },
+    purchase_mode: pickPurchaseMode(poquanInternal),
     renewal_reason: "拆t改名",
     notes: notes && String(notes).trim()
       ? `${String(notes).trim()}(同家族碰撞,自動拆 t)`
@@ -181,7 +180,9 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
     split_pair_id: pairId,
     split_role: "t_variant",
     code_at_creation: tVariantCode,
-  });
+  };
+  const sourceReplacement = sameStart ? { ...source, ...poquanPatch } : null;
+  const sourceNewSeg = sameStart ? null : spawnFrom(source, poquanPatch);
 
   // 3) 新建一般側 ad(stXXX)
   const newGeneralAd = {
@@ -233,6 +234,7 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
     pairId,
     sourceRename: { from: source.ad_code, to: tVariantCode },
     closed,             // trim 過的 source 段(同物件)
+    sourceReplacement,  // same-start split 時直接覆寫 source,避免產生空段
     sourceNewSeg,       // 破圈側新段(carrying split_pair_id + split_role='t_variant')
     newGeneralAd,       // 一般側新 ad(carrying split_pair_id + split_role='parent')
     segsToRename,       // 需要改 ad_code + 標 split_pair_id/role + 補 code_at_creation 的歷史段清單

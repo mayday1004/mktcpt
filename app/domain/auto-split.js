@@ -31,6 +31,13 @@ export function detectFamilyCollision(weights, products) {
   const activePids = Object.keys(ws).filter((k) => Number(ws[k]) > 0);
   if (activePids.length === 0) return { collision: false };
 
+  const sides = splitWeightsByFamily(ws, products);
+  if (sides.normalSum > 0 && sides.poquanSum > 0) {
+    const families = Object.keys(sides.poquan)
+      .map((pid) => parentFamilyOf(products, pid) || pid);
+    return { collision: true, families: [...new Set(families)] };
+  }
+
   const normalPidsSet = new Set();
   const poquanFamilies = new Set();  // 破圈所屬的母家族 id
   for (const pid of activePids) {

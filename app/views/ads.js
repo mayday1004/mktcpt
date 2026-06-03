@@ -2061,7 +2061,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
 
     ${!id && !renewFrom && s.products.some((p) => p.is_poquan) ? `
     <div class="hint mt-8" style="padding:8px 10px;background:#f0f7ff;border:1px solid #cfe1f5;border-radius:6px;font-size:12px;line-height:1.5">
-      💡 若上方權重同時含「一般 + 破圈」,儲存時系統會自動建立 <code>stXXX</code> + <code>stXXXt</code> 兩支廣告並關聯。純破圈 / 跨產品不撞一般則維持單支不加 t(例 <code>stXXX 愛威奶破圈 100% → stXXX 健康破圈 100%</code>)。
+      💡 純破圈會自動存成 <code>stXXXt</code>；若上方權重同時含「一般 + 破圈」,儲存時系統會自動建立 <code>stXXX</code> + <code>stXXXt</code> 兩支廣告並關聯。
     </div>
     ` : ""}
 
@@ -2400,15 +2400,20 @@ function openEditor(id, renewFrom = null, prefill = null) {
 
     // 自動拆 t 偵測(只在新增 / 續費 觸發;§5.7.2)
     // 編輯模式 weights 改為唯讀,不會產生新碰撞 → 跳過 detect
+    const weightSides = !id ? splitWeightsByFamily(weights, s.products) : null;
     const collision = !id
       ? detectFamilyCollision(weights, s.products)
       : { collision: false };
-    const splitWeights = collision.collision
-      ? splitWeightsByFamily(weights, s.products)
+    const splitWeights = collision.collision && weightSides?.normalSum > 0 && weightSides?.poquanSum > 0
+      ? weightSides
       : null;
-    const splitCodes = collision.collision
-      ? deriveSplitCodes(code)
-      : null;
+    const splitCodes = !id ? deriveSplitCodes(code) : null;
+    const normalizedSingleCode = (() => {
+      if (id || splitWeights || !weightSides || !splitCodes) return code;
+      if (weightSides.poquanSum > 0 && weightSides.normalSum <= 0) return splitCodes.tVariantCode;
+      if (weightSides.normalSum > 0 && weightSides.poquanSum <= 0 && /[tT]$/.test(code)) return splitCodes.parentCode;
+      return code;
+    })();
 
     const twd = cny * rate;
     const wKeys = Object.keys(weights);
@@ -2442,7 +2447,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const shortUrlParam = (q("#f-short-url-param").value || "").trim();
 
     const patch = {
-      ad_code: code,
+      ad_code: normalizedSingleCode,
       ad_name: name,
       group: groupValue,
       currency,
@@ -2492,7 +2497,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
         daily_amort_twd: normalTwd / days,
         purchase_mode: (Object.keys(splitWeights.normalInternal).length === 1 && Object.values(splitWeights.normalInternal)[0] === 100) ? "independent" : "shared",
         code_at_creation: splitCodes.parentCode,
-      } : { ...patch, code_at_creation: code };
+      } : { ...patch, code_at_creation: normalizedSingleCode };
       if (id) {
         const idx = st.ads.findIndex((x) => x.id === id);
         st.ads[idx] = { ...st.ads[idx], ...finalPatch };
@@ -2784,7 +2789,10 @@ function openWeightAdjust(seg) {
     } catch (e) { toast(e.message, "bad"); return; }
 
     update((st) => {
-      const ad_snapshots = captureUndoSnapshot(st, [seg.id]);
+      const snapshotIds = result.mode === "split"
+        ? [...new Set([seg.id, ...(result.segsToRename || []).map((a) => a.id)])]
+        : [seg.id];
+      const ad_snapshots = captureUndoSnapshot(st, snapshotIds);
       const added_ad_ids = [];
 
       if (result.mode === "split") {
@@ -2800,11 +2808,24 @@ function openWeightAdjust(seg) {
           live.split_pair_id = result.pairId;
           live.split_role = "t_variant";
         }
-        // 2) 把 source 段(剛剛 trim 過的 closed 物件)寫回 state(已包含於 segsToRename,改名生效)
-        //    closed 物件在 result.closed 中,但 segsToRename 已涵蓋
-        // 3) push 破圈側新段 + 一般側新 ad
-        st.ads.push(result.sourceNewSeg);
-        added_ad_ids.push(result.sourceNewSeg.id);
+        // 2) same-start 直接覆寫 source;切段才把 source 舊段 trim 後再 push 新 t 段。
+        const sourceIdx = st.ads.findIndex((a) => a.id === seg.id);
+        if (sourceIdx >= 0 && result.sourceReplacement) {
+          st.ads[sourceIdx] = { ...st.ads[sourceIdx], ...result.sourceReplacement };
+        } else if (sourceIdx >= 0 && result.closed) {
+          st.ads[sourceIdx] = {
+            ...st.ads[sourceIdx],
+            ...result.closed,
+            ad_code: renameTo,
+            split_pair_id: result.pairId,
+            split_role: "t_variant",
+          };
+        }
+        // 3) push 破圈側新段(若有) + 一般側新 ad
+        if (result.sourceNewSeg) {
+          st.ads.push(result.sourceNewSeg);
+          added_ad_ids.push(result.sourceNewSeg.id);
+        }
         st.ads.push(result.newGeneralAd);
         added_ad_ids.push(result.newGeneralAd.id);
       } else {
