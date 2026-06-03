@@ -1,6 +1,46 @@
 import { addDays, daysInMonth, diffDays, nextDay, todayTaipei } from "../lib/dates.js";
 import { evaluatePoorPerf } from "./alerts.js";
 
+function fmtYmd(year, month, day) {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function addMonthsClamped(ymd, months) {
+  const [year, month, day] = String(ymd || "").split("-").map(Number);
+  if (!year || !month || !day || !Number.isFinite(months)) return ymd;
+  const targetZeroMonth = year * 12 + (month - 1) + months;
+  const targetYear = Math.floor(targetZeroMonth / 12);
+  const targetMonth = (targetZeroMonth % 12) + 1;
+  const ym = `${targetYear}-${String(targetMonth).padStart(2, "0")}`;
+  return fmtYmd(targetYear, targetMonth, Math.min(day, daysInMonth(ym)));
+}
+
+function inferRenewalMonths(ad) {
+  const duration = Math.max(0, Number(ad?.amortize_days) || diffDays(ad?.start_date || "", ad?.end_date || "") || 0);
+  if (!ad?.start_date || !ad?.end_date || duration <= 0) return null;
+
+  for (let months = 1; months <= 24; months += 1) {
+    if (addMonthsClamped(ad.start_date, months) === ad.end_date) return months;
+  }
+
+  let best = null;
+  for (let months = 1; months <= 24; months += 1) {
+    const end = addMonthsClamped(ad.end_date, months);
+    const days = diffDays(ad.end_date, end);
+    const error = Math.abs(days - duration);
+    if (!best || error < best.error) best = { months, error };
+  }
+
+  return best && best.error <= Math.max(2, best.months) ? best.months : null;
+}
+
+function renewalEndDate(ad, start) {
+  const months = inferRenewalMonths(ad);
+  if (months) return addMonthsClamped(start, months);
+  const span = Math.max(1, Number(ad.amortize_days) || diffDays(ad.start_date, ad.end_date) || 30);
+  return addDays(start, span);
+}
+
 function terminalSegments(ads) {
   const referenced = new Set(ads.map((a) => a.renewal_of).filter(Boolean));
   const latestByCode = new Map();
@@ -18,11 +58,15 @@ function terminalSegments(ads) {
 }
 
 function cloneRenewal(ad, start, end, index) {
+  const amortizeDays = Math.max(1, diffDays(start, end));
+  const amountTwd = Number(ad.amount_twd) || 0;
   return {
     ...ad,
     id: `${ad.id}__projected_renewal_${index}`,
     start_date: start,
     end_date: end,
+    amortize_days: amortizeDays,
+    daily_amort_twd: amountTwd > 0 ? amountTwd / amortizeDays : ad.daily_amort_twd,
     renewal_of: ad.id,
     renewal_reason: "續費",
     notes: [ad.notes, "系統預估續費段，不寫入資料"].filter(Boolean).join(" / "),
@@ -68,11 +112,10 @@ export function projectAdsWithRenewals(state, ym, options = {}) {
       continue;
     }
 
-    const span = Math.max(1, Number(ad.amortize_days) || diffDays(ad.start_date, ad.end_date) || 30);
     let start = ad.end_date;
     let index = 1;
     while (start < monthEndExclusive) {
-      const end = addDays(start, span);
+      const end = renewalEndDate(ad, start);
       if (end > projectionWindowStart && start < monthEndExclusive) {
         projected.push(cloneRenewal(ad, start, end, index));
       }
