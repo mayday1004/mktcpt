@@ -3,6 +3,7 @@ import { nowTaipeiTime } from "./lib/dates.js";
 import { runColdStartGate } from "./lib/version-gate.js";
 import { isDeployManaged } from "./lib/deploy-config.js";
 import { applyDoneEliminateTodos, normalizeTodosInState } from "./domain/todo-utils.js";
+import { normalizeWeightsToTotal } from "./domain/auto-split.js";
 
 const KEY = "buyads_state_v1";
 const UNDO_KEY = "buyads_undo_v1";
@@ -36,6 +37,62 @@ function loadUndo() {
     return Array.isArray(arr) ? arr.slice(-MAX_UNDO) : [];
   } catch {
     return [];
+  }
+}
+
+function weightSum(weights) {
+  return Object.values(weights || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+}
+
+function purchaseModeFor(weights) {
+  const keys = Object.keys(weights || {}).filter((key) => Number(weights[key]) > 0);
+  return keys.length === 1 && Number(weights[keys[0]]) === 100 ? "independent" : "shared";
+}
+
+function segmentsOverlap(a, b) {
+  return !!(a?.start_date && a?.end_date && b?.start_date && b?.end_date &&
+    a.start_date < b.end_date && b.start_date < a.end_date);
+}
+
+function normalizeLegacySplitPairWeights(st) {
+  if (!Array.isArray(st?.ads)) return;
+  const byPair = new Map();
+  for (const ad of st.ads) {
+    if (!ad?.split_pair_id) continue;
+    if (!byPair.has(ad.split_pair_id)) byPair.set(ad.split_pair_id, []);
+    byPair.get(ad.split_pair_id).push(ad);
+  }
+
+  for (const pairAds of byPair.values()) {
+    if (pairAds.length < 2) continue;
+    for (const ad of pairAds) {
+      const sum = weightSum(ad.weights);
+      if (sum <= 0 || sum >= 99.5) continue;
+
+      const linkedByCode = new Map();
+      for (const other of pairAds) {
+        if (other === ad || !segmentsOverlap(ad, other)) continue;
+        const key = other.ad_code || other.id;
+        const current = linkedByCode.get(key);
+        if (!current || String(other.start_date || "") > String(current.start_date || "")) {
+          linkedByCode.set(key, other);
+        }
+      }
+      const linked = [...linkedByCode.values()];
+      if (linked.length === 0) continue;
+
+      const ownAmount = Number(ad.amount_cny) || 0;
+      const totalAmount = ownAmount + linked.reduce((acc, other) => acc + (Number(other.amount_cny) || 0), 0);
+      if (totalAmount <= 0 || ownAmount <= 0) continue;
+
+      const amountSharePct = ownAmount / totalAmount * 100;
+      if (Math.abs(sum - amountSharePct) > 1.5) continue;
+
+      const normalized = normalizeWeightsToTotal(ad.weights, 100);
+      if (Object.keys(normalized).length === 0) continue;
+      ad.weights = normalized;
+      ad.purchase_mode = purchaseModeFor(normalized);
+    }
   }
 }
 
@@ -130,6 +187,7 @@ function migrate(st) {
       for (const a of pAds) { a.split_pair_id = pairId; a.split_role = "parent"; }
       for (const a of tAds) { a.split_pair_id = pairId; a.split_role = "t_variant"; }
     }
+    normalizeLegacySplitPairWeights(st);
   }
   normalizeTodosInState(st);
   applyDoneEliminateTodos(st);

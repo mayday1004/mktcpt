@@ -7,7 +7,8 @@ import { renderGiftDayInfo } from "./dashboard.js";
 import { todayTaipei, nowTaipeiStamp, addDays } from "../lib/dates.js";
 import { buildWeightAdjust, buildWeightAdjustWithAutoSplit } from "../domain/lifecycle.js";
 import { rebalanceSplitPair } from "../domain/split-pair.js";
-import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes } from "../domain/auto-split.js";
+import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes, normalizeWeightsToTotal } from "../domain/auto-split.js";
+import { displayWeightsForAd } from "../domain/spending.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 
@@ -1978,6 +1979,9 @@ function openEditor(id, renewFrom = null, prefill = null) {
   const existingGroups = [...new Set(s.ads.map((x) => x.group).filter((g) => g && g.trim()))].sort();
   // 若 a.group 不在既有清單裡（新建中且使用者尚未選），允許落到「新增」模式
   const groupInList = a.group && existingGroups.includes(a.group);
+  const readonlyWeights = id && a?.split_pair_id
+    ? displayWeightsForAd(a, s.ads)
+    : (a.weights || {});
 
   const html = `
     <h2>${id ? "編輯廣告" : renewFrom ? "續費廣告" : "新增廣告"}</h2>
@@ -2040,7 +2044,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
       ⚠️ 編輯模式不能改權重 — 為了保留 traceability，所有 weights 變動一律走「<strong>權重調整</strong>」按鈕（自動建 todo + 撤回 + 切段紀錄）。
     </div>
     <div class="weights-readonly" style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 10px;background:#f7f7f7;border:1px solid #e1e1e1;border-radius:6px">
-      ${Object.entries(a.weights || {}).filter(([,w]) => Number(w) > 0).map(([pid, w]) => {
+      ${Object.entries(readonlyWeights || {}).filter(([,w]) => Number(w) > 0).map(([pid, w]) => {
         const p = s.products.find((x) => x.id === pid);
         return `<span style="padding:3px 8px;background:#fff;border:1px solid #ddd;border-radius:4px;font-size:12px"><strong>${esc(p?.name || pid)}</strong> ${Number(w)}%</span>`;
       }).join("") || `<span class="ink-3" style="font-size:12px">（未分配權重）</span>`}
@@ -2481,12 +2485,12 @@ function openEditor(id, renewFrom = null, prefill = null) {
       const finalPatch = splitWeights ? {
         ...patch,
         ad_code: splitCodes.parentCode,
-        weights: splitWeights.normal,
+        weights: splitWeights.normalInternal,
         amount_cny: normalCny,
         amount_orig: currency === "USDT" ? round2(amount_orig * generalRatio) : normalCny,
         amount_twd: normalTwd,
         daily_amort_twd: normalTwd / days,
-        purchase_mode: (Object.keys(splitWeights.normal).length === 1 && Object.values(splitWeights.normal)[0] === 100) ? "independent" : "shared",
+        purchase_mode: (Object.keys(splitWeights.normalInternal).length === 1 && Object.values(splitWeights.normalInternal)[0] === 100) ? "independent" : "shared",
         code_at_creation: splitCodes.parentCode,
       } : { ...patch, code_at_creation: code };
       if (id) {
@@ -2507,8 +2511,8 @@ function openEditor(id, renewFrom = null, prefill = null) {
       // 拆 t 時同時建破圈側 t-variant ad
       if (splitWeights) {
         const tvAdId = uid("ad");
-        const tvKeys = Object.keys(splitWeights.poquan);
-        const tvPurchaseMode = (tvKeys.length === 1 && splitWeights.poquan[tvKeys[0]] === 100) ? "independent" : "shared";
+        const tvKeys = Object.keys(splitWeights.poquanInternal);
+        const tvPurchaseMode = (tvKeys.length === 1 && splitWeights.poquanInternal[tvKeys[0]] === 100) ? "independent" : "shared";
         st.ads.push({
           id: tvAdId,
           ad_code: splitCodes.tVariantCode,
@@ -2524,7 +2528,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
           end_date: end,
           amortize_days: days,
           daily_amort_twd: poquanTwd / days,
-          weights: { ...splitWeights.poquan },
+          weights: { ...splitWeights.poquanInternal },
           purchase_mode: tvPurchaseMode,
           ad_copy: adCopy,
           contact_tg: contactTg,
@@ -3000,34 +3004,19 @@ function openFamilyWeightAdjust(pairId) {
     const normalSum = Object.values(normalW).reduce((s, v) => s + v, 0);
     const poquanSum = Object.values(poquanW).reduce((s, v) => s + v, 0);
 
-    // 邊角:一側 = 0%(全在另一側)→ 這超出本 modal 設計範圍,提示使用者用 per-ad
-    if (normalSum === 0 || poquanSum === 0) {
-      toast("整體權重全在一側時,請從 per-ad 編輯該支廣告(本 modal 用於 split pair 兩側都有權重的情境)", "bad");
-      return;
-    }
-
-    // 重算雙方 amount + 內部 weights(canonical form,各側內部歸一到 100)
+    // 重算雙方 amount + 內部 weights(canonical form,各側內部歸一到 100)。
+    // 任一側為 0 時代表該側從生效日起結束,不是錯誤。
     const newParentAmount = Math.round(totalAmt * normalSum / 100 * 100) / 100;
     const newTvAmount = Math.round(totalAmt * poquanSum / 100 * 100) / 100;
-    const normalize = (w, totalPct) => {
-      const out = {};
-      for (const [pid, v] of Object.entries(w)) out[pid] = Math.round(v / totalPct * 100);
-      // largest-remainder fix 加總 = 100
-      const sumOut = Object.values(out).reduce((s, v) => s + v, 0);
-      if (sumOut !== 100 && Object.keys(out).length > 0) {
-        const fixPid = Object.entries(w).sort((a, b) => Number(b[1]) - Number(a[1]))[0][0];
-        out[fixPid] += (100 - sumOut);
-      }
-      return out;
-    };
-    const newParentInternal = normalize(normalW, normalSum);
-    const newTvInternal = normalize(poquanW, poquanSum);
+    const newParentInternal = normalSum > 0 ? normalizeWeightsToTotal(normalW, 100) : {};
+    const newTvInternal = poquanSum > 0 ? normalizeWeightsToTotal(poquanW, 100) : {};
+    const remainsPair = normalSum > 0 && poquanSum > 0;
 
-    if (eff <= parentSeg.start_date || eff >= parentSeg.end_date) {
+    if (eff < parentSeg.start_date || eff >= parentSeg.end_date) {
       toast(`生效日 ${eff} 必須落在 parent 段區間 (${parentSeg.start_date} ~ ${parentSeg.end_date}) 之間`, "bad");
       return;
     }
-    if (eff <= tVariantSeg.start_date || eff >= tVariantSeg.end_date) {
+    if (eff < tVariantSeg.start_date || eff >= tVariantSeg.end_date) {
       toast(`生效日 ${eff} 必須落在 t-variant 段區間 (${tVariantSeg.start_date} ~ ${tVariantSeg.end_date}) 之間`, "bad");
       return;
     }
@@ -3036,103 +3025,156 @@ function openFamilyWeightAdjust(pairId) {
       const ad_snapshots = captureUndoSnapshot(st, [parentSeg.id, tVariantSeg.id]);
       const added_ad_ids = [];
       const rate = Number(parentSeg.exchange_rate) || Number(tVariantSeg.exchange_rate) || 1;
+      const appendNote = (current, note) => {
+        const cur = String(current || "").trim();
+        return cur ? `${cur}\n${note}` : note;
+      };
+      const retireSeg = (live, note) => {
+        if (!live) return;
+        if (eff === live.start_date) {
+          st.ads = st.ads.filter((a) => a.id !== live.id);
+        } else {
+          live.end_date = eff;
+          live.notes = appendNote(live.notes, note);
+        }
+      };
 
       // parent 開新段
       const pIdx = st.ads.findIndex((a) => a.id === parentSeg.id);
       if (pIdx >= 0) {
         const liveParent = st.ads[pIdx];
-        liveParent.end_date = eff;  // trim
-        const pNew = {
-          id: uid("ad"),
-          ad_code: liveParent.ad_code,
-          ad_name: liveParent.ad_name,
-          group: liveParent.group || "",
-          currency: liveParent.currency || "CNY",
-          amount_orig: liveParent.amount_orig != null
+        const parentPurchaseMode = (Object.keys(newParentInternal).length === 1 && Object.values(newParentInternal)[0] === 100)
+          ? "independent" : "shared";
+        const parentNote = notes ? `${notes}(家族整體視角調整)` : "家族整體視角權重調整";
+        if (normalSum <= 0) {
+          retireSeg(liveParent, notes ? `${notes}(一般側歸 0,自動結束)` : "一般側歸 0,自動結束");
+        } else if (eff === liveParent.start_date) {
+          liveParent.amount_orig = liveParent.amount_orig != null && parentAmt > 0
             ? Math.round((liveParent.amount_orig / parentAmt) * newParentAmount * 100) / 100
-            : newParentAmount,
-          currency_rate: liveParent.currency_rate || 1,
-          amount_cny: newParentAmount,
-          exchange_rate: liveParent.exchange_rate,
-          amount_twd: newParentAmount * rate,
-          start_date: eff,
-          end_date: parentSeg.end_date,
-          amortize_days: liveParent.amortize_days,
-          daily_amort_twd: (Number(liveParent.amortize_days) > 0)
-            ? (newParentAmount * rate / liveParent.amortize_days) : 0,
-          purchase_mode: (Object.keys(newParentInternal).length === 1 && Object.values(newParentInternal)[0] === 100)
-            ? "independent" : "shared",
-          weights: newParentInternal,
-          lock_perf_adjust: !!liveParent.lock_perf_adjust,
-          lock_full: !!liveParent.lock_full,
-          ad_copy: liveParent.ad_copy || "",
-          contact_tg: liveParent.contact_tg || "",
-          contact_info: liveParent.contact_info || "",
-          short_url_type: liveParent.short_url_type || "",
-          short_url_param: liveParent.short_url_param || "",
-          short_url_old_override: liveParent.short_url_old_override || "",
-          short_url_new_override: liveParent.short_url_new_override || "",
-          short_url_old_prefix: liveParent.short_url_old_prefix || "",
-          short_url_notified: !!liveParent.short_url_notified,
-          eliminated: !!liveParent.eliminated,
-          split_pair_id: pairId,
-          split_role: "parent",
-          code_at_creation: liveParent.ad_code,
-          renewal_of: liveParent.id,
-          renewal_reason: "權重調整",
-          notes: notes ? `${notes}(家族整體視角調整)` : "家族整體視角權重調整",
-        };
-        st.ads.push(pNew);
-        added_ad_ids.push(pNew.id);
+            : newParentAmount;
+          liveParent.amount_cny = newParentAmount;
+          liveParent.amount_twd = newParentAmount * rate;
+          liveParent.daily_amort_twd = (Number(liveParent.amortize_days) > 0)
+            ? (newParentAmount * rate / liveParent.amortize_days) : 0;
+          liveParent.purchase_mode = parentPurchaseMode;
+          liveParent.weights = newParentInternal;
+          if (!remainsPair) {
+            delete liveParent.split_pair_id;
+            delete liveParent.split_role;
+          }
+          liveParent.notes = appendNote(liveParent.notes, parentNote);
+        } else {
+          liveParent.end_date = eff;  // trim
+          const pNew = {
+            id: uid("ad"),
+            ad_code: liveParent.ad_code,
+            ad_name: liveParent.ad_name,
+            group: liveParent.group || "",
+            currency: liveParent.currency || "CNY",
+            amount_orig: liveParent.amount_orig != null && parentAmt > 0
+              ? Math.round((liveParent.amount_orig / parentAmt) * newParentAmount * 100) / 100
+              : newParentAmount,
+            currency_rate: liveParent.currency_rate || 1,
+            amount_cny: newParentAmount,
+            exchange_rate: liveParent.exchange_rate,
+            amount_twd: newParentAmount * rate,
+            start_date: eff,
+            end_date: parentSeg.end_date,
+            amortize_days: liveParent.amortize_days,
+            daily_amort_twd: (Number(liveParent.amortize_days) > 0)
+              ? (newParentAmount * rate / liveParent.amortize_days) : 0,
+            purchase_mode: parentPurchaseMode,
+            weights: newParentInternal,
+            lock_perf_adjust: !!liveParent.lock_perf_adjust,
+            lock_full: !!liveParent.lock_full,
+            ad_copy: liveParent.ad_copy || "",
+            contact_tg: liveParent.contact_tg || "",
+            contact_info: liveParent.contact_info || "",
+            short_url_type: liveParent.short_url_type || "",
+            short_url_param: liveParent.short_url_param || "",
+            short_url_old_override: liveParent.short_url_old_override || "",
+            short_url_new_override: liveParent.short_url_new_override || "",
+            short_url_old_prefix: liveParent.short_url_old_prefix || "",
+            short_url_notified: !!liveParent.short_url_notified,
+            eliminated: !!liveParent.eliminated,
+            ...(remainsPair ? { split_pair_id: pairId, split_role: "parent" } : {}),
+            code_at_creation: liveParent.ad_code,
+            renewal_of: liveParent.id,
+            renewal_reason: "權重調整",
+            notes: notes ? `${notes}(家族整體視角調整)` : "家族整體視角權重調整",
+          };
+          st.ads.push(pNew);
+          added_ad_ids.push(pNew.id);
+        }
       }
 
       // t-variant 開新段
       const tIdx = st.ads.findIndex((a) => a.id === tVariantSeg.id);
       if (tIdx >= 0) {
         const liveTv = st.ads[tIdx];
-        liveTv.end_date = eff;
-        const tNew = {
-          id: uid("ad"),
-          ad_code: liveTv.ad_code,
-          ad_name: liveTv.ad_name,
-          group: liveTv.group || "",
-          currency: liveTv.currency || "CNY",
-          amount_orig: liveTv.amount_orig != null
+        const tvPurchaseMode = (Object.keys(newTvInternal).length === 1 && Object.values(newTvInternal)[0] === 100)
+          ? "independent" : "shared";
+        const tvNote = notes ? `${notes}(家族整體視角調整)` : "家族整體視角權重調整";
+        if (poquanSum <= 0) {
+          retireSeg(liveTv, notes ? `${notes}(破圈側歸 0,自動結束)` : "破圈側歸 0,自動結束");
+        } else if (eff === liveTv.start_date) {
+          liveTv.amount_orig = liveTv.amount_orig != null && tvAmt > 0
             ? Math.round((liveTv.amount_orig / tvAmt) * newTvAmount * 100) / 100
-            : newTvAmount,
-          currency_rate: liveTv.currency_rate || 1,
-          amount_cny: newTvAmount,
-          exchange_rate: liveTv.exchange_rate,
-          amount_twd: newTvAmount * rate,
-          start_date: eff,
-          end_date: tVariantSeg.end_date,
-          amortize_days: liveTv.amortize_days,
-          daily_amort_twd: (Number(liveTv.amortize_days) > 0)
-            ? (newTvAmount * rate / liveTv.amortize_days) : 0,
-          purchase_mode: (Object.keys(newTvInternal).length === 1 && Object.values(newTvInternal)[0] === 100)
-            ? "independent" : "shared",
-          weights: newTvInternal,
-          lock_perf_adjust: !!liveTv.lock_perf_adjust,
-          lock_full: !!liveTv.lock_full,
-          ad_copy: liveTv.ad_copy || "",
-          contact_tg: liveTv.contact_tg || "",
-          contact_info: liveTv.contact_info || "",
-          short_url_type: liveTv.short_url_type || "",
-          short_url_param: liveTv.short_url_param || "",
-          short_url_old_override: liveTv.short_url_old_override || "",
-          short_url_new_override: liveTv.short_url_new_override || "",
-          short_url_old_prefix: liveTv.short_url_old_prefix || "",
-          short_url_notified: !!liveTv.short_url_notified,
-          eliminated: !!liveTv.eliminated,
-          split_pair_id: pairId,
-          split_role: "t_variant",
-          code_at_creation: liveTv.ad_code,
-          renewal_of: liveTv.id,
-          renewal_reason: "權重調整",
-          notes: notes ? `${notes}(家族整體視角調整)` : "家族整體視角權重調整",
-        };
-        st.ads.push(tNew);
-        added_ad_ids.push(tNew.id);
+            : newTvAmount;
+          liveTv.amount_cny = newTvAmount;
+          liveTv.amount_twd = newTvAmount * rate;
+          liveTv.daily_amort_twd = (Number(liveTv.amortize_days) > 0)
+            ? (newTvAmount * rate / liveTv.amortize_days) : 0;
+          liveTv.purchase_mode = tvPurchaseMode;
+          liveTv.weights = newTvInternal;
+          if (!remainsPair) {
+            delete liveTv.split_pair_id;
+            delete liveTv.split_role;
+          }
+          liveTv.notes = appendNote(liveTv.notes, tvNote);
+        } else {
+          liveTv.end_date = eff;
+          const tNew = {
+            id: uid("ad"),
+            ad_code: liveTv.ad_code,
+            ad_name: liveTv.ad_name,
+            group: liveTv.group || "",
+            currency: liveTv.currency || "CNY",
+            amount_orig: liveTv.amount_orig != null && tvAmt > 0
+              ? Math.round((liveTv.amount_orig / tvAmt) * newTvAmount * 100) / 100
+              : newTvAmount,
+            currency_rate: liveTv.currency_rate || 1,
+            amount_cny: newTvAmount,
+            exchange_rate: liveTv.exchange_rate,
+            amount_twd: newTvAmount * rate,
+            start_date: eff,
+            end_date: tVariantSeg.end_date,
+            amortize_days: liveTv.amortize_days,
+            daily_amort_twd: (Number(liveTv.amortize_days) > 0)
+              ? (newTvAmount * rate / liveTv.amortize_days) : 0,
+            purchase_mode: tvPurchaseMode,
+            weights: newTvInternal,
+            lock_perf_adjust: !!liveTv.lock_perf_adjust,
+            lock_full: !!liveTv.lock_full,
+            ad_copy: liveTv.ad_copy || "",
+            contact_tg: liveTv.contact_tg || "",
+            contact_info: liveTv.contact_info || "",
+            short_url_type: liveTv.short_url_type || "",
+            short_url_param: liveTv.short_url_param || "",
+            short_url_old_override: liveTv.short_url_old_override || "",
+            short_url_new_override: liveTv.short_url_new_override || "",
+            short_url_old_prefix: liveTv.short_url_old_prefix || "",
+            short_url_notified: !!liveTv.short_url_notified,
+            eliminated: !!liveTv.eliminated,
+            ...(remainsPair ? { split_pair_id: pairId, split_role: "t_variant" } : {}),
+            code_at_creation: liveTv.ad_code,
+            renewal_of: liveTv.id,
+            renewal_reason: "權重調整",
+            notes: notes ? `${notes}(家族整體視角調整)` : "家族整體視角權重調整",
+          };
+          st.ads.push(tNew);
+          added_ad_ids.push(tNew.id);
+        }
       }
 
       const nameOf = (pid) => st.products.find((p) => p.id === pid)?.name || pid;

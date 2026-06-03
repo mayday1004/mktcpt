@@ -145,7 +145,7 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
   if (effectiveDate === source.start_date) {
     throw new Error(`生效日 ${effectiveDate} 等於段起始日,無法在當天觸發自動拆 t(會產生空段);請改用「編輯」修正權重,或把生效日往後挪一天`);
   }
-  const { normal, poquan, normalSum, poquanSum } = splitWeightsByFamily(newWeights, products);
+  const { normal, poquan, normalSum, poquanSum, normalInternal, poquanInternal } = splitWeightsByFamily(newWeights, products);
   if (normalSum <= 0 || poquanSum <= 0) {
     // 理論上 detectFamilyCollision === true 必然兩側都有,這是保險
     const out = buildWeightAdjust(source, effectiveDate, newWeights, notes);
@@ -173,7 +173,7 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
     amount_cny: round2((Number(source.amount_cny) || 0) * poquanRatio),
     amount_twd: (Number(source.amount_twd) || 0) * poquanRatio,
     daily_amort_twd: baseDaily * poquanRatio,
-    weights: { ...poquan },
+    weights: { ...poquanInternal },
     renewal_reason: "拆t改名",
     notes: notes && String(notes).trim()
       ? `${String(notes).trim()}(同家族碰撞,自動拆 t)`
@@ -199,8 +199,8 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
     end_date: source.end_date,
     amortize_days: source.amortize_days,
     daily_amort_twd: baseDaily * generalRatio,
-    purchase_mode: pickPurchaseMode(normal),
-    weights: { ...normal },
+    purchase_mode: pickPurchaseMode(normalInternal),
+    weights: { ...normalInternal },
     lock_perf_adjust: false,
     lock_full: false,
     ad_copy: source.ad_copy || "",

@@ -51,9 +51,40 @@ export function detectFamilyCollision(weights, products) {
     : { collision: false };
 }
 
+export function normalizeWeightsToTotal(weights, target = 100) {
+  const entries = Object.entries(weights || {})
+    .map(([pid, w], index) => ({ pid, value: Number(w) || 0, index }))
+    .filter((e) => e.value > 0);
+  if (entries.length === 0 || target <= 0) return {};
+
+  const total = entries.reduce((sum, e) => sum + e.value, 0);
+  if (total <= 0) return {};
+
+  const scaled = entries.map((e) => {
+    const raw = e.value / total * target;
+    return { ...e, raw, floor: Math.floor(raw), rem: raw - Math.floor(raw) };
+  });
+  let assigned = scaled.reduce((sum, e) => sum + e.floor, 0);
+  let diff = target - assigned;
+  const order = scaled
+    .slice()
+    .sort((a, b) => b.rem - a.rem || b.value - a.value || a.index - b.index);
+  for (const e of order) {
+    if (diff <= 0) break;
+    e.floor += 1;
+    diff -= 1;
+  }
+
+  const out = {};
+  for (const e of scaled) {
+    if (e.floor > 0) out[e.pid] = e.floor;
+  }
+  return out;
+}
+
 // 根據 weights 拆成「一般側」與「破圈側」兩塊。
-// 拆完後 weights 維持「原輸入值」(不歸一到 100),跨兩側加總 = 原 weights 加總(通常 100)。
-// 用於拆 pair 時把整支廣告的 weights 分流到 parent + t-variant 兩支廣告。
+// normal / poquan 保留使用者輸入的整體合約 %,用於金額切分與 todo 顯示。
+// normalInternal / poquanInternal 則各自 normalize 到 100%,用於 split pair 內部儲存。
 export function splitWeightsByFamily(weights, products) {
   const normal = {};
   const poquan = {};
@@ -65,7 +96,9 @@ export function splitWeightsByFamily(weights, products) {
   }
   const normalSum = Object.values(normal).reduce((s, v) => s + v, 0);
   const poquanSum = Object.values(poquan).reduce((s, v) => s + v, 0);
-  return { normal, poquan, normalSum, poquanSum };
+  const normalInternal = normalizeWeightsToTotal(normal, 100);
+  const poquanInternal = normalizeWeightsToTotal(poquan, 100);
+  return { normal, poquan, normalSum, poquanSum, normalInternal, poquanInternal };
 }
 
 // 給定 base 代碼,推出 parent 代碼 與 t-variant 代碼:
