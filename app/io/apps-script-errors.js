@@ -6,7 +6,7 @@ export function formatAppsScriptNonJsonError(text, status) {
 
   if (looksHtml) {
     if (status === 404) {
-      return "Apps Script Web App URL 回了 HTTP 404。這通常是貼到舊部署網址、不是 /exec 網址，或 Web App 部署已被刪除。請到「部署 > 管理部署」複製目前的 Web App URL。";
+      return "Apps Script/Google 回了 HTTP 404 HTML，不是同步資料 JSON。若 URL 沒改，通常是 Google/Apps Script 暫時異常或部署服務短暫失效；也可能是 /exec 部署 URL 已失效。自動同步會先暫停，稍後可用「測試連線」或「立即同步」恢復。";
     }
     if (status === 401 || status === 403) {
       return "Apps Script Web App 權限被拒。請確認部署權限是「任何人」、執行身分是「我」，並完成授權。";
