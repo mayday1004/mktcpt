@@ -43,18 +43,12 @@ function renewalEndDate(ad, start) {
 
 function terminalSegments(ads) {
   const referenced = new Set(ads.map((a) => a.renewal_of).filter(Boolean));
-  const latestByCode = new Map();
-
-  for (const ad of ads) {
-    if (!ad?.ad_code || !ad.start_date || !ad.end_date) continue;
-    if (referenced.has(ad.id)) continue;
-    const cur = latestByCode.get(ad.ad_code);
-    if (!cur || ad.end_date > cur.end_date || (ad.end_date === cur.end_date && ad.start_date > cur.start_date)) {
-      latestByCode.set(ad.ad_code, ad);
-    }
-  }
-
-  return [...latestByCode.values()];
+  return ads.filter((ad) =>
+    ad?.ad_code &&
+    ad.start_date &&
+    ad.end_date &&
+    !referenced.has(ad.id)
+  );
 }
 
 function cloneRenewal(ad, start, end, index) {
