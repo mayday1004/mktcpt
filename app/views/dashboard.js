@@ -1,7 +1,7 @@
 import { getState } from "../state.js";
 import { bandFor, bandsForMonth, checkMonthlyTotal } from "../domain/budget.js";
 import { monthlyTotals, dailySpendGrid, adContributionPerMonth, dailySpendForAd, displayWeightsForAd } from "../domain/spending.js";
-import { daysOfMonth, daysInMonth, isInRange, todayTaipei } from "../lib/dates.js";
+import { addDays, daysOfMonth, daysInMonth, isInRange, todayTaipei } from "../lib/dates.js";
 import { getMonthlyBudget, getDailyBudget, getBudgetSource, isNoBand, isNoBandPid, getReportVars, getTargetDailyBudget } from "../schema.js";
 import { scoreRecord } from "../domain/perf-adjust.js";
 import { expiringAds } from "../domain/alerts.js";
@@ -45,6 +45,7 @@ function buildKpiGroups(state) {
 let viewYm = null;
 let detailPid = null;
 let detailDate = null;
+let detailSpendMode = "renewal";
 // 「產品 × 廣告分組」卡片視圖：'monthly'（月度摘要）/ 'daily'（每日摘要）
 let groupView = "daily";
 let dailyProjectionMode = "renewal";
@@ -151,6 +152,9 @@ function bindDetailHandlers(root) {
   });
   root.querySelectorAll("[data-quick-pid]").forEach((el) => {
     el.onclick = () => { detailPid = el.dataset.quickPid; render(root); };
+  });
+  root.querySelectorAll("[data-detail-mode]").forEach((el) => {
+    el.onclick = () => { detailSpendMode = el.dataset.detailMode; render(root); };
   });
 
   // KPI 卡片點擊 → 切詳細檢視到該組第一個 pid，並捲到詳細面板
@@ -627,19 +631,128 @@ function renderKpiGroups(state, ym, totals) {
 
 
 
+function contributionForProduct(ad, pid, date, ads) {
+  if (!ad || !date) return 0;
+  return dailySpendForAd(ad, date, ads)[pid] || 0;
+}
+
+function weightForProduct(ad, pid, date, ads) {
+  if (!ad) return 0;
+  const displayWeights = date ? displayWeightsForAd(ad, ads, date) : (ad.weights || {});
+  return Number(displayWeights?.[pid] ?? ad.weights?.[pid]) || 0;
+}
+
+function fmtSmallNumber(n) {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  return Number.isInteger(v) ? String(v) : String(v);
+}
+
+function fmtDailyShift(before, after) {
+  const b = Math.round(Number(before) || 0);
+  const a = Math.round(Number(after) || 0);
+  if (b <= 0 && a > 0) return `+${a.toLocaleString()}`;
+  if (b > 0 && a <= 0) return `${b.toLocaleString()}→0`;
+  if (b === a) return a.toLocaleString();
+  return `${b.toLocaleString()}→${a.toLocaleString()}`;
+}
+
+function changeLabelForAd(ad, hasSource) {
+  if (ad?.projected_renewal) return "預估續費";
+  const reason = ad?.renewal_reason || "";
+  if (!hasSource && reason === "初始") return "新上架";
+  return reason || "變動";
+}
+
+function buildChangeParts({ source, ad, oldAmount, newAmount, oldWeight, newWeight, ending = false }) {
+  const parts = [];
+  if (ending) {
+    parts.push("合約結束");
+  } else {
+    const label = changeLabelForAd(ad, !!source);
+    parts.push(label);
+    if (source && Number(source.amortize_days) !== Number(ad.amortize_days)) {
+      parts.push(`合約天數 ${Number(source.amortize_days) || 0}→${Number(ad.amortize_days) || 0}`);
+    }
+    if (source && Math.round(oldWeight * 100) !== Math.round(newWeight * 100)) {
+      parts.push(`權重 ${fmtSmallNumber(oldWeight)}%→${fmtSmallNumber(newWeight)}%`);
+    }
+  }
+  parts.push(`每日 ${fmtDailyShift(oldAmount, newAmount)}`);
+  return parts;
+}
+
+function buildDayProductChanges(ads, pid, date) {
+  const byId = new Map((ads || []).map((a) => [a.id, a]));
+  const prevDate = addDays(date, -1);
+  const changes = [];
+
+  for (const ad of ads || []) {
+    if (ad.start_date !== date) continue;
+    const source = ad.renewal_of ? byId.get(ad.renewal_of) : null;
+    const oldAmount = source ? contributionForProduct(source, pid, prevDate, ads) : 0;
+    const newAmount = contributionForProduct(ad, pid, date, ads);
+    const oldWeight = source ? weightForProduct(source, pid, prevDate, ads) : 0;
+    const newWeight = weightForProduct(ad, pid, date, ads);
+    if (oldAmount <= 0 && newAmount <= 0 && Math.round(oldWeight * 100) === Math.round(newWeight * 100)) continue;
+    changes.push({
+      ad,
+      source,
+      amount: Math.max(oldAmount, newAmount),
+      label: changeLabelForAd(ad, !!source),
+      parts: buildChangeParts({ source, ad, oldAmount, newAmount, oldWeight, newWeight }),
+    });
+  }
+
+  for (const ad of ads || []) {
+    if (ad.end_date !== date) continue;
+    const replacement = (ads || []).find((next) =>
+      next.start_date === date &&
+      (next.renewal_of === ad.id || (next.ad_code && next.ad_code === ad.ad_code && next.id !== ad.id))
+    );
+    if (replacement) continue;
+    const oldAmount = contributionForProduct(ad, pid, prevDate, ads);
+    if (oldAmount <= 0) continue;
+    changes.push({
+      ad,
+      source: ad,
+      amount: oldAmount,
+      label: "合約結束",
+      parts: buildChangeParts({
+        source: ad,
+        ad,
+        oldAmount,
+        newAmount: 0,
+        oldWeight: weightForProduct(ad, pid, prevDate, ads),
+        newWeight: 0,
+        ending: true,
+      }),
+    });
+  }
+
+  return changes.sort((a, b) =>
+    b.amount - a.amount ||
+    String(a.ad.ad_code || "").localeCompare(String(b.ad.ad_code || ""))
+  );
+}
+
 function renderDetailPanel(s, ym, pid, date) {
   const product = s.products.find((p) => p.id === pid);
   if (!product) return "";
 
+  const detailProjection = detailSpendMode === "renewal"
+    ? projectAdsWithRenewals(s, ym, { fromDate: todayStr(), toMonth: nextMonthYm(ym), excludePoorPerf: false })
+    : { ads: s.ads, virtualRenewals: [], excludedPoorPerf: [] };
+  const detailAds = detailProjection.ads;
+
   // 該日該產品的攤提
-  const grid = dailySpendGrid(s.ads, ym);
+  const grid = dailySpendGrid(detailAds, ym);
   const dayProductSpent = grid[date]?.[pid] || 0;
 
   const budget = getMonthlyBudget(s, pid, ym);
   // 用 forward-only 帶寬：取該日當天的段內帶寬，而不是整月平均
   const dayBands = bandsForMonth(s, product, ym);
   const band = dayBands[date] || bandFor(product, ym, budget);
-  const monthSpent = monthlyTotals(s.ads, ym)[pid] || 0;
+  const monthSpent = monthlyTotals(detailAds, ym)[pid] || 0;
   const monthRemain = budget != null ? budget - monthSpent : null;
   const checkBand = !isNoBand(product);
   const today = todayStr();
@@ -656,15 +769,17 @@ function renderDetailPanel(s, ym, pid, date) {
 
   // 該日攤提到該產品的所有廣告
   const contributors = [];
-  for (const a of s.ads) {
+  for (const a of detailAds) {
     if (!isInRange(date, a.start_date, a.end_date)) continue;
     const w = Number(a.weights?.[pid]) || 0;
     if (w <= 0) continue;
-    const per = dailySpendForAd(a, date, s.ads)[pid] || 0;
-    const displayWeights = displayWeightsForAd(a, s.ads, date);
+    const per = dailySpendForAd(a, date, detailAds)[pid] || 0;
+    const displayWeights = displayWeightsForAd(a, detailAds, date);
     if (per > 0) contributors.push({ ad: a, weight: displayWeights[pid] ?? w, amount: per });
   }
   contributors.sort((a, b) => b.amount - a.amount);
+  const projectedContributors = contributors.filter((c) => c.ad.projected_renewal).length;
+  const dayChanges = buildDayProductChanges(detailAds, pid, date);
 
   // 快捷：跳到下一個 / 前一個有攤提的日子
   const monthDays = [...daysOfMonth(ym)];
@@ -676,7 +791,7 @@ function renderDetailPanel(s, ym, pid, date) {
     <div class="card detail-panel">
       <div class="card-head">
         <h2>詳細檢視</h2>
-        <div class="ink-3" style="font-size:12px">選產品 + 日期，看該日該產品實際攤提了什麼</div>
+        <div class="ink-3" style="font-size:12px">選產品 + 日期，看該日該產品攤提了什麼</div>
       </div>
 
       <div class="detail-controls">
@@ -695,6 +810,11 @@ function renderDetailPanel(s, ym, pid, date) {
           <button data-quick-day="${todayStr()}">今天</button>
           ${nextDay2 ? `<button data-quick-day="${nextDay2}">${nextDay2.slice(5)} →</button>` : ""}
         </div>
+      </div>
+
+      <div class="tabs detail-tabs">
+        <button class="tab ${detailSpendMode === "renewal" ? "active" : ""}" data-detail-mode="renewal">續費預估</button>
+        <button class="tab ${detailSpendMode === "actual" ? "active" : ""}" data-detail-mode="actual">實際資料</button>
       </div>
 
       <div class="detail-body">
@@ -746,23 +866,46 @@ function renderDetailPanel(s, ym, pid, date) {
             </div>
           </div>
         </div>
-        <div class="detail-contributors">
-          <h3 style="margin-bottom:8px">${date} 貢獻廣告（${contributors.length}）</h3>
-          ${contributors.length === 0 ? `<div class="ink-3">該日無廣告攤提至 ${product.name}</div>` : `
-            <table class="contrib-table">
-              <thead><tr><th>代碼</th><th>名稱</th><th class="num">權重</th><th class="num">攤提 TWD</th></tr></thead>
-              <tbody>
-                ${contributors.map((c) => `
-                  <tr>
-                    <td class="mono">${c.ad.ad_code}</td>
-                    <td>${c.ad.ad_name}</td>
-                    <td class="num">${c.weight}%</td>
-                    <td class="num"><strong>${Math.round(c.amount).toLocaleString()}</strong></td>
-                  </tr>
+        <div class="detail-stack">
+          <div class="detail-changes">
+            <h3 style="margin-bottom:8px">${date} 變動詳情（${dayChanges.length}）</h3>
+            ${dayChanges.length === 0 ? `<div class="ink-3">該日 ${product.name} 無廣告變動</div>` : `
+              <div class="change-list">
+                ${dayChanges.map((ch) => `
+                  <div class="change-item ${ch.ad.projected_renewal ? "renewal-projected-row" : ""}">
+                    <div>
+                      <span class="pill ${ch.ad.projected_renewal ? "warn" : ""}">${escape(ch.label)}</span>
+                      <strong class="mono">${escape(ch.ad.ad_code || "")}</strong>
+                      <span>${escape(ch.ad.ad_name || "")}</span>
+                    </div>
+                    <div class="ink-2">${ch.parts.map(escape).join("，")}</div>
+                  </div>
                 `).join("")}
-              </tbody>
-            </table>
-          `}
+              </div>
+            `}
+          </div>
+          <div class="detail-contributors">
+            <h3 style="margin-bottom:8px">${date} 貢獻廣告（${contributors.length}${detailSpendMode === "renewal" ? `，預估 ${projectedContributors}` : ""}）</h3>
+            ${contributors.length === 0 ? `<div class="ink-3">該日無廣告攤提至 ${product.name}</div>` : `
+              <div class="table-wrap">
+                <table class="contrib-table">
+                  <thead><tr><th>類型</th><th>代碼</th><th>名稱</th><th>期間</th><th class="num">權重</th><th class="num">攤提 TWD</th></tr></thead>
+                  <tbody>
+                    ${contributors.map((c) => `
+                      <tr class="${c.ad.projected_renewal ? "renewal-projected-row" : ""}">
+                        <td>${c.ad.projected_renewal ? `<span class="pill warn">預估續費</span>` : `<span class="pill">實際段</span>`}</td>
+                        <td class="mono">${escape(c.ad.ad_code || "")}</td>
+                        <td>${escape(c.ad.ad_name || "")}</td>
+                        <td class="mono">${escape(c.ad.start_date || "")} ~ ${escape(c.ad.end_date || "")}</td>
+                        <td class="num">${c.weight}%</td>
+                        <td class="num"><strong>${Math.round(c.amount).toLocaleString()}</strong></td>
+                      </tr>
+                    `).join("")}
+                  </tbody>
+                </table>
+              </div>
+            `}
+          </div>
         </div>
       </div>
 

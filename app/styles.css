@@ -848,6 +848,7 @@ button.kpi-card:active { transform: translateY(0); }
 }
 .quick-day { display: flex; gap: 4px; }
 .quick-day button { font-size: 12px; padding: 6px 10px; }
+.detail-tabs { margin-bottom: 12px; }
 
 .detail-body {
   display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 16px;
@@ -876,9 +877,27 @@ button.kpi-card:active { transform: translateY(0); }
 .detail-val { font-family: var(--mono); font-size: 14px; flex: 1; }
 .detail-val.mono { font-family: var(--mono); }
 
-.detail-contributors h3 { margin-top: 0; }
+.detail-stack {
+  display: flex; flex-direction: column; gap: 14px; min-width: 0;
+}
+.detail-contributors h3,
+.detail-changes h3 { margin-top: 0; }
+.change-list {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.change-item {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+}
+.change-item > div:first-child {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
 .contrib-table { width: 100%; }
 .contrib-table th, .contrib-table td { padding: 6px 8px; font-size: 13px; }
+.renewal-projected-row td,
+.change-item.renewal-projected-row { background: #fff7e6; }
 
 .quick-pid {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
