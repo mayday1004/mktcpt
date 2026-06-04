@@ -16,13 +16,13 @@
 //   有衝突待處理時自動同步暫停(避免一直跳警告)。使用者開 conflict-resolver 處理後 sync 恢復。
 
 import { getState, applySync, subscribe } from "../state.js";
-import { getEffectiveSheetsUrl, getEffectiveSheetsToken } from "../lib/deploy-config.js";
+import { getEffectiveSheetsUrl, getEffectiveSheetsToken, assertValidSheetsUrl } from "../lib/deploy-config.js";
 import { showSyncBanner, markSyncDone } from "../lib/sync-banner.js";
 import { TABLE_SYNC_SPECS } from "./sync-specs.js";
 import { addConflict, getConflictCount, subscribeConflicts } from "./conflict-store.js";
 import { logInfo, logWarn, logError } from "../lib/sync-log.js";
 import { normalizeTodoCreatedAt } from "../domain/todo-utils.js";
-import { formatAppsScriptNonJsonError } from "./apps-script-errors.js";
+import { formatAppsScriptJsonError, formatAppsScriptNonJsonError, isAppsScriptConfigErrorMessage } from "./apps-script-errors.js";
 
 // ===== 同步狀態廣播(給 sidebar status pill 用)=====
 // 統一一份輕量狀態,有變動時 emit 給所有訂閱者(sidebar / debug overlay 等)。
@@ -32,6 +32,8 @@ let _lastSuccessAt = 0;
 let _lastFailedAt = 0;
 let _lastError = "";
 let _hasPendingChanges = false;  // state 動過但還沒 sync 成功
+let _autoSyncSuspendedReason = "";
+let _autoSyncSuspendedCredentialKey = "";
 
 function _emitStatus() {
   for (const fn of _statusListeners) {
@@ -51,6 +53,7 @@ export function getSyncStatus() {
     hasPendingChanges: _hasPendingChanges,
     nextEarliestSyncAt,
     consecutiveFailures,
+    autoSyncSuspendedReason: _autoSyncSuspendedReason,
     serverVersion: loadServerVersion(),
     conflictCount: getConflictCount(),
     isConfigured: hasCredentials(),
@@ -146,6 +149,7 @@ async function call(payload) {
   const token = getEffectiveSheetsToken(s.settings);
   if (!url) throw new Error("尚未設定 Apps Script Web App URL");
   if (!token) throw new Error("尚未設定 Token");
+  assertValidSheetsUrl(url);
 
   const fd = new FormData();
   fd.append("payload", JSON.stringify({ ...payload, token }));
@@ -165,7 +169,7 @@ async function call(payload) {
   }
   if (json.error) {
     logError("network.serverError", { action: payload.action, error: json.error });
-    throw new Error(json.error);
+    throw new Error(formatAppsScriptJsonError(json.error));
   }
   return json;
 }
@@ -599,9 +603,48 @@ function hasCredentials() {
   return !!(getEffectiveSheetsUrl(s.settings) && getEffectiveSheetsToken(s.settings));
 }
 
+function currentCredentialKey() {
+  const s = getState();
+  return `${getEffectiveSheetsUrl(s.settings)}\n${getEffectiveSheetsToken(s.settings)}`;
+}
+
+export function resetSyncFailureState() {
+  const hadFailure = consecutiveFailures > 0 || !!_autoSyncSuspendedReason || !!_lastError;
+  consecutiveFailures = 0;
+  nextEarliestSyncAt = 0;
+  _autoSyncSuspendedReason = "";
+  _autoSyncSuspendedCredentialKey = "";
+  _lastError = "";
+  if (hadFailure) {
+    logInfo("sync.failureStateReset");
+    _emitStatus();
+  }
+}
+
+function clearSuspensionIfCredentialsChanged() {
+  if (!_autoSyncSuspendedReason) return;
+  if (currentCredentialKey() === _autoSyncSuspendedCredentialKey) return;
+  resetSyncFailureState();
+  logInfo("sync.credentialsChangedResuming");
+}
+
+function suspendAutoSyncForConfigError(e, reason) {
+  const message = String(e?.message || e);
+  _autoSyncSuspendedReason = message;
+  _autoSyncSuspendedCredentialKey = currentCredentialKey();
+  consecutiveFailures = 0;
+  nextEarliestSyncAt = 0;
+  _lastFailedAt = Date.now();
+  _lastError = message;
+  markSyncDone(`✗ 同步已暫停：${message}`, "bad");
+  logError("sync.suspendedConfigError", { reason, error: message });
+}
+
 async function runSyncIfReady(reason, options = {}) {
   if (isSyncing) return;
   if (!hasCredentials()) return;
+  clearSuspensionIfCredentialsChanged();
+  if (_autoSyncSuspendedReason) return;
   if (Date.now() < nextEarliestSyncAt) return;
   if (Date.now() - lastSyncEndedAt < MIN_GAP_BETWEEN_SYNCS_MS) return;
   // 衝突待處理 → 不要再同步
@@ -631,6 +674,10 @@ async function runSyncIfReady(reason, options = {}) {
     _lastError = "";
     if ((result.conflicts || 0) === 0) _hasPendingChanges = false;
   } catch (e) {
+    if (isAppsScriptConfigErrorMessage(e?.message || e)) {
+      suspendAutoSyncForConfigError(e, reason);
+      return;
+    }
     consecutiveFailures += 1;
     const backoffMs = Math.min(10 * 60 * 1000, 30 * 1000 * Math.pow(2, consecutiveFailures - 1));
     nextEarliestSyncAt = Date.now() + backoffMs;
@@ -683,14 +730,14 @@ export function initSyncOrchestrator() {
 export async function manualSync() {
   if (isSyncing) throw new Error("同步進行中,請稍候");
   if (getConflictCount() > 0) throw new Error("有衝突待處理,請先解決");
+  _autoSyncSuspendedReason = "";
+  _autoSyncSuspendedCredentialKey = "";
   isSyncing = true;
   _emitStatus();
   try {
     await syncOnce((p) => showSyncBanner(p));
-    consecutiveFailures = 0;
-    nextEarliestSyncAt = 0;
+    resetSyncFailureState();
     _lastSuccessAt = Date.now();
-    _lastError = "";
     if (getConflictCount() > 0) {
       markSyncDone(`⚠️ 有 ${getConflictCount()} 筆衝突待處理`, "bad");
     } else {
@@ -698,6 +745,9 @@ export async function manualSync() {
       markSyncDone("✓ 手動同步完成", "ok");
     }
   } catch (e) {
+    if (isAppsScriptConfigErrorMessage(e?.message || e)) {
+      suspendAutoSyncForConfigError(e, "manual");
+    }
     markSyncDone(`✗ 手動同步失敗:${e.message}`, "bad");
     logError("sync.manualFailed", { error: String(e?.message || e) });
     _lastFailedAt = Date.now();

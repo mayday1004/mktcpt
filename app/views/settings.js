@@ -1,7 +1,7 @@
 import { getState, update, replaceState, resetAll } from "../state.js";
 import { pushToSheets, pullFromSheets, pingSheets } from "../io/sheets.js";
 import { showSyncBanner, markSyncDone } from "../lib/sync-banner.js";
-import { manualSync, resetSyncMeta } from "../io/sync.js";
+import { manualSync, resetSyncFailureState, resetSyncMeta } from "../io/sync.js";
 import { clearConflicts } from "../io/conflict-store.js";
 import { downloadText } from "../lib/csv.js";
 import { getExpenseRate, getIncomeRate, getRateSource, getUsdtToCnyRate, getUsdToTwdRate } from "../schema.js";
@@ -356,6 +356,7 @@ function bindHandlers(root) {
 
   bind("#btn-save-sync", () => {
     saveSyncFields(root);
+    resetSyncFailureState();
     toast("已儲存", "ok");
   });
 
@@ -364,6 +365,7 @@ function bindHandlers(root) {
     setStatus("連線中…");
     try {
       const r = await pingSheets();
+      resetSyncFailureState();
       setStatus(`✓ 連線成功（v${r.version || "?"}）`, "ok");
       toast("連線成功", "ok");
     } catch (e) { setStatus(`✗ ${e.message}`, "bad"); toast(`失敗：${e.message}`, "bad"); }

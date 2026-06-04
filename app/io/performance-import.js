@@ -1,8 +1,8 @@
 import { getState, update } from "../state.js";
 import { METRICS } from "../schema.js";
 import { PERF_INPUT_SHEET, PERF_INPUT_HEADERS, PERF_INPUT_METRICS, normalizeAdCode, toYmd } from "./sheets-schema.js";
-import { getEffectiveSheetsUrl, getEffectiveSheetsToken } from "../lib/deploy-config.js";
-import { formatAppsScriptNonJsonError } from "./apps-script-errors.js";
+import { getEffectiveSheetsUrl, getEffectiveSheetsToken, assertValidSheetsUrl } from "../lib/deploy-config.js";
+import { formatAppsScriptJsonError, formatAppsScriptNonJsonError } from "./apps-script-errors.js";
 
 async function call(payload) {
   const s = getState();
@@ -10,6 +10,7 @@ async function call(payload) {
   const token = getEffectiveSheetsToken(s.settings);
   if (!url) throw new Error("尚未設定 Apps Script Web App URL");
   if (!token) throw new Error("尚未設定 Token");
+  assertValidSheetsUrl(url);
 
   const fd = new FormData();
   fd.append("payload", JSON.stringify({ ...payload, token }));
@@ -18,7 +19,7 @@ async function call(payload) {
   let json;
   try { json = JSON.parse(text); }
   catch { throw new Error(formatAppsScriptNonJsonError(text, res.status)); }
-  if (json.error) throw new Error(json.error);
+  if (json.error) throw new Error(formatAppsScriptJsonError(json.error));
   return json;
 }
 

@@ -147,6 +147,12 @@ function renderSyncStatusPill() {
     el.innerHTML = `<div class="ss-main"><span class="ss-ico">⛔</span><span>同步未設定</span></div><div class="ss-sub">設定 → Apps Script URL/Token</div>`;
     return;
   }
+  if (s.autoSyncSuspendedReason) {
+    el.className = "sync-status fail";
+    const errShort = (s.autoSyncSuspendedReason || "").slice(0, 42);
+    el.innerHTML = `<div class="ss-main"><span class="ss-ico">✗</span><span>同步已暫停</span></div><div class="ss-sub">${esc(errShort)}</div>`;
+    return;
+  }
   if (s.conflictCount > 0) {
     el.className = "sync-status conflict";
     el.innerHTML = `<div class="ss-main"><span class="ss-ico">⚠</span><span>${s.conflictCount} 筆衝突待處理</span></div><div class="ss-sub">點右下角 banner 解衝突</div>`;
