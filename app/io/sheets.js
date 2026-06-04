@@ -1,6 +1,7 @@
 import { getState, replaceState } from "../state.js";
 import { TABLES, assembleFromTables } from "./sheets-schema.js";
 import { getEffectiveSheetsUrl, getEffectiveSheetsToken } from "../lib/deploy-config.js";
+import { formatAppsScriptNonJsonError } from "./apps-script-errors.js";
 
 async function call(payload) {
   const s = getState();
@@ -16,7 +17,7 @@ async function call(payload) {
   const text = await res.text();
   let json;
   try { json = JSON.parse(text); }
-  catch { throw new Error(`回應非 JSON（前 200 字）：${text.slice(0, 200)}`); }
+  catch { throw new Error(formatAppsScriptNonJsonError(text, res.status)); }
   if (json.error) throw new Error(json.error);
   return json;
 }

@@ -74,7 +74,7 @@ server 比對:不符就回 conflicts(不寫入)、相符就 +1 寫入。比 v3 �
 ## 除錯
 
 - **invalid token**:Apps Script 裡的 `SECRET` 跟設定頁的 Token 不一致
-- **回應非 JSON**:通常是沒授權完成、或部署時存取權沒選「任何人」
+- **Apps Script 回了 HTML 頁面**:通常是 Google/Apps Script 暫時錯誤、沒授權完成、部署時存取權沒選「任何人」、或 URL 不是 `/exec`
 - **改了代碼但沒生效**:要到「管理部署 → 編輯 → 版本:新版本 → 部署」
 - **`headers must include _id, _updated_at, _deleted, _version`**:升 v4 後客戶端漏帶 `_version` 欄
 

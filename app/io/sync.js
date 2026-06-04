@@ -22,6 +22,7 @@ import { TABLE_SYNC_SPECS } from "./sync-specs.js";
 import { addConflict, getConflictCount, subscribeConflicts } from "./conflict-store.js";
 import { logInfo, logWarn, logError } from "../lib/sync-log.js";
 import { normalizeTodoCreatedAt } from "../domain/todo-utils.js";
+import { formatAppsScriptNonJsonError } from "./apps-script-errors.js";
 
 // ===== 同步狀態廣播(給 sidebar status pill 用)=====
 // 統一一份輕量狀態,有變動時 emit 給所有訂閱者(sidebar / debug overlay 等)。
@@ -160,7 +161,7 @@ async function call(payload) {
   try { json = JSON.parse(text); }
   catch {
     logError("network.parseFailed", { action: payload.action, status: res.status, preview: text.slice(0, 200) });
-    throw new Error(`回應非 JSON(前 200 字):${text.slice(0, 200)}`);
+    throw new Error(formatAppsScriptNonJsonError(text, res.status));
   }
   if (json.error) {
     logError("network.serverError", { action: payload.action, error: json.error });
