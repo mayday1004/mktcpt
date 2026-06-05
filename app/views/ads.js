@@ -2659,42 +2659,24 @@ function weightsDiff(a, b) {
   return false;
 }
 
-// 給待辦的描述：列出 ad code + name + 權重變化（有 oldWeights 就顯示 old→new diff）
-function buildTodoDesc(ad, weights, products, oldWeights = null, effectiveDate = "") {
+function formatTodoWeightSummary(weights, products) {
   const nameOf = (pid) => products.find((p) => p.id === pid)?.name || pid;
+  return Object.entries(weights || {})
+    .filter(([, w]) => Math.round(Number(w) || 0) > 0)
+    .sort(([, a], [, b]) => Number(b) - Number(a))
+    .map(([pid, w]) => `${nameOf(pid)} ${Math.round(Number(w) || 0)}%`)
+    .join("、") || "（無）";
+}
 
-  if (!oldWeights || Object.keys(oldWeights).length === 0) {
-    // 新增廣告 / 沒舊權重 → 直接列新權重
-    const parts = Object.entries(weights)
-      .filter(([, w]) => Math.round(Number(w) || 0) > 0)
-      .sort(([, a], [, b]) => Number(b) - Number(a))
-      .map(([pid, w]) => `${nameOf(pid)} ${Math.round(Number(w) || 0)}%`)
-      .join("、");
-    return `${ad.ad_code} ${ad.ad_name}｜${parts}｜請至連結隨機縮網址後台調整權重`;
-  }
-
-  // 有舊權重 → 列出每個產品的 old→new；只顯示有變動的
-  const allPids = new Set([...Object.keys(oldWeights), ...Object.keys(weights)]);
-  const changes = [];
-  for (const pid of allPids) {
-    const oldW = Math.round(Number(oldWeights[pid]) || 0);
-    const newW = Math.round(Number(weights[pid]) || 0);
-    if (oldW === newW) continue;
-    if (oldW === 0 && newW > 0) changes.push(`${nameOf(pid)} 新加 ${newW}%`);
-    else if (newW === 0 && oldW > 0) changes.push(`${nameOf(pid)} 移除（原 ${oldW}%）`);
-    else changes.push(`${nameOf(pid)} ${oldW}%→${newW}%`);
-  }
-  if (changes.length === 0) {
-    // 權重沒變但仍呼叫（例如續費沿用權重）→ 列出維持的權重
-    const parts = Object.entries(weights)
-      .filter(([, w]) => Math.round(Number(w) || 0) > 0)
-      .sort(([, a], [, b]) => Number(b) - Number(a))
-      .map(([pid, w]) => `${nameOf(pid)} ${Math.round(Number(w) || 0)}%（沿用）`)
-      .join("、");
-    return `${ad.ad_code} ${ad.ad_name}｜${parts}｜請至連結隨機縮網址後台調整權重`;
-  }
+// 給待辦的描述：統一成「舊權重 → 新權重」摘要,讓待辦頁高亮新權重。
+function buildTodoDesc(ad, weights, products, oldWeights = null, effectiveDate = "") {
   const prefix = formatTodoDate(effectiveDate || ad.start_date);
-  return `${prefix ? `${prefix} ` : ""}${ad.ad_code} ${ad.ad_name}｜權重變化：${changes.join("、")}｜請至連結隨機縮網址後台調整權重`;
+  const label = `${prefix ? `${prefix} ` : ""}${ad.ad_code} ${ad.ad_name}`;
+  const newSummary = formatTodoWeightSummary(weights, products);
+  if (oldWeights !== null) {
+    return `${label}｜${formatTodoWeightSummary(oldWeights, products)} → ${newSummary}\n（請至連結隨機縮網址後台調整權重）`;
+  }
+  return `${label}｜${newSummary}\n（請至連結隨機縮網址後台調整權重）`;
 }
 
 function formatTodoDate(ymd) {
@@ -3216,16 +3198,12 @@ function openFamilyWeightAdjust(pairId) {
         }
       }
 
-      const nameOf = (pid) => st.products.find((p) => p.id === pid)?.name || pid;
-      const desc = Object.entries(newWeights)
-        .sort(([, a], [, b]) => Number(b) - Number(a))
-        .map(([pid, w]) => `${nameOf(pid)} ${w}%`)
-        .join("、");
       st.todos.push({
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
         action_type: "手動改權重",
-        description: `${formatTodoDate(eff)} ${parentSeg.ad_code} / ${tVariantSeg.ad_code} 整體視角調整｜${desc}｜請至連結後台調整權重`,
+        description: buildTodoDesc(parentSeg, newWeights, st.products, roundedIntegral, eff)
+          + `\n（${parentSeg.ad_code} / ${tVariantSeg.ad_code} 整體視角調整）`,
         status: "pending",
         undo_payload: { ad_snapshots, added_ad_ids },
       });

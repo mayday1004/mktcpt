@@ -214,7 +214,7 @@ const ACTION_TYPE_LABELS = {
 };
 
 // 與各個 view 寫入的 action_type 對齊(風格 X:看名字就知道目的)
-const ACTION_TYPES = ["備註", "手動改權重", "新增廣告", "廣告續費", "成效調權重", "補花費缺口", "淘汰廣告", "其他"];
+const ACTION_TYPES = ["備註", "手動改權重", "新增廣告", "廣告續費", "成效調權重", "補花費缺口", "淘汰廣告"];
 
 function displayActionType(actionType) {
   const raw = String(actionType || "");
