@@ -1,7 +1,13 @@
 import { getState, update } from "../state.js";
 
+const SHORT_URL_BAG_TYPE = "提包";
 const TYPE_LABEL = { L1: "權重", L3: "APK", L5: "小島" };
 const DEFAULT_PREFIX_MAP = { L1: "L1", L3: "L3", L5: "L5" };
+const PREFIX_SLOTS = new Set(Object.keys(DEFAULT_PREFIX_MAP));
+
+function canBuildUrl(slotType) {
+  return PREFIX_SLOTS.has(slotType);
+}
 
 // 取得 slot 對應的實際前綴(2026-05,§5.7.x):
 //   settings.short_url_prefix_map[slotId] → 實際前綴(預設與 slot 同名)
@@ -14,6 +20,8 @@ function prefixOf(state, slotType) {
 //   slotType = "L1"/"L3"/"L5" 業務 slot;實際前綴由 settings.short_url_prefix_map 決定
 //   prefixOverride(選填):明確指定前綴(用於舊 URL 渲染,當 ad.short_url_old_prefix 有值時)
 function buildUrl(slotType, domain, param, state, prefixOverride) {
+  // 提包是管理標籤,不參與 L1/L3/L5 前綴 URL 組裝。
+  if (!canBuildUrl(slotType)) return "";
   if (!slotType || !domain || !param) return "";
   const cleanDomain = String(domain).trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
   if (!cleanDomain) return "";
@@ -103,7 +111,7 @@ export function render(root) {
   const s = getState();
   const today = todayYmd();
   // 過濾條件(2026-05):
-  //   1. short_url_type 不為空(= 採用 L1/L3/L5,「不採用」會是空字串)
+  //   1. short_url_type 不為空(= 採用 L1/L3/L5/提包)
   //   2. 未過期(end_date > 今天;end_date 不含當日,所以 end_date = 今天時已經是最後一天無效)
   //      — 不再排除「已淘汰」:按了淘汰但結束日還沒到的廣告仍在跑,縮網址也要顯示讓使用者通知站長
   //   3. 家族配對只顯示 parent(一般側)作為代表 — 一般 + 破圈是同一份合約共用一條鏈結
@@ -173,7 +181,7 @@ export function render(root) {
         </div>
       </div>
       ${rows.length === 0 ? `
-        <div class="empty">尚無設定縮網址資訊的廣告<br><span class="ink-3" style="font-size:12px">到「廣告列表 → 新增/編輯廣告」勾選採用連結 (L1/L3/L5) + 填入縮網址參數</span></div>
+        <div class="empty">尚無設定縮網址資訊的廣告<br><span class="ink-3" style="font-size:12px">到「廣告列表 → 新增/編輯廣告」勾選採用連結 (L1/L3/L5/提包) + 填入縮網址參數</span></div>
       ` : `
         <div class="table-wrap" style="margin-top:8px">
           <table class="short-urls-table">
@@ -353,8 +361,11 @@ function renderRow(a, s, { inGroup = false } = {}) {
   const dom = effectiveDomains(s, a);
   const oldUrl = oldUrlOf(a, dom.oldDomain, s);
   const newUrl = buildUrl(a.short_url_type, dom.newDomain, a.short_url_param, s);
-  const typeLabel = a.short_url_type
-    ? `<span class="pill">${esc(a.short_url_type)}${TYPE_LABEL[a.short_url_type] ? `(${TYPE_LABEL[a.short_url_type]})` : ""}</span>`
+  const isBagType = a.short_url_type === SHORT_URL_BAG_TYPE;
+  const typeLabel = isBagType
+    ? `<span class="pill short-url-bag">!提包</span>`
+    : a.short_url_type
+      ? `<span class="pill">${esc(a.short_url_type)}${TYPE_LABEL[a.short_url_type] ? `(${TYPE_LABEL[a.short_url_type]})` : ""}</span>`
     : "<span class='ink-3'>—</span>";
   const paramText = a.short_url_param
     ? `<div class="mono" style="font-size:11px;color:var(--ink-2);margin-top:3px">${esc(a.short_url_param)}</div>`

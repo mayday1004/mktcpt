@@ -276,6 +276,7 @@ dialog#modal::backdrop { background: rgba(15, 20, 30, 0.4); backdrop-filter: blu
 .pill.ok { background: #e0f4e5; color: var(--ok); }
 .pill.warn { background: #fff2dc; color: var(--warn); }
 .pill.bad  { background: #fde3e3; color: var(--bad); }
+.pill.short-url-bag { background: #ffe4f1; color: #c02670; }
 
 /* ============ Utility ============ */
 .row { display: flex; gap: 8px; align-items: center; }

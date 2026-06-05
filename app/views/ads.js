@@ -12,6 +12,13 @@ import { displayWeightsForAd } from "../domain/spending.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 
+const SHORT_URL_TYPE_OPTIONS = [
+  { value: "L1", label: "L1(權重)" },
+  { value: "L3", label: "L3(APK)" },
+  { value: "L5", label: "L5(小島)" },
+  { value: "提包", label: "提包" },
+];
+
 // 模組級展開狀態（記住使用者點開的 ad_code，重渲染後不重置）
 const expanded = new Set();
 const expandedWeights = new Set();
@@ -2085,15 +2092,9 @@ function openEditor(id, renewFrom = null, prefill = null) {
       <div class="field" style="flex:1">
         <label>採用連結</label>
         <div class="radio-row" style="display:flex;gap:14px;padding-top:6px">
-          ${["L1", "L3", "L5"].map((t) => {
-            const lbl = t === "L1" ? "權重" : (t === "L3" ? "APK" : "小島");
-            return `<label style="font-weight:400;font-size:13px;cursor:pointer">
-              <input type="radio" name="f-short-url-type" value="${t}" ${(a.short_url_type === t) ? "checked" : ""} /> ${t}(${lbl})
-            </label>`;
-          }).join("")}
-          <label style="font-weight:400;font-size:13px;cursor:pointer;color:var(--ink-3)">
-            <input type="radio" name="f-short-url-type" value="" ${!a.short_url_type ? "checked" : ""} /> 不採用
-          </label>
+          ${SHORT_URL_TYPE_OPTIONS.map((opt) => `<label style="font-weight:400;font-size:13px;cursor:pointer${opt.value === "提包" ? ";color:#c02670" : ""}">
+            <input type="radio" name="f-short-url-type" value="${esc(opt.value)}" ${(a.short_url_type === opt.value || (!a.short_url_type && opt.value === "提包")) ? "checked" : ""} /> ${esc(opt.label)}
+          </label>`).join("")}
         </div>
       </div>
       <div class="field" style="flex:1">
