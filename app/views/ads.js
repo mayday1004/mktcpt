@@ -12,12 +12,23 @@ import { displayWeightsForAd } from "../domain/spending.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 
-const SHORT_URL_TYPE_OPTIONS = [
+const SHORT_URL_BAG_TYPE = "提包";
+const SHORT_URL_SLOT_OPTIONS = [
   { value: "L1", label: "L1(權重)" },
   { value: "L3", label: "L3(APK)" },
   { value: "L5", label: "L5(小島)" },
-  { value: "提包", label: "提包" },
 ];
+
+function parseShortUrlType(value) {
+  const parts = String(value || "").split("+").map((p) => p.trim()).filter(Boolean);
+  const slot = SHORT_URL_SLOT_OPTIONS.find((opt) => parts.includes(opt.value))?.value || "";
+  const hasBag = parts.includes(SHORT_URL_BAG_TYPE) || value === SHORT_URL_BAG_TYPE;
+  return { slot, hasBag };
+}
+
+function buildShortUrlType(slot, hasBag) {
+  return hasBag ? `${slot}+${SHORT_URL_BAG_TYPE}` : slot;
+}
 
 // 模組級展開狀態（記住使用者點開的 ad_code，重渲染後不重置）
 const expanded = new Set();
@@ -1989,6 +2000,8 @@ function openEditor(id, renewFrom = null, prefill = null) {
   const readonlyWeights = id && a?.split_pair_id
     ? displayWeightsForAd(a, s.ads)
     : (a.weights || {});
+  const shortUrlSelection = parseShortUrlType(a.short_url_type);
+  const selectedShortUrlSlot = shortUrlSelection.slot || "L1";
 
   const html = `
     <h2>${id ? "編輯廣告" : renewFrom ? "續費廣告" : "新增廣告"}</h2>
@@ -2091,10 +2104,13 @@ function openEditor(id, renewFrom = null, prefill = null) {
     <div class="field-row">
       <div class="field" style="flex:1">
         <label>採用連結</label>
-        <div class="radio-row" style="display:flex;gap:14px;padding-top:6px">
-          ${SHORT_URL_TYPE_OPTIONS.map((opt) => `<label style="font-weight:400;font-size:13px;cursor:pointer${opt.value === "提包" ? ";color:#c02670" : ""}">
-            <input type="radio" name="f-short-url-type" value="${esc(opt.value)}" ${(a.short_url_type === opt.value || (!a.short_url_type && opt.value === "提包")) ? "checked" : ""} /> ${esc(opt.label)}
+        <div class="radio-row" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding-top:6px">
+          ${SHORT_URL_SLOT_OPTIONS.map((opt) => `<label style="font-weight:400;font-size:13px;cursor:pointer">
+            <input type="radio" name="f-short-url-type" value="${esc(opt.value)}" ${selectedShortUrlSlot === opt.value ? "checked" : ""} /> ${esc(opt.label)}
           </label>`).join("")}
+          <label style="font-weight:400;font-size:13px;cursor:pointer;color:#c02670;border-left:1px solid var(--line);padding-left:14px">
+            <input type="checkbox" id="f-short-url-bag" ${shortUrlSelection.hasBag ? "checked" : ""} /> 提包
+          </label>
         </div>
       </div>
       <div class="field" style="flex:1">
@@ -2444,7 +2460,8 @@ function openEditor(id, renewFrom = null, prefill = null) {
     const contactTg = (q("#f-contact-tg").value || "").trim();
     const contactInfo = (q("#f-contact-info").value || "").trim();
     const shortUrlTypeRadio = dlg.querySelector('input[name="f-short-url-type"]:checked');
-    const shortUrlType = shortUrlTypeRadio ? shortUrlTypeRadio.value : "";
+    const shortUrlSlot = shortUrlTypeRadio ? shortUrlTypeRadio.value : "L1";
+    const shortUrlType = buildShortUrlType(shortUrlSlot, !!q("#f-short-url-bag")?.checked);
     const shortUrlParam = (q("#f-short-url-param").value || "").trim();
 
     const patch = {
