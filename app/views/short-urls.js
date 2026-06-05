@@ -12,6 +12,10 @@ function parseShortUrlType(value) {
   return { slot, hasBag };
 }
 
+function shortUrlTypeHasBag(value) {
+  return parseShortUrlType(value).hasBag;
+}
+
 // 取得 slot 對應的實際前綴(2026-05,§5.7.x):
 //   settings.short_url_prefix_map[slotId] → 實際前綴(預設與 slot 同名)
 function prefixOf(state, slotType) {
@@ -123,6 +127,9 @@ export function render(root) {
     (!a.end_date || a.end_date > today) &&
     a.split_role !== "t_variant"
   );
+  const bagAdCodes = new Set(
+    ads.filter((a) => shortUrlTypeHasBag(a.short_url_type)).map((a) => a.ad_code).filter(Boolean)
+  );
 
   // 同代碼同參數多段:取最新一段(start_date 最大)
   // 用 (ad_code, short_url_param) 當 key:
@@ -135,7 +142,10 @@ export function render(root) {
     const cur = byKey.get(key);
     if (!cur || (a.start_date || "") > (cur.start_date || "")) byKey.set(key, a);
   }
-  const rows = [...byKey.values()];
+  const rows = [...byKey.values()].map((a) => ({
+    ...a,
+    short_url_has_bag_by_code: bagAdCodes.has(a.ad_code),
+  }));
   const groups = groupByContact(rows);
   const totalCount = rows.length;
   const notifiedCount = rows.filter((a) => a.short_url_notified).length;
@@ -365,11 +375,12 @@ function renderRow(a, s, { inGroup = false } = {}) {
   const oldUrl = oldUrlOf(a, dom.oldDomain, s);
   const newUrl = buildUrl(a.short_url_type, dom.newDomain, a.short_url_param, s);
   const shortUrlType = parseShortUrlType(a.short_url_type);
+  const hasBag = shortUrlType.hasBag || !!a.short_url_has_bag_by_code;
   const typeTags = [
     shortUrlType.slot
       ? `<span class="pill">${esc(shortUrlType.slot)}${TYPE_LABEL[shortUrlType.slot] ? `(${TYPE_LABEL[shortUrlType.slot]})` : ""}</span>`
       : "",
-    shortUrlType.hasBag ? `<span class="pill short-url-bag">!提包</span>` : "",
+    hasBag ? `<span class="pill short-url-bag">!提包</span>` : "",
   ].filter(Boolean);
   const typeLabel = typeTags.length > 0
     ? `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">${typeTags.join("")}</div>`
