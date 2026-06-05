@@ -1163,7 +1163,7 @@ async function applyAll(pivot, newWeightsByAd, root) {
       st.todos.push({
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
-        action_type: "成效調整權重",
+        action_type: "成效調權重",
         description: `${head}\n${successDetails.join("\n")}\n（請至連結隨機縮網址後台調整權重）`,
         status: "pending",
         undo_payload: { ad_snapshots, added_ad_ids },

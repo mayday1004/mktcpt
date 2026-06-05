@@ -277,6 +277,15 @@ dialog#modal::backdrop { background: rgba(15, 20, 30, 0.4); backdrop-filter: blu
 .pill.warn { background: #fff2dc; color: var(--warn); }
 .pill.bad  { background: #fde3e3; color: var(--bad); }
 .pill.short-url-bag { background: #ffe4f1; color: #c02670; }
+.pill.todo-type-pill { font-weight: 600; border: 1px solid transparent; }
+.pill.todo-tag-note { background: #f1f3f5; color: #495057; border-color: #d7dce2; }
+.pill.todo-tag-manual-weight { background: #e8f1ff; color: #2454a6; border-color: #c8dafb; }
+.pill.todo-tag-add-ad { background: #e8f7ed; color: #1d6f3c; border-color: #c6ead2; }
+.pill.todo-tag-renewal { background: #e4f7f6; color: #08746f; border-color: #b9e4e1; }
+.pill.todo-tag-perf-weight { background: #f0e9ff; color: #6540a3; border-color: #d9c8ff; }
+.pill.todo-tag-spend-gap { background: #fff2d7; color: #8a5700; border-color: #f3d08c; }
+.pill.todo-tag-eliminate { background: #fde6e6; color: #b23434; border-color: #f2c2c2; }
+.pill.todo-tag-other { background: #eceff3; color: #58606a; border-color: #d2d8e0; }
 
 /* ============ Utility ============ */
 .row { display: flex; gap: 8px; align-items: center; }

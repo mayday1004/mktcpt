@@ -1557,7 +1557,7 @@ async function openEndAd(seg) {
       st.todos.push({
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
-        action_type: "手動",
+        action_type: "備註",
         description: `${seg.ad_code} ${seg.ad_name}:提前結束到 ${newEnd}(原 ${seg.end_date})`,
         status: "pending",
         undo_payload: { ad_snapshots, added_ad_ids: [] },

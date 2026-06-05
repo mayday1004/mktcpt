@@ -257,8 +257,8 @@ export function openGiftDayFixModal(onApplied) {
         st.todos.push({
           id: uid("todo"),
           created_at: nowTaipeiStamp(),
-          action_type: "補日花費缺口",
-          description: `補日花費缺口 ${okCount} 筆${errCount ? `(${errCount} 筆失敗)` : ""},涉及產品:${targetNames}\n${successDescs.join("\n")}\n(請至連結後台調整)`,
+          action_type: "補花費缺口",
+          description: `補花費缺口 ${okCount} 筆${errCount ? `(${errCount} 筆失敗)` : ""},涉及產品:${targetNames}\n${successDescs.join("\n")}\n(請至連結後台調整)`,
           status: "pending",
           undo_payload: { ad_snapshots, added_ad_ids },
         });

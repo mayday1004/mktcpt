@@ -14,12 +14,13 @@ let doneFilter = {
 function filterDoneTodos(done) {
   const q = doneFilter.search.trim().toLowerCase();
   return done.filter((t) => {
-    if (doneFilter.actionType && t.action_type !== doneFilter.actionType) return false;
+    const shownType = displayActionType(t.action_type);
+    if (doneFilter.actionType && shownType !== doneFilter.actionType) return false;
     const day = (t.created_at || "").slice(0, 10);   // YYYY-MM-DD
     if (doneFilter.startDate && day && day < doneFilter.startDate) return false;
     if (doneFilter.endDate && day && day > doneFilter.endDate) return false;
     if (q) {
-      const hay = `${t.description || ""} ${t.action_type || ""} ${t.created_at || ""}`.toLowerCase();
+      const hay = `${t.description || ""} ${t.action_type || ""} ${shownType} ${t.created_at || ""}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -33,7 +34,7 @@ export function render(root) {
   const doneFiltered = filterDoneTodos(done);
 
   // 類型下拉:從已完成資料中實際出現過的 action_type + 預設清單合併,unique
-  const typesInData = [...new Set(done.map((t) => t.action_type).filter(Boolean))];
+  const typesInData = [...new Set(done.map((t) => displayActionType(t.action_type)).filter(Boolean))];
   const typeOptions = [...new Set([...ACTION_TYPES, ...typesInData])];
   const hasFilter = !!(doneFilter.startDate || doneFilter.endDate || doneFilter.actionType || doneFilter.search);
 
@@ -189,7 +190,7 @@ function listHtml(todos, isDone, searchTerm = "") {
           ${todos.map((t) => `
             <tr>
               <td class="mono ink-2" style="font-size:12px">${highlightMatch(t.created_at, searchTerm)}</td>
-              <td><span class="pill">${highlightMatch(t.action_type, searchTerm)}</span></td>
+              <td><span class="pill todo-type-pill ${todoTypeClass(t.action_type)}">${highlightMatch(displayActionType(t.action_type), searchTerm)}</span></td>
               <td style="white-space:pre-wrap;line-height:1.6">${highlightTodoDesc(t.description, searchTerm)}</td>
               <td class="right nowrap">
                 ${isDone
@@ -205,8 +206,33 @@ function listHtml(todos, isDone, searchTerm = "") {
   `;
 }
 
+// 舊資料顯示成目前使用的短名稱;不批次改動已同步出去的待辦資料。
+const ACTION_TYPE_LABELS = {
+  "手動": "備註",
+  "成效調整權重": "成效調權重",
+  "補日花費缺口": "補花費缺口",
+};
+
 // 與各個 view 寫入的 action_type 對齊(風格 X:看名字就知道目的)
-const ACTION_TYPES = ["手動", "手動改權重", "新增廣告", "廣告續費", "成效調整權重", "補日花費缺口", "淘汰廣告", "其他"];
+const ACTION_TYPES = ["備註", "手動改權重", "新增廣告", "廣告續費", "成效調權重", "補花費缺口", "淘汰廣告", "其他"];
+
+function displayActionType(actionType) {
+  const raw = String(actionType || "");
+  return ACTION_TYPE_LABELS[raw] || raw;
+}
+
+function todoTypeClass(actionType) {
+  switch (displayActionType(actionType)) {
+    case "備註": return "todo-tag-note";
+    case "手動改權重": return "todo-tag-manual-weight";
+    case "新增廣告": return "todo-tag-add-ad";
+    case "廣告續費": return "todo-tag-renewal";
+    case "成效調權重": return "todo-tag-perf-weight";
+    case "補花費缺口": return "todo-tag-spend-gap";
+    case "淘汰廣告": return "todo-tag-eliminate";
+    default: return "todo-tag-other";
+  }
+}
 
 function openTodoEditor(id) {
   const s = getState();
@@ -217,7 +243,7 @@ function openTodoEditor(id) {
     <div class="field">
       <label>類型</label>
       <select id="t-type">
-        ${ACTION_TYPES.map((a) => `<option value="${a}" ${t?.action_type === a ? "selected" : ""}>${a}</option>`).join("")}
+        ${ACTION_TYPES.map((a) => `<option value="${a}" ${displayActionType(t?.action_type) === a ? "selected" : ""}>${a}</option>`).join("")}
       </select>
     </div>
     <div class="field">
@@ -232,7 +258,7 @@ function openTodoEditor(id) {
   const dlg = modal.open(html);
   dlg.querySelector("#t-cancel").onclick = () => modal.close();
   dlg.querySelector("#t-save").onclick = () => {
-    const action_type = dlg.querySelector("#t-type").value || "手動";
+    const action_type = dlg.querySelector("#t-type").value || "備註";
     const description = dlg.querySelector("#t-desc").value.trim();
     if (!description) { toast("請填內容", "bad"); return; }
     update((st) => {
@@ -248,7 +274,7 @@ function openTodoEditor(id) {
           status: "pending",
         });
       }
-    }, isEdit ? "更新待辦" : "新增手動待辦");
+    }, isEdit ? "更新待辦" : "新增備註待辦");
     modal.close();
     toast(isEdit ? "已更新" : "已新增", "ok");
   };
