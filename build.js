@@ -11,8 +11,46 @@ fs.mkdirSync(dist, { recursive: true });
 
 const t0 = Date.now();
 
-const deploySheetsUrl = process.env.SHEETS_WEBAPP_URL || "";
-const deploySheetsToken = process.env.SHEETS_TOKEN || "";
+loadLocalEnv(".env.local");
+
+const deploySheetsUrl = readEnv("SHEETS_WEBAPP_URL", "BUYADS_APPS_SCRIPT_URL");
+const deploySheetsToken = readEnv("SHEETS_TOKEN", "BUYADS_APPS_SCRIPT_TOKEN");
+
+function loadLocalEnv(fileName) {
+  const filePath = path.resolve(fileName);
+  if (!fs.existsSync(filePath)) return;
+
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    const match = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) continue;
+
+    const [, key, rawValue] = match;
+    if (process.env[key] && process.env[key].trim()) continue;
+    process.env[key] = parseEnvValue(rawValue);
+  }
+}
+
+function parseEnvValue(rawValue) {
+  let value = String(rawValue || "").trim();
+  const quote = value[0];
+  if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
+    value = value.slice(1, -1);
+    return quote === '"' ? value.replace(/\\n/g, "\n").replace(/\\"/g, '"') : value;
+  }
+  return value.replace(/\s+#.*$/, "").trim();
+}
+
+function readEnv(...names) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (value && value.trim()) return value.trim();
+  }
+  return "";
+}
 
 // Build identifier:用 git short SHA(Railway 會把 commit SHA 帶進 env);
 // 沒 git / 不在 CI 時 fallback 用 timestamp。每次 deploy 改變就會觸發前端版本 gate。

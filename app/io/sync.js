@@ -23,6 +23,11 @@ import { addConflict, getConflictCount, subscribeConflicts } from "./conflict-st
 import { logInfo, logWarn, logError } from "../lib/sync-log.js";
 import { normalizeTodoCreatedAt } from "../domain/todo-utils.js";
 import { formatAppsScriptJsonError, formatAppsScriptNonJsonError, isAppsScriptConfigErrorMessage } from "./apps-script-errors.js";
+import {
+  clearSyncDeleted,
+  hasPendingSyncDeletions,
+  loadPendingSyncDeletions,
+} from "./sync-deletions.js";
 
 // ===== 同步狀態廣播(給 sidebar status pill 用)=====
 // 統一一份輕量狀態,有變動時 emit 給所有訂閱者(sidebar / debug overlay 等)。
@@ -50,7 +55,7 @@ export function getSyncStatus() {
     lastSuccessAt: _lastSuccessAt,
     lastFailedAt: _lastFailedAt,
     lastError: _lastError,
-    hasPendingChanges: _hasPendingChanges,
+    hasPendingChanges: _hasPendingChanges || hasPendingSyncDeletions(),
     nextEarliestSyncAt,
     consecutiveFailures,
     autoSyncSuspendedReason: _autoSyncSuspendedReason,
@@ -70,6 +75,22 @@ const VERSION_KEY = "buyads_server_version_v1";  // server 全域版本號的 la
 const META_COLS = ["_id", "_updated_at", "_deleted", "_version"];
 const FP_DELIM = "";  // 不會出現在資料的分隔符
 const TOMBSTONE_FP = "__tombstone__";
+
+function pendingDeleteSet(pendingDeletions, sheetName) {
+  return new Set((pendingDeletions?.[sheetName] || []).map((id) => String(id || "")).filter(Boolean));
+}
+
+function queuePendingDeleteClear(bucket, sheetName, id) {
+  if (!sheetName || !id) return;
+  if (!bucket[sheetName]) bucket[sheetName] = new Set();
+  bucket[sheetName].add(id);
+}
+
+function flushPendingDeleteClears(bucket) {
+  for (const [sheetName, ids] of Object.entries(bucket)) {
+    clearSyncDeleted(sheetName, [...ids]);
+  }
+}
 
 // ===== sync_meta 持久化 =====
 function loadMeta() {
@@ -107,29 +128,44 @@ export function resetSyncMeta() {
 //   1. 看 header 包含 "(YYYY-MM)" → 該 cell 取前 7 字
 //   2. 設定表 (key=current_month) → value 也取前 7 字
 //   3. ISO 8601 timestamp "YYYY-MM-DDT..." → 取前 10 字(YYYY-MM-DD,主要給 created_at 用)
+const DATE_TIME_DATA_HEADERS = new Set([
+  "created_at",
+  "approved_at",
+  "claimed_at",
+  "completed_at",
+  "updated_at",
+  "at",
+  "建立時間",
+  "Yourls批准時間",
+  "Yourls套用時間",
+]);
+
+function isDateTimeDataHeader(header) {
+  const h = String(header || "");
+  return DATE_TIME_DATA_HEADERS.has(h) || (/_at$/.test(h) && !META_COLS.includes(h));
+}
+
+function canonicalizeDataCell(header, value, _id) {
+  if (value == null) return value;
+  const h = String(header || "");
+  const s = (value instanceof Date) ? value.toISOString() : String(value);
+  // 1. 月份欄(YYYY-MM)— Sheets 會把 "2026-05" 自動補成 "2026-05-01"
+  if (h.includes("(YYYY-MM)") && /^\d{4}-\d{2}-?\d{0,2}/.test(s)) {
+    return s.slice(0, 7);
+  }
+  // 2. 設定表特殊欄
+  if (h === "value" && _id === "current_month" && /^\d{4}-\d{2}-?\d{0,2}/.test(s)) {
+    return s.slice(0, 7);
+  }
+  if (isDateTimeDataHeader(h)) {
+    return normalizeTodoCreatedAt(s);
+  }
+  return s;
+}
+
 function canonicalizeForFingerprint(headers, dataRow, _id) {
   if (!headers || headers.length === 0) return dataRow;
-  return dataRow.map((v, i) => {
-    if (v == null) return v;
-    const h = String(headers[i] || "");
-    let s = (v instanceof Date) ? v.toISOString() : String(v);
-    // 1. 月份欄(YYYY-MM)— Sheets 會把 "2026-05" 自動補成 "2026-05-01"
-    if (h.includes("(YYYY-MM)") && /^\d{4}-\d{2}-?\d{0,2}/.test(s)) {
-      return s.slice(0, 7);
-    }
-    // 2. 設定表特殊欄
-    if (h === "value" && _id === "current_month" && /^\d{4}-\d{2}-?\d{0,2}/.test(s)) {
-      return s.slice(0, 7);
-    }
-    if (h === "建立時間") {
-      return normalizeTodoCreatedAt(s);
-    }
-    // 3. ISO timestamp → date-only
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
-      return s.slice(0, 10);
-    }
-    return s;
-  });
+  return dataRow.map((v, i) => canonicalizeDataCell(headers[i], v, _id));
 }
 
 export function fingerprintDataRow(dataRow, headers, _id) {
@@ -189,14 +225,17 @@ function parseServerRows(headers, rows) {
   if (idIdx < 0) return null;  // 沒 metadata(legacy sheet)
   const dataHeaders = headers.filter((h) => !META_COLS.includes(h));
   const dataIndices = dataHeaders.map((h) => headers.indexOf(h));
-  return rows.map((row) => ({
-    _id: String(row[idIdx] || ""),
-    _updated_at: String(row[updatedAtIdx] || ""),
-    _deleted: String(row[deletedIdx] || "").toUpperCase() === "Y",
-    _version: versionIdx >= 0 ? (Number(row[versionIdx]) || 0) : 0,
-    dataRow: dataIndices.map((i) => row[i]),
-    dataHeaders,
-  })).filter((r) => r._id);
+  return rows.map((row) => {
+    const id = String(row[idIdx] || "");
+    return {
+      _id: id,
+      _updated_at: String(row[updatedAtIdx] || ""),
+      _deleted: String(row[deletedIdx] || "").toUpperCase() === "Y",
+      _version: versionIdx >= 0 ? (Number(row[versionIdx]) || 0) : 0,
+      dataRow: dataIndices.map((i, pos) => canonicalizeDataCell(dataHeaders[pos], row[i], id)),
+      dataHeaders,
+    };
+  }).filter((r) => r._id);
 }
 
 // 把 legacy headers/rows 包裝成 serverRecords 格式(無 _updated_at / _version)
@@ -244,6 +283,9 @@ export async function syncOnce(onProgress, options = {}) {
 
   const meta = loadMeta();
   const lastSeenVersion = loadServerVersion();
+  const pendingDeletions = loadPendingSyncDeletions();
+  const hasPendingDeletionIntent = Object.values(pendingDeletions).some((ids) => (ids || []).length > 0);
+  const pendingDeleteClears = {};
   const forcePushSheets = new Set();
 
   // ---- Step 0: 拿 server 版本號(輕量短路)
@@ -255,7 +297,16 @@ export async function syncOnce(onProgress, options = {}) {
     throw e;
   }
   const serverVersion = Number(remoteMeta.server_version) || 0;
-  const shouldPull = lastSeenVersion == null || serverVersion !== lastSeenVersion;
+  let shouldPull = lastSeenVersion == null || serverVersion !== lastSeenVersion;
+  if (!shouldPull) {
+    for (const spec of TABLE_SYNC_SPECS) {
+      const pendingIds = pendingDeletions[spec.sheetName] || [];
+      if (pendingIds.some((id) => !meta[spec.sheetName]?.[id])) {
+        shouldPull = true;
+        break;
+      }
+    }
+  }
 
   // ---- Step 1: 拉所有 sheet(一個 round trip)+ 合併 ----
   if (shouldPull) {
@@ -288,12 +339,31 @@ export async function syncOnce(onProgress, options = {}) {
       // localRecords: [{ _id, dataRow }],由 spec.flatten 從 state 推算
       const localRecords = spec.flatten(getState());
       const localById = new Map(localRecords.map((r) => [r._id, r]));
+      const pendingDeletedIds = pendingDeleteSet(pendingDeletions, spec.sheetName);
+      const serverRecordIds = new Set(serverRecords.map((r) => r._id));
+      if (pendingDeletedIds.size > 0) {
+        meta[spec.sheetName] = meta[spec.sheetName] || {};
+        for (const id of pendingDeletedIds) {
+          if (serverRecordIds.has(id) || localById.has(id)) continue;
+          const known = meta[spec.sheetName][id] || {};
+          meta[spec.sheetName][id] = {
+            _updated_at: known._updated_at || "",
+            _version: known._version || 0,
+            fingerprint: TOMBSTONE_FP,
+          };
+          queuePendingDeleteClear(pendingDeleteClears, spec.sheetName, id);
+        }
+      }
 
       if (serverWins && isModern) {
         // serverWins + modern:整片以 server 為準,但本機 dirty 的 row 進衝突佇列、不直接覆寫
-        const serverIds = new Set(serverRecords.filter((r) => !r._deleted).map((r) => r._id));
+        const serverIds = new Set(serverRecords.filter((r) => !r._deleted && !pendingDeletedIds.has(r._id)).map((r) => r._id));
         applySync((st) => {
           for (const sr of serverRecords) {
+            if (pendingDeletedIds.has(sr._id)) {
+              spec.removeFromState(st, sr._id);
+              continue;
+            }
             const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow, spec.dataHeaders, sr._id) : null;
             const knownFP = sheetMeta[sr._id]?.fingerprint;
             // canonical 過後本機 == server 就不算衝突(YYYY-MM 欄被 Sheets 自動轉成 YYYY-MM-DD
@@ -345,6 +415,7 @@ export async function syncOnce(onProgress, options = {}) {
         // 重設 meta:跟 server 對齊(被加入衝突的 row 不更新 meta,等使用者解完再更新)
         const conflictedIds = new Set();
         for (const sr of serverRecords) {
+          if (pendingDeletedIds.has(sr._id)) continue;
           const localFP = localById.has(sr._id) ? fingerprintDataRow(localById.get(sr._id).dataRow, spec.dataHeaders, sr._id) : null;
           const knownFP = sheetMeta[sr._id]?.fingerprint;
           const serverFP = !sr._deleted ? fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) : null;
@@ -357,6 +428,13 @@ export async function syncOnce(onProgress, options = {}) {
         }
         meta[spec.sheetName] = meta[spec.sheetName] || {};
         for (const sr of serverRecords) {
+          if (pendingDeletedIds.has(sr._id)) {
+            meta[spec.sheetName][sr._id] = sr._deleted
+              ? { _updated_at: sr._updated_at, _version: sr._version, fingerprint: TOMBSTONE_FP }
+              : { _updated_at: sr._updated_at, _version: sr._version, fingerprint: fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) };
+            if (sr._deleted) queuePendingDeleteClear(pendingDeleteClears, spec.sheetName, sr._id);
+            continue;
+          }
           if (conflictedIds.has(sr._id)) continue;
           meta[spec.sheetName][sr._id] = sr._deleted
             ? { _updated_at: sr._updated_at, _version: sr._version, fingerprint: TOMBSTONE_FP }
@@ -368,6 +446,10 @@ export async function syncOnce(onProgress, options = {}) {
         // 一般合併:LWW + 衝突偵測
         applySync((st) => {
           for (const sr of serverRecords) {
+            if (pendingDeletedIds.has(sr._id)) {
+              spec.removeFromState(st, sr._id);
+              continue;
+            }
             const known = sheetMeta[sr._id];
             const isNewerOrFirst = !known || (sr._updated_at && sr._updated_at > (known._updated_at || ""));
             if (!isNewerOrFirst) continue;
@@ -415,6 +497,13 @@ export async function syncOnce(onProgress, options = {}) {
         if (!meta[spec.sheetName]) meta[spec.sheetName] = {};
         const conflictedIds = new Set();
         for (const sr of serverRecords) {
+          if (pendingDeletedIds.has(sr._id)) {
+            meta[spec.sheetName][sr._id] = sr._deleted
+              ? { _updated_at: sr._updated_at, _version: sr._version, fingerprint: TOMBSTONE_FP }
+              : { _updated_at: sr._updated_at, _version: sr._version, fingerprint: fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) };
+            if (sr._deleted) queuePendingDeleteClear(pendingDeleteClears, spec.sheetName, sr._id);
+            continue;
+          }
           const known = sheetMeta[sr._id];
           const isNewerOrFirst = !known || (sr._updated_at && sr._updated_at > (known._updated_at || ""));
           if (!isNewerOrFirst) continue;
@@ -442,12 +531,14 @@ export async function syncOnce(onProgress, options = {}) {
   // 拉完發現有衝突 → 不要 push,等使用者處理
   if (getConflictCount() > 0) {
     saveMeta(meta);
+    flushPendingDeleteClears(pendingDeleteClears);
     saveServerVersion(serverVersion);
     return { ok: true, pulled: shouldPull, pushedTables: 0, conflicts: getConflictCount() };
   }
 
-  if (serverWins) {
+  if (serverWins && !hasPendingDeletionIntent) {
     saveMeta(meta);
+    flushPendingDeleteClears(pendingDeleteClears);
     saveServerVersion(serverVersion);
     return { ok: true, pulled: shouldPull, pushedTables: 0, serverWins: true };
   }
@@ -465,6 +556,7 @@ export async function syncOnce(onProgress, options = {}) {
     const upsertIds = [];
     const localIds = new Set(localRecords.map((r) => r._id));
     const isFullPush = forcePushSheets.has(spec.sheetName);
+    const pendingDeletedIds = pendingDeleteSet(pendingDeletions, spec.sheetName);
 
     // 改動 / 新增
     for (const lr of localRecords) {
@@ -485,10 +577,22 @@ export async function syncOnce(onProgress, options = {}) {
 
     // 刪除:sync_meta 有但 local flatten 不在,且尚未 tombstone
     const deletedIds = [];
-    for (const id of Object.keys(sheetMeta)) {
-      if (sheetMeta[id].fingerprint === TOMBSTONE_FP) continue;
-      if (localIds.has(id)) continue;
-      const expectedVersion = sheetMeta[id]?._version || 0;
+    const deleteCandidates = new Set([...Object.keys(sheetMeta), ...pendingDeletedIds]);
+    for (const id of deleteCandidates) {
+      const known = sheetMeta[id];
+      if (known?.fingerprint === TOMBSTONE_FP) {
+        if (pendingDeletedIds.has(id)) queuePendingDeleteClear(pendingDeleteClears, spec.sheetName, id);
+        continue;
+      }
+      if (localIds.has(id)) {
+        if (pendingDeletedIds.has(id)) queuePendingDeleteClear(pendingDeleteClears, spec.sheetName, id);
+        continue;
+      }
+      if (!known) {
+        if (pendingDeletedIds.has(id)) queuePendingDeleteClear(pendingDeleteClears, spec.sheetName, id);
+        continue;
+      }
+      const expectedVersion = known._version || 0;
       upserts.push([...dataHeaders.map(() => ""), id, "", "Y", expectedVersion]);
       upsertIds.push(id);
       deletedIds.push(id);
@@ -523,6 +627,7 @@ export async function syncOnce(onProgress, options = {}) {
           _version: a._version,
           fingerprint: TOMBSTONE_FP,
         };
+        clearSyncDeleted(spec.sheetName, [a._id]);
       } else {
         const lr = localById.get(a._id);
         if (lr) {
@@ -540,10 +645,18 @@ export async function syncOnce(onProgress, options = {}) {
 
     // 處理 conflicts:進 conflict-store
     for (const c of (resp.conflicts || [])) {
+      const serverDataRow = c.current_row.slice(0, dataHeaders.length);
+      if (deletedSet.has(c._id)) {
+        meta[spec.sheetName][c._id] = {
+          _updated_at: c.current_updated_at,
+          _version: c.current_version,
+          fingerprint: fingerprintDataRow(serverDataRow, dataHeaders, c._id),
+        };
+        continue;
+      }
       const lr = localById.get(c._id);
       if (!lr) continue;  // 我們不知道這筆?跳過(理論上不會發生)
       // 從 current_row 解出 server 的 dataRow + metadata
-      const serverDataRow = c.current_row.slice(0, dataHeaders.length);
       addConflict({
         sheetName: spec.sheetName,
         entityId: c._id,
@@ -571,6 +684,7 @@ export async function syncOnce(onProgress, options = {}) {
   }
 
   saveMeta(meta);
+  flushPendingDeleteClears(pendingDeleteClears);
   saveServerVersion(latestPushedVersion);
   return { ok: true, pulled: shouldPull, pushedTables: totalUpserts, conflicts: getConflictCount() };
 }
@@ -672,7 +786,7 @@ async function runSyncIfReady(reason, options = {}) {
     // 同步成功 → 清掉 pending(只在 push 沒衝突時才算真的全推上去)
     _lastSuccessAt = Date.now();
     _lastError = "";
-    if ((result.conflicts || 0) === 0) _hasPendingChanges = false;
+    if ((result.conflicts || 0) === 0) _hasPendingChanges = hasPendingSyncDeletions();
   } catch (e) {
     if (isAppsScriptConfigErrorMessage(e?.message || e)) {
       suspendAutoSyncForConfigError(e, reason);
@@ -741,7 +855,7 @@ export async function manualSync() {
     if (getConflictCount() > 0) {
       markSyncDone(`⚠️ 有 ${getConflictCount()} 筆衝突待處理`, "bad");
     } else {
-      _hasPendingChanges = false;
+      _hasPendingChanges = hasPendingSyncDeletions();
       markSyncDone("✓ 手動同步完成", "ok");
     }
   } catch (e) {

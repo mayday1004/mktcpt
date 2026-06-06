@@ -43,6 +43,10 @@ function doPost(e) {
       case 'readAllTables':   return _resp(readAllTables(body.sheetNames || []));
       case 'upsertRows':      return _resp(upsertRows(body.sheetName, body.headers, body.rows));
       case 'writeTable':      return _resp(writeTable(body.sheetName, body.headers, body.rows));
+      case 'yourlsListQueuedActions': return _resp(yourlsListQueuedActions(body.limit || 20));
+      case 'yourlsClaimAction':       return _resp(yourlsClaimAction(body.action_id, body.worker_id));
+      case 'yourlsReportActionResult': return _resp(yourlsReportActionResult(body));
+      case 'yourlsAppendExecutionLog': return _resp(yourlsAppendExecutionLog(body.log || body));
       default: return _resp({ error: 'unknown action: ' + body.action });
     }
   } catch (err) {
@@ -284,4 +288,227 @@ function readAllTables(names) {
     out.sheets[names[i]] = readTable(names[i]);
   }
   return out;
+}
+
+// ===== Yourls worker queue API =====
+const YOURLS_ACTION_SHEET = 'YOURLS操作佇列';
+const YOURLS_EXEC_LOG_SHEET = 'YOURLS執行紀錄';
+const YOURLS_ACTION_HEADERS = [
+  'action_id', 'todo_id', 'created_at', 'approved_at', 'approved_by',
+  'kind', 'short_url_param', 'source_ad_code', 'ad_name', 'weight_summary',
+  'payload_json', 'status', 'worker_id', 'claimed_at', 'completed_at',
+  'last_error', 'attempts', 'updated_at',
+];
+const YOURLS_LOG_HEADERS = [
+  'log_id', 'action_id', 'at', 'status', 'kind', 'short_url_param',
+  'before_json', 'after_json', 'operations_json', 'error_msg', 'worker_id', 'dry_run',
+];
+
+function _yourlsEnsureSheet(name, dataHeaders) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(name);
+  const fullHeaders = dataHeaders.concat(META_COLS);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.getRange(1, 1, 1, fullHeaders.length).setValues([fullHeaders]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    return sh;
+  }
+
+  const lastCol = Math.max(sh.getLastColumn(), 1);
+  let headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String);
+  if (headers.length === 1 && !headers[0]) headers = [];
+  const missing = fullHeaders.filter(function (h) { return headers.indexOf(h) < 0; });
+  if (missing.length > 0) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]).setFontWeight('bold');
+  }
+  sh.setFrozenRows(1);
+  return sh;
+}
+
+function _yourlsHeaders(sh) {
+  const lastCol = sh.getLastColumn();
+  return lastCol > 0 ? sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String) : [];
+}
+
+function _yourlsRowObject(headers, row) {
+  const obj = {};
+  for (let i = 0; i < headers.length; i++) obj[headers[i]] = row[i];
+  return obj;
+}
+
+function _yourlsSafeJson(raw) {
+  if (!raw) return null;
+  try { return JSON.parse(String(raw)); } catch (e) { return null; }
+}
+
+function _yourlsDisplayNow() {
+  return Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd HH:mm:ss');
+}
+
+function _yourlsFindRow(sh, headers, idHeader, idValue) {
+  const idIdx = headers.indexOf(idHeader);
+  if (idIdx < 0 || !idValue) return null;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return null;
+  const values = sh.getRange(2, 1, lastRow - 1, headers.length).getValues();
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][idIdx] || '') === String(idValue)) {
+      return { sheetRow: i + 2, row: values[i] };
+    }
+  }
+  return null;
+}
+
+function _yourlsSet(row, headers, key, value) {
+  const idx = headers.indexOf(key);
+  if (idx >= 0) row[idx] = value;
+}
+
+function _yourlsTouchRow(row, headers, now) {
+  const updatedIdx = headers.indexOf('_updated_at');
+  const versionIdx = headers.indexOf('_version');
+  const deletedIdx = headers.indexOf('_deleted');
+  if (updatedIdx >= 0) row[updatedIdx] = now;
+  if (deletedIdx >= 0) row[deletedIdx] = '';
+  if (versionIdx >= 0) row[versionIdx] = (Number(row[versionIdx]) || 0) + 1;
+}
+
+function yourlsListQueuedActions(limit) {
+  const sh = _yourlsEnsureSheet(YOURLS_ACTION_SHEET, YOURLS_ACTION_HEADERS);
+  const headers = _yourlsHeaders(sh);
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return { ok: true, actions: [] };
+  const rows = sh.getRange(2, 1, lastRow - 1, headers.length).getValues();
+  const out = [];
+  rows.forEach(function (row) {
+    const obj = _yourlsRowObject(headers, row);
+    if (String(obj.status || '') !== 'queued') return;
+    const payload = _yourlsSafeJson(obj.payload_json) || {};
+    out.push({
+      action_id: String(obj.action_id || ''),
+      todo_id: String(obj.todo_id || ''),
+      approved_at: String(obj.approved_at || ''),
+      kind: String(obj.kind || payload.kind || ''),
+      short_url_param: String(obj.short_url_param || payload.short_url_param || ''),
+      source_ad_code: String(obj.source_ad_code || payload.source_ad_code || ''),
+      ad_name: String(obj.ad_name || payload.ad_name || ''),
+      weight_summary: String(obj.weight_summary || ''),
+      payload: payload,
+      attempts: Number(obj.attempts) || 0,
+    });
+  });
+  out.sort(function (a, b) {
+    return String(a.approved_at || '').localeCompare(String(b.approved_at || '')) ||
+      String(a.action_id || '').localeCompare(String(b.action_id || ''));
+  });
+  return { ok: true, actions: out.slice(0, Number(limit) || 20) };
+}
+
+function yourlsClaimAction(actionId, workerId) {
+  if (!actionId) return { ok: false, error: 'action_id required' };
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    const sh = _yourlsEnsureSheet(YOURLS_ACTION_SHEET, YOURLS_ACTION_HEADERS);
+    const headers = _yourlsHeaders(sh);
+    const found = _yourlsFindRow(sh, headers, 'action_id', actionId);
+    if (!found) return { ok: false, error: 'action not found' };
+    const obj = _yourlsRowObject(headers, found.row);
+    if (String(obj.status || '') !== 'queued') {
+      return { ok: false, status: String(obj.status || ''), error: 'action is not queued' };
+    }
+    const now = _yourlsDisplayNow();
+    const metaNow = new Date().toISOString();
+    const row = found.row.slice();
+    _yourlsSet(row, headers, 'status', 'running');
+    _yourlsSet(row, headers, 'worker_id', workerId || '');
+    _yourlsSet(row, headers, 'claimed_at', now);
+    _yourlsSet(row, headers, 'updated_at', now);
+    _yourlsSet(row, headers, 'attempts', (Number(obj.attempts) || 0) + 1);
+    _yourlsSet(row, headers, 'last_error', '');
+    _yourlsTouchRow(row, headers, metaNow);
+    sh.getRange(found.sheetRow, 1, 1, headers.length).setValues([row]);
+    const bumped = _bumpServerVersion();
+    const payload = _yourlsSafeJson(obj.payload_json) || {};
+    return { ok: true, server_version: bumped.server_version, action: { action_id: actionId, payload: payload } };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function yourlsReportActionResult(body) {
+  const actionId = body.action_id;
+  if (!actionId) return { ok: false, error: 'action_id required' };
+  const status = body.status === 'applied' ? 'applied' : 'failed';
+  const workerId = body.worker_id || '';
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    const sh = _yourlsEnsureSheet(YOURLS_ACTION_SHEET, YOURLS_ACTION_HEADERS);
+    const headers = _yourlsHeaders(sh);
+    const found = _yourlsFindRow(sh, headers, 'action_id', actionId);
+    if (!found) return { ok: false, error: 'action not found' };
+    const obj = _yourlsRowObject(headers, found.row);
+    const now = _yourlsDisplayNow();
+    const metaNow = new Date().toISOString();
+    const row = found.row.slice();
+    _yourlsSet(row, headers, 'status', status);
+    _yourlsSet(row, headers, 'worker_id', workerId || String(obj.worker_id || ''));
+    _yourlsSet(row, headers, 'completed_at', now);
+    _yourlsSet(row, headers, 'updated_at', now);
+    _yourlsSet(row, headers, 'last_error', body.error_msg || body.last_error || '');
+    _yourlsTouchRow(row, headers, metaNow);
+    sh.getRange(found.sheetRow, 1, 1, headers.length).setValues([row]);
+
+    yourlsAppendExecutionLog({
+      action_id: actionId,
+      at: now,
+      status: status,
+      kind: String(obj.kind || ''),
+      short_url_param: String(obj.short_url_param || ''),
+      before_json: body.before_json || JSON.stringify(body.before || {}),
+      after_json: body.after_json || JSON.stringify(body.after || {}),
+      operations_json: body.operations_json || JSON.stringify(body.operations || []),
+      error_msg: body.error_msg || body.last_error || '',
+      worker_id: workerId || String(obj.worker_id || ''),
+      dry_run: body.dry_run ? 'Y' : '',
+    });
+
+    const bumped = _bumpServerVersion();
+    return { ok: true, status: status, server_version: bumped.server_version };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function yourlsAppendExecutionLog(log) {
+  const sh = _yourlsEnsureSheet(YOURLS_EXEC_LOG_SHEET, YOURLS_LOG_HEADERS);
+  const headers = _yourlsHeaders(sh);
+  const now = _yourlsDisplayNow();
+  const metaNow = new Date().toISOString();
+  const data = {
+    log_id: log.log_id || ('yourls_log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)),
+    action_id: log.action_id || '',
+    at: log.at || now,
+    status: log.status || '',
+    kind: log.kind || '',
+    short_url_param: log.short_url_param || '',
+    before_json: log.before_json || JSON.stringify(log.before || {}),
+    after_json: log.after_json || JSON.stringify(log.after || {}),
+    operations_json: log.operations_json || JSON.stringify(log.operations || []),
+    error_msg: log.error_msg || '',
+    worker_id: log.worker_id || '',
+    dry_run: log.dry_run === true || String(log.dry_run || '').toUpperCase() === 'Y' ? 'Y' : '',
+  };
+  const row = headers.map(function (h) {
+    if (h === '_id') return data.log_id;
+    if (h === '_updated_at') return metaNow;
+    if (h === '_deleted') return '';
+    if (h === '_version') return 1;
+    return data[h] == null ? '' : data[h];
+  });
+  sh.appendRow(row);
+  const bumped = _bumpServerVersion();
+  return { ok: true, log_id: data.log_id, server_version: bumped.server_version };
 }

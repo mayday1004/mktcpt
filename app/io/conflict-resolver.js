@@ -22,6 +22,7 @@ import { getConflicts, removeConflict, subscribeConflicts } from "./conflict-sto
 import { getState, applySync } from "../state.js";
 import { TABLE_SYNC_SPECS } from "./sync-specs.js";
 import { logInfo, logWarn, logError } from "../lib/sync-log.js";
+import { normalizeTodoCreatedAt } from "../domain/todo-utils.js";
 
 let resolverModalOpen = false;
 
@@ -38,10 +39,32 @@ function rowToObj(dataRow, dataHeaders) {
   return obj;
 }
 
-function fieldsDiffer(a, b) {
+const CONFLICT_DATE_TIME_HEADERS = new Set([
+  "created_at",
+  "approved_at",
+  "claimed_at",
+  "completed_at",
+  "updated_at",
+  "at",
+  "建立時間",
+  "Yourls批准時間",
+  "Yourls套用時間",
+]);
+
+function isDateTimeHeader(header) {
+  const h = String(header || "");
+  return CONFLICT_DATE_TIME_HEADERS.has(h) || /_at$/.test(h);
+}
+
+function normalizeForDiff(header, value) {
+  const s = value == null ? "" : String(value);
+  return isDateTimeHeader(header) ? normalizeTodoCreatedAt(s) : s;
+}
+
+function fieldsDiffer(header, a, b) {
   // 用字串化比較(處理數字 vs 字串、null vs "")
-  const A = a == null ? "" : String(a);
-  const B = b == null ? "" : String(b);
+  const A = normalizeForDiff(header, a);
+  const B = normalizeForDiff(header, b);
   return A !== B;
 }
 
@@ -49,11 +72,25 @@ function fieldsDiffer(a, b) {
 function diffFields(mineObj, theirsObj, dataHeaders) {
   const out = [];
   for (const h of dataHeaders) {
-    if (fieldsDiffer(mineObj[h], theirsObj[h])) {
+    if (fieldsDiffer(h, mineObj[h], theirsObj[h])) {
       out.push({ header: h, mine: mineObj[h], theirs: theirsObj[h] });
     }
   }
   return out;
+}
+
+function conflictDiffFields(conflict) {
+  const theirsObj = rowToObj(conflict.theirs.dataRow, conflict.theirs.dataHeaders);
+  return diffFields(
+    rowToObj(conflict.mine.dataRow, conflict.mine.dataHeaders),
+    theirsObj,
+    conflict.mine.dataHeaders,
+  );
+}
+
+function isTrivialDataConflict(conflict) {
+  if (String(conflict.theirs?._deleted || "").toUpperCase() === "Y") return false;
+  return conflictDiffFields(conflict).length === 0;
 }
 
 // 根據分頁類型把 entityId(內部 _id)轉成使用者看得懂的標籤。
@@ -143,6 +180,7 @@ function applyTheirs(conflict, onMetaUpdate) {
         _version: conflict.theirs.version,
         _updated_at: conflict.theirs.updatedAt,
         dataRow: conflict.theirs.dataRow,
+        dataHeaders: conflict.theirs.dataHeaders,
       });
     }
     logInfo("conflict.resolve.takeTheirs", { sheet: conflict.sheetName, id: conflict.entityId });
@@ -210,11 +248,7 @@ function applyMerge(conflict, perFieldChoices, onMetaUpdate) {
 
 function renderConflictBlock(conflict, idx) {
   const theirsObj = rowToObj(conflict.theirs.dataRow, conflict.theirs.dataHeaders);
-  const fields = diffFields(
-    rowToObj(conflict.mine.dataRow, conflict.mine.dataHeaders),
-    theirsObj,
-    conflict.mine.dataHeaders,
-  );
+  const fields = conflictDiffFields(conflict);
   const label = friendlyLabel(conflict.sheetName, conflict.entityId, theirsObj);
 
   // 衝突欄位的 radio(預設選「我的」)
@@ -273,7 +307,15 @@ export function openConflictResolver(onMetaUpdate) {
   resolverModalOpen = true;
 
   const render = () => {
-    const conflicts = getConflicts();
+    const allConflicts = getConflicts();
+    const conflicts = [];
+    for (const c of allConflicts) {
+      if (isTrivialDataConflict(c) && applyTheirs(c, onMetaUpdate)) {
+        removeConflict(c.id);
+      } else {
+        conflicts.push(c);
+      }
+    }
     if (conflicts.length === 0) {
       window.modal.close();
       resolverModalOpen = false;

@@ -4,11 +4,19 @@ import { runColdStartGate } from "./lib/version-gate.js";
 import { isDeployManaged } from "./lib/deploy-config.js";
 import { applyDoneEliminateTodos, normalizeTodosInState } from "./domain/todo-utils.js";
 import { normalizeWeightsToTotal } from "./domain/auto-split.js";
+import { reconcileYourlsTodos } from "./domain/yourls-actions.js";
+import { markSyncDeleted } from "./io/sync-deletions.js";
 
 const KEY = "buyads_state_v1";
 const UNDO_KEY = "buyads_undo_v1";
 const MAX_UNDO = 8;
 const listeners = new Set();
+const SYNC_DELETE_TRACKERS = [
+  { sheetName: "\u5ee3\u544a", select: (st) => st.ads, idOf: (row) => row.id },
+  { sheetName: "\u5f85\u8fa6", select: (st) => st.todos, idOf: (row) => row.id },
+  { sheetName: "YOURLS\u64cd\u4f5c\u4f47\u5217", select: (st) => st.yourls_actions, idOf: (row) => row.action_id },
+  { sheetName: "YOURLS\u57f7\u884c\u7d00\u9304", select: (st) => st.yourls_execution_logs, idOf: (row) => row.log_id },
+];
 
 // 部署版本 gate:本機 state 若是舊版 build 寫的就在 load 前清掉,
 // 避免舊 shape 餵給新版邏輯 → 推爛資料到雲端。詳見 app/lib/version-gate.js。
@@ -16,6 +24,31 @@ runColdStartGate();
 
 let state = load();
 let undoStack = loadUndo();
+
+function collectSyncEntityIds(st) {
+  const out = {};
+  for (const tracker of SYNC_DELETE_TRACKERS) {
+    const ids = new Set();
+    const rows = tracker.select(st) || [];
+    if (Array.isArray(rows)) {
+      for (const row of rows) {
+        const id = String(tracker.idOf(row) || "").trim();
+        if (id) ids.add(id);
+      }
+    }
+    out[tracker.sheetName] = ids;
+  }
+  return out;
+}
+
+function markRemovedSyncRows(beforeIds, afterIds) {
+  for (const tracker of SYNC_DELETE_TRACKERS) {
+    const before = beforeIds[tracker.sheetName] || new Set();
+    const after = afterIds[tracker.sheetName] || new Set();
+    const removed = [...before].filter((id) => !after.has(id));
+    if (removed.length > 0) markSyncDeleted(tracker.sheetName, removed);
+  }
+}
 
 function load() {
   try {
@@ -190,6 +223,9 @@ function migrate(st) {
     normalizeLegacySplitPairWeights(st);
   }
   normalizeTodosInState(st);
+  if (!Array.isArray(st.yourls_actions)) st.yourls_actions = [];
+  if (!Array.isArray(st.yourls_execution_logs)) st.yourls_execution_logs = [];
+  reconcileYourlsTodos(st);
   applyDoneEliminateTodos(st);
   st.version = VERSION;
   // 部署模式下,本機絕不快取 sheets_webapp_url / sheets_token,
@@ -246,8 +282,10 @@ export function replaceState(next, label = "整批替換") {
 }
 
 export function update(mutator, label) {
+  const beforeSyncIds = collectSyncEntityIds(state);
   pushUndo(label);
   mutator(state);
+  markRemovedSyncRows(beforeSyncIds, collectSyncEntityIds(state));
   persist();
   emit();
 }
@@ -274,8 +312,10 @@ export function uid(prefix = "id") {
 }
 
 export function resetAll() {
+  const beforeSyncIds = collectSyncEntityIds(state);
   pushUndo("重設全部資料");
   state = defaultState();
+  markRemovedSyncRows(beforeSyncIds, collectSyncEntityIds(state));
   persist();
   emit();
 }
@@ -292,12 +332,14 @@ export function peekUndo() {
 export function undo() {
   if (undoStack.length === 0) return null;
   const entry = undoStack.pop();
+  const beforeSyncIds = collectSyncEntityIds(state);
   try {
     state = migrate(JSON.parse(entry.snapshot));
   } catch (e) {
     console.error("undo restore failed", e);
     return null;
   }
+  markRemovedSyncRows(beforeSyncIds, collectSyncEntityIds(state));
   persist();
   persistUndo();
   emit();

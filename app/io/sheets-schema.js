@@ -1,5 +1,11 @@
 import { METRICS, RENEWAL_REASONS } from "../schema.js";
 import { normalizeTodoCreatedAt } from "../domain/todo-utils.js";
+import {
+  YOURLS_ACTION_SHEET,
+  YOURLS_EXEC_LOG_SHEET,
+  parsePayloadJson,
+  stableJson,
+} from "../domain/yourls-actions.js";
 
 // ── 成效輸入（暫存區 / Apps Script 寫入） ─────────────────────────────
 // Apps Script 從外部平台拉數據，寫入此分頁。資料期間由使用者自填起訖日，
@@ -90,6 +96,16 @@ export function toYmd(v) {
   const d = new Date(s);
   if (!Number.isNaN(d.getTime())) return _toTaipeiYmd(d);
   return "";
+}
+
+function undoPayloadJson(payload) {
+  if (!payload) return "";
+  try {
+    const text = JSON.stringify(payload);
+    return text.length <= 30000 ? text : "";
+  } catch {
+    return "";
+  }
 }
 
 // ── 正規化分頁（一般 push/pull 走這些） ────────────────────────────
@@ -248,9 +264,45 @@ export const TABLES = [
   },
   {
     name: "待辦",
-    headers: ["id", "建立時間", "動作類型", "描述", "狀態"],
-    toRows: (s) => (s.todos || []).map((t) => [
-      t.id, normalizeTodoCreatedAt(t.created_at), t.action_type, t.description || "", t.status || "pending",
+    headers: [
+      "id", "建立時間", "動作類型", "描述", "狀態", "撤回資料JSON",
+      "Yourls狀態", "Yourls操作JSON", "Yourls操作IDs", "Yourls批准時間", "Yourls套用時間", "Yourls最後錯誤",
+    ],
+    toRows: (s) => (s.todos || []).map((t) => {
+      const yourlsPayload = Array.isArray(t.yourls_actions) ? t.yourls_actions : (t.yourls_action ? [t.yourls_action] : []);
+      return [
+        t.id, normalizeTodoCreatedAt(t.created_at), t.action_type, t.description || "", t.status || "pending",
+        undoPayloadJson(t.undo_payload),
+        t.yourls_status || "", yourlsPayload.length ? stableJson(yourlsPayload) : "",
+        (t.yourls_action_ids || []).join(","), t.yourls_approved_at || "", t.yourls_applied_at || "", t.yourls_last_error || "",
+      ];
+    }),
+  },
+  {
+    name: YOURLS_ACTION_SHEET,
+    headers: [
+      "action_id", "todo_id", "created_at", "approved_at", "approved_by",
+      "kind", "short_url_param", "source_ad_code", "ad_name", "weight_summary",
+      "payload_json", "status", "worker_id", "claimed_at", "completed_at",
+      "last_error", "attempts", "updated_at",
+    ],
+    toRows: (s) => (s.yourls_actions || []).map((a) => [
+      a.action_id || "", a.todo_id || "", normalizeTodoCreatedAt(a.created_at), normalizeTodoCreatedAt(a.approved_at), a.approved_by || "",
+      a.kind || "", a.short_url_param || "", a.source_ad_code || "", a.ad_name || "", a.weight_summary || "",
+      stableJson(a.payload), a.status || "queued", a.worker_id || "", normalizeTodoCreatedAt(a.claimed_at), normalizeTodoCreatedAt(a.completed_at),
+      a.last_error || "", Number(a.attempts) || 0, normalizeTodoCreatedAt(a.updated_at),
+    ]),
+  },
+  {
+    name: YOURLS_EXEC_LOG_SHEET,
+    headers: [
+      "log_id", "action_id", "at", "status", "kind", "short_url_param",
+      "before_json", "after_json", "operations_json", "error_msg", "worker_id", "dry_run",
+    ],
+    toRows: (s) => (s.yourls_execution_logs || []).map((log) => [
+      log.log_id || "", log.action_id || "", normalizeTodoCreatedAt(log.at), log.status || "",
+      log.kind || "", log.short_url_param || "", stableJson(log.before), stableJson(log.after),
+      stableJson(log.operations || []), log.error_msg || "", log.worker_id || "", log.dry_run ? "Y" : "",
     ]),
   },
   {
@@ -496,14 +548,74 @@ export function assembleFromTables(raw) {
   const todoT = pick("待辦");
   const todos = todoT.rows.map((r) => {
     const o = toObj(todoT.headers, r);
-    return {
+    const rec = {
       id: String(o.id || ""),
       created_at: normalizeTodoCreatedAt(o["建立時間"]),
       action_type: String(o["動作類型"] || ""),
       description: String(o["描述"] || ""),
       status: o["狀態"] === "done" ? "done" : "pending",
     };
+    if (todoT.headers.includes("撤回資料JSON")) {
+      const payload = parsePayloadJson(o["撤回資料JSON"]);
+      if (payload && typeof payload === "object" && !Array.isArray(payload)) rec.undo_payload = payload;
+    }
+    if (todoT.headers.includes("Yourls狀態")) {
+      rec.yourls_status = String(o["Yourls狀態"] || "");
+      const payload = parsePayloadJson(o["Yourls操作JSON"]);
+      if (Array.isArray(payload)) rec.yourls_actions = payload;
+      else if (payload) rec.yourls_action = payload;
+      rec.yourls_action_ids = String(o["Yourls操作IDs"] || "").split(",").map((s) => s.trim()).filter(Boolean);
+      rec.yourls_approved_at = normalizeTodoCreatedAt(o["Yourls批准時間"]);
+      rec.yourls_applied_at = normalizeTodoCreatedAt(o["Yourls套用時間"]);
+      rec.yourls_last_error = String(o["Yourls最後錯誤"] || "");
+    }
+    return rec;
   });
+
+  const yourlsActionT = pick(YOURLS_ACTION_SHEET);
+  const yourls_actions = yourlsActionT.rows.map((r) => {
+    const o = toObj(yourlsActionT.headers, r);
+    const payload = parsePayloadJson(o.payload_json);
+    return {
+      action_id: String(o.action_id || ""),
+      todo_id: String(o.todo_id || ""),
+      created_at: normalizeTodoCreatedAt(o.created_at),
+      approved_at: normalizeTodoCreatedAt(o.approved_at),
+      approved_by: String(o.approved_by || ""),
+      kind: String(o.kind || payload?.kind || ""),
+      short_url_param: String(o.short_url_param || payload?.short_url_param || ""),
+      source_ad_code: String(o.source_ad_code || payload?.source_ad_code || ""),
+      ad_name: String(o.ad_name || payload?.ad_name || ""),
+      weight_summary: String(o.weight_summary || payload?.weight_summary || ""),
+      payload: payload || {},
+      status: String(o.status || "queued"),
+      worker_id: String(o.worker_id || ""),
+      claimed_at: normalizeTodoCreatedAt(o.claimed_at),
+      completed_at: normalizeTodoCreatedAt(o.completed_at),
+      last_error: String(o.last_error || ""),
+      attempts: Number(o.attempts) || 0,
+      updated_at: normalizeTodoCreatedAt(o.updated_at),
+    };
+  }).filter((a) => a.action_id);
+
+  const yourlsLogT = pick(YOURLS_EXEC_LOG_SHEET);
+  const yourls_execution_logs = yourlsLogT.rows.map((r) => {
+    const o = toObj(yourlsLogT.headers, r);
+    return {
+      log_id: String(o.log_id || ""),
+      action_id: String(o.action_id || ""),
+      at: normalizeTodoCreatedAt(o.at),
+      status: String(o.status || ""),
+      kind: String(o.kind || ""),
+      short_url_param: String(o.short_url_param || ""),
+      before: parsePayloadJson(o.before_json) || {},
+      after: parsePayloadJson(o.after_json) || {},
+      operations: parsePayloadJson(o.operations_json) || [],
+      error_msg: String(o.error_msg || ""),
+      worker_id: String(o.worker_id || ""),
+      dry_run: String(o.dry_run || "").toUpperCase() === "Y",
+    };
+  }).filter((log) => log.log_id);
 
   const settings = {
     current_month: "",
@@ -554,7 +666,7 @@ export function assembleFromTables(raw) {
 
   return {
     version: 3,
-    settings, products, monthly_budgets, daily_budgets, ads, todos, performance_data,
+    settings, products, monthly_budgets, daily_budgets, ads, todos, yourls_actions, yourls_execution_logs, performance_data,
     budget_changes, report_config,
   };
 }

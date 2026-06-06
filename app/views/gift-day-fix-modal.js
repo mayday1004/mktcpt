@@ -15,6 +15,7 @@ import { rebalanceSplitPair } from "../domain/split-pair.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 import { projectedDecisionState } from "../domain/renewal-projection.js";
 import { todayTaipei, nowTaipeiStamp } from "../lib/dates.js";
+import { buildYourlsActionPayload } from "../domain/yourls-actions.js";
 
 function esc(v) {
   return String(v ?? "").replace(/[&<>"']/g, (c) =>
@@ -214,6 +215,7 @@ export function openGiftDayFixModal(onApplied) {
       }).filter(Boolean))];
       const ad_snapshots = captureUndoSnapshot(st, targetSegIds);
       const added_ad_ids = [];
+      const yourlsActions = [];
 
       for (const p of picked) {
         const segs = st.ads.filter((a) => a.ad_code === p.ad.ad_code && !a.eliminated)
@@ -230,6 +232,14 @@ export function openGiftDayFixModal(onApplied) {
         for (const k of Object.keys(newWeights)) {
           if (Number(newWeights[k]) <= 0) delete newWeights[k];
         }
+        const yourlsAction = buildYourlsActionPayload({
+          kind: "update_weights",
+          ad: seg,
+          weights: newWeights,
+          products: st.products,
+          actionType: "補花費缺口",
+          effectiveDate: p.effective,
+        });
         try {
           if (p.effective <= seg.start_date) {
             seg.weights = newWeights;
@@ -247,6 +257,7 @@ export function openGiftDayFixModal(onApplied) {
             }
           }
           okCount++;
+          if (yourlsAction) yourlsActions.push(yourlsAction);
           successDescs.push(`${seg.ad_code} ${seg.ad_name}｜${p.effective} ${nameOfP[p.sourcePid] || p.sourcePid}↔${nameOfP[p.targetPid] || p.targetPid} ${p.deltaW}%`);
         } catch (e) {
           errCount++;
@@ -261,6 +272,7 @@ export function openGiftDayFixModal(onApplied) {
           description: `補花費缺口 ${okCount} 筆${errCount ? `(${errCount} 筆失敗)` : ""},涉及產品:${targetNames}\n${successDescs.join("\n")}\n(請至連結後台調整)`,
           status: "pending",
           undo_payload: { ad_snapshots, added_ad_ids },
+          ...(yourlsActions.length ? { yourls_actions: yourlsActions } : {}),
         });
       }
     });

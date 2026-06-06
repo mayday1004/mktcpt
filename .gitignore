@@ -22,6 +22,8 @@ Thumbs.db
 *.log
 *.tmp
 *.local.*
+.env.local
+.env.*.local
 
 # 使用者自己備份的 JSON(buyads_*_backup_*.json 等)
 buyads_*.json
@@ -33,3 +35,8 @@ restore-*.js
 # 打包輸出
 node_modules/
 dist/
+
+# Python
+.venv/
+__pycache__/
+*.pyc

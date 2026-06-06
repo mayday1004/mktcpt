@@ -10,6 +10,7 @@ import { bandsForMonth } from "../domain/budget.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 import { dailySpendGrid } from "../domain/spending.js";
 import { projectAdsWithRenewals } from "../domain/renewal-projection.js";
+import { buildYourlsActionPayload } from "../domain/yourls-actions.js";
 
 // 模組級狀態：使用者覆寫的「該廣告該產品 final 權重」
 // key: `${adId}|${pid}` → number
@@ -1124,6 +1125,7 @@ async function applyAll(pivot, newWeightsByAd, root) {
     const added_ad_ids = [];
 
     const nameOf = Object.fromEntries(st.products.map((p) => [p.id, p.name]));
+    const yourlsActions = [];
     const fmtW = (w) => Object.entries(w || {})
       .filter(([, v]) => Math.round(Number(v) || 0) > 0)
       .sort(([, a], [, b]) => Number(b) - Number(a))
@@ -1136,10 +1138,19 @@ async function applyAll(pivot, newWeightsByAd, root) {
       const effectiveLabel = formatTodoDate(effective);
       const oldStr = fmtW(seg.weights);
       const newStr = fmtW(ch.newW);
+      const yourlsAction = buildYourlsActionPayload({
+        kind: "update_weights",
+        ad: seg,
+        weights: ch.newW,
+        products: st.products,
+        actionType: "成效調權重",
+        effectiveDate: effective,
+      });
       try {
         if (effective <= seg.start_date) {
           seg.weights = { ...ch.newW };
           okCount++;
+          if (yourlsAction) yourlsActions.push(yourlsAction);
           successDetails.push(`${effectiveLabel ? `${effectiveLabel} ` : ""}${seg.ad_code} ${seg.ad_name}｜${oldStr} → ${newStr}`);
         } else {
           const r = buildWeightAdjust(seg, effective, { ...ch.newW });
@@ -1154,6 +1165,7 @@ async function applyAll(pivot, newWeightsByAd, root) {
             if (rebal?.newLinkedSegId) added_ad_ids.push(rebal.newLinkedSegId);
           }
           okCount++;
+          if (yourlsAction) yourlsActions.push(yourlsAction);
           successDetails.push(`${effectiveLabel ? `${effectiveLabel} ` : ""}${seg.ad_code} ${seg.ad_name}｜${oldStr} → ${newStr}`);
         }
       } catch { errCount++; }
@@ -1164,9 +1176,10 @@ async function applyAll(pivot, newWeightsByAd, root) {
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
         action_type: "成效調權重",
-        description: `${head}\n${successDetails.join("\n")}\n（請至連結隨機縮網址後台調整權重）`,
+        description: `${head}\n${successDetails.join("\n")}\n（請至隨機縮網址後台確認）`,
         status: "pending",
         undo_payload: { ad_snapshots, added_ad_ids },
+        ...(yourlsActions.length ? { yourls_actions: yourlsActions } : {}),
       });
     }
   });

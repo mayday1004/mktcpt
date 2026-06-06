@@ -15,6 +15,13 @@
 
 import { METRICS, RENEWAL_REASONS, PRODUCT_TYPES } from "../schema.js";
 import { applyDoneEliminateTodos, normalizeTodoCreatedAt } from "../domain/todo-utils.js";
+import {
+  YOURLS_ACTION_SHEET,
+  YOURLS_EXEC_LOG_SHEET,
+  parsePayloadJson,
+  reconcileYourlsTodos,
+  stableJson,
+} from "../domain/yourls-actions.js";
 
 // ===== 共用 helpers =====
 
@@ -623,7 +630,10 @@ export const TABLE_SYNC_SPECS = [
   // 2026-05-22 補同步:undo_payload(JSON.stringify;> 30KB 跳過,避免爆 cell)
   {
     sheetName: "待辦",
-    dataHeaders: ["id", "建立時間", "動作類型", "描述", "狀態", "撤回資料JSON"],
+    dataHeaders: [
+      "id", "建立時間", "動作類型", "描述", "狀態", "撤回資料JSON",
+      "Yourls狀態", "Yourls操作JSON", "Yourls操作IDs", "Yourls批准時間", "Yourls套用時間", "Yourls最後錯誤",
+    ],
     flatten: (s) => (s.todos || []).map((t) => {
       // undo_payload 太大就跳過(Google Sheets cell 限 50000 char,留安全邊際)
       let undoJson = "";
@@ -633,11 +643,16 @@ export const TABLE_SYNC_SPECS = [
           if (s.length <= 30000) undoJson = s;
         } catch { /* ignore */ }
       }
+      const yourlsPayload = Array.isArray(t.yourls_actions) ? t.yourls_actions : (t.yourls_action ? [t.yourls_action] : []);
+      const yourlsJson = yourlsPayload.length ? stableJson(yourlsPayload) : "";
+      const yourlsIds = (t.yourls_action_ids || []).join(",");
       return {
         _id: t.id,
         dataRow: [
           t.id, normalizeTodoCreatedAt(t.created_at), t.action_type || "",
           t.description || "", t.status || "pending", undoJson,
+          t.yourls_status || "", yourlsJson, yourlsIds,
+          t.yourls_approved_at || "", t.yourls_applied_at || "", t.yourls_last_error || "",
         ],
       };
     }),
@@ -664,8 +679,31 @@ export const TABLE_SYNC_SPECS = [
         // 舊 sheet 沒這欄 → 保留本機既有的 undo_payload
         rec.undo_payload = state.todos[idx].undo_payload;
       }
+      if (Object.prototype.hasOwnProperty.call(obj, "Yourls狀態")) {
+        rec.yourls_status = String(obj["Yourls狀態"] || "");
+        rec.yourls_action_ids = String(obj["Yourls操作IDs"] || "").split(",").map((s) => s.trim()).filter(Boolean);
+        rec.yourls_approved_at = normalizeTodoCreatedAt(obj["Yourls批准時間"]);
+        rec.yourls_applied_at = normalizeTodoCreatedAt(obj["Yourls套用時間"]);
+        rec.yourls_last_error = String(obj["Yourls最後錯誤"] || "");
+        const payload = parsePayloadJson(obj["Yourls操作JSON"]);
+        if (Array.isArray(payload)) {
+          rec.yourls_actions = payload;
+        } else if (payload) {
+          rec.yourls_action = payload;
+        }
+      } else if (idx >= 0) {
+        const prev = state.todos[idx];
+        if (prev.yourls_action) rec.yourls_action = prev.yourls_action;
+        if (prev.yourls_actions) rec.yourls_actions = prev.yourls_actions;
+        if (prev.yourls_status) rec.yourls_status = prev.yourls_status;
+        if (prev.yourls_action_ids) rec.yourls_action_ids = prev.yourls_action_ids;
+        if (prev.yourls_approved_at) rec.yourls_approved_at = prev.yourls_approved_at;
+        if (prev.yourls_applied_at) rec.yourls_applied_at = prev.yourls_applied_at;
+        if (prev.yourls_last_error) rec.yourls_last_error = prev.yourls_last_error;
+      }
       if (idx >= 0) state.todos[idx] = rec;
       else state.todos.push(rec);
+      reconcileYourlsTodos(state);
       applyDoneEliminateTodos(state);
     },
     removeFromState(state, _id) {
@@ -681,13 +719,154 @@ export const TABLE_SYNC_SPECS = [
           desc: String(r[idx("描述")] || ""),
           status: String(r[idx("狀態")] || "pending"),
           undo: idx("撤回資料JSON") >= 0 ? String(r[idx("撤回資料JSON")] || "") : "",
+          yourls_status: idx("Yourls狀態") >= 0 ? String(r[idx("Yourls狀態")] || "") : "",
+          yourls_json: idx("Yourls操作JSON") >= 0 ? String(r[idx("Yourls操作JSON")] || "") : "",
+          yourls_ids: idx("Yourls操作IDs") >= 0 ? String(r[idx("Yourls操作IDs")] || "") : "",
+          yourls_approved: idx("Yourls批准時間") >= 0 ? String(r[idx("Yourls批准時間")] || "") : "",
+          yourls_applied: idx("Yourls套用時間") >= 0 ? String(r[idx("Yourls套用時間")] || "") : "",
+          yourls_error: idx("Yourls最後錯誤") >= 0 ? String(r[idx("Yourls最後錯誤")] || "") : "",
         }))
         .filter((x) => x.id)
-        .map((x) => ({ _id: x.id, dataRow: [x.id, normalizeTodoCreatedAt(x.created_at), x.at, x.desc, x.status, x.undo] }));
+        .map((x) => ({
+          _id: x.id,
+          dataRow: [
+            x.id, normalizeTodoCreatedAt(x.created_at), x.at, x.desc, x.status, x.undo,
+            x.yourls_status, x.yourls_json, x.yourls_ids,
+            normalizeTodoCreatedAt(x.yourls_approved), normalizeTodoCreatedAt(x.yourls_applied), x.yourls_error,
+          ],
+        }));
     },
   },
 
-  // ── 10. 設定（id = key） ───────────────────────────────────────────
+  // ── 10. Yourls 操作佇列（id = action_id） ─────────────────────────
+  {
+    sheetName: YOURLS_ACTION_SHEET,
+    dataHeaders: [
+      "action_id", "todo_id", "created_at", "approved_at", "approved_by",
+      "kind", "short_url_param", "source_ad_code", "ad_name", "weight_summary",
+      "payload_json", "status", "worker_id", "claimed_at", "completed_at",
+      "last_error", "attempts", "updated_at",
+    ],
+    flatten: (s) => (s.yourls_actions || []).map((a) => ({
+      _id: a.action_id,
+      dataRow: [
+        a.action_id || "", a.todo_id || "", normalizeTodoCreatedAt(a.created_at), normalizeTodoCreatedAt(a.approved_at), a.approved_by || "",
+        a.kind || "", a.short_url_param || "", a.source_ad_code || "", a.ad_name || "", a.weight_summary || "",
+        stableJson(a.payload), a.status || "queued", a.worker_id || "", normalizeTodoCreatedAt(a.claimed_at), normalizeTodoCreatedAt(a.completed_at),
+        a.last_error || "", Number(a.attempts) || 0, normalizeTodoCreatedAt(a.updated_at),
+      ],
+    })),
+    upsertInState(state, _id, obj) {
+      state.yourls_actions = state.yourls_actions || [];
+      const payload = parsePayloadJson(obj["payload_json"]);
+      const rec = {
+        action_id: String(obj["action_id"] || _id),
+        todo_id: String(obj["todo_id"] || ""),
+        created_at: normalizeTodoCreatedAt(obj["created_at"]),
+        approved_at: normalizeTodoCreatedAt(obj["approved_at"]),
+        approved_by: String(obj["approved_by"] || ""),
+        kind: String(obj["kind"] || payload?.kind || ""),
+        short_url_param: String(obj["short_url_param"] || payload?.short_url_param || ""),
+        source_ad_code: String(obj["source_ad_code"] || payload?.source_ad_code || ""),
+        ad_name: String(obj["ad_name"] || payload?.ad_name || ""),
+        weight_summary: String(obj["weight_summary"] || payload?.weight_summary || ""),
+        payload: payload || {},
+        status: String(obj["status"] || "queued"),
+        worker_id: String(obj["worker_id"] || ""),
+        claimed_at: normalizeTodoCreatedAt(obj["claimed_at"]),
+        completed_at: normalizeTodoCreatedAt(obj["completed_at"]),
+        last_error: String(obj["last_error"] || ""),
+        attempts: numOr(obj["attempts"]),
+        updated_at: normalizeTodoCreatedAt(obj["updated_at"]),
+      };
+      const idx = state.yourls_actions.findIndex((a) => a.action_id === _id);
+      if (idx >= 0) state.yourls_actions[idx] = rec;
+      else state.yourls_actions.push(rec);
+      reconcileYourlsTodos(state);
+      applyDoneEliminateTodos(state);
+    },
+    removeFromState(state, _id) {
+      state.yourls_actions = (state.yourls_actions || []).filter((a) => a.action_id !== _id);
+      reconcileYourlsTodos(state);
+    },
+    legacyParse(headers, rows) {
+      const idx = (h) => headers.indexOf(h);
+      return rows
+        .map((r) => {
+          const id = String(r[idx("action_id")] || "");
+          if (!id) return null;
+          return {
+            _id: id,
+            dataRow: [
+              id, String(r[idx("todo_id")] || ""), normalizeTodoCreatedAt(r[idx("created_at")]), normalizeTodoCreatedAt(r[idx("approved_at")]), String(r[idx("approved_by")] || ""),
+              String(r[idx("kind")] || ""), String(r[idx("short_url_param")] || ""), String(r[idx("source_ad_code")] || ""), String(r[idx("ad_name")] || ""), String(r[idx("weight_summary")] || ""),
+              String(r[idx("payload_json")] || ""), String(r[idx("status")] || "queued"), String(r[idx("worker_id")] || ""), normalizeTodoCreatedAt(r[idx("claimed_at")]), normalizeTodoCreatedAt(r[idx("completed_at")]),
+              String(r[idx("last_error")] || ""), numOr(r[idx("attempts")]), normalizeTodoCreatedAt(r[idx("updated_at")]),
+            ],
+          };
+        })
+        .filter(Boolean);
+    },
+  },
+
+  // ── 11. Yourls 執行紀錄（id = log_id） ─────────────────────────────
+  {
+    sheetName: YOURLS_EXEC_LOG_SHEET,
+    dataHeaders: [
+      "log_id", "action_id", "at", "status", "kind", "short_url_param",
+      "before_json", "after_json", "operations_json", "error_msg", "worker_id", "dry_run",
+    ],
+    flatten: (s) => (s.yourls_execution_logs || []).map((log) => ({
+      _id: log.log_id,
+      dataRow: [
+        log.log_id || "", log.action_id || "", normalizeTodoCreatedAt(log.at), log.status || "",
+        log.kind || "", log.short_url_param || "", stableJson(log.before), stableJson(log.after),
+        stableJson(log.operations || []), log.error_msg || "", log.worker_id || "", log.dry_run ? "Y" : "",
+      ],
+    })),
+    upsertInState(state, _id, obj) {
+      state.yourls_execution_logs = state.yourls_execution_logs || [];
+      const rec = {
+        log_id: String(obj["log_id"] || _id),
+        action_id: String(obj["action_id"] || ""),
+        at: normalizeTodoCreatedAt(obj["at"]),
+        status: String(obj["status"] || ""),
+        kind: String(obj["kind"] || ""),
+        short_url_param: String(obj["short_url_param"] || ""),
+        before: parsePayloadJson(obj["before_json"]) || {},
+        after: parsePayloadJson(obj["after_json"]) || {},
+        operations: parsePayloadJson(obj["operations_json"]) || [],
+        error_msg: String(obj["error_msg"] || ""),
+        worker_id: String(obj["worker_id"] || ""),
+        dry_run: String(obj["dry_run"] || "").toUpperCase() === "Y",
+      };
+      const idx = state.yourls_execution_logs.findIndex((log) => log.log_id === _id);
+      if (idx >= 0) state.yourls_execution_logs[idx] = rec;
+      else state.yourls_execution_logs.push(rec);
+    },
+    removeFromState(state, _id) {
+      state.yourls_execution_logs = (state.yourls_execution_logs || []).filter((log) => log.log_id !== _id);
+    },
+    legacyParse(headers, rows) {
+      const idx = (h) => headers.indexOf(h);
+      return rows
+        .map((r) => {
+          const id = String(r[idx("log_id")] || "");
+          if (!id) return null;
+          return {
+            _id: id,
+            dataRow: [
+              id, String(r[idx("action_id")] || ""), normalizeTodoCreatedAt(r[idx("at")]), String(r[idx("status")] || ""),
+              String(r[idx("kind")] || ""), String(r[idx("short_url_param")] || ""), String(r[idx("before_json")] || ""), String(r[idx("after_json")] || ""),
+              String(r[idx("operations_json")] || ""), String(r[idx("error_msg")] || ""), String(r[idx("worker_id")] || ""), String(r[idx("dry_run")] || ""),
+            ],
+          };
+        })
+        .filter(Boolean);
+    },
+  },
+
+  // ── 12. 設定（id = key） ───────────────────────────────────────────
   // 同步的 key 限定為「跨裝置共享、不會因為環境而不同」的:
   //   - current_month、expense_rate、income_rate、usdt_to_cny_rate、usd_to_twd_rate
   //   - monthly_rates 拆成多筆 key（如 "monthly_rate::2026-04::expense"）

@@ -1,7 +1,13 @@
 import { getState, update, uid } from "../state.js";
 import { nowTaipeiStamp } from "../lib/dates.js";
-import { applyUndo } from "../domain/undo.js";
+import { applyTodoUndo, todoHasUndo } from "../domain/undo.js";
 import { applyDoneEliminateTodos } from "../domain/todo-utils.js";
+import {
+  approveYourlsTodo,
+  canApproveYourlsTodo,
+  isYourlsTodo,
+  todoYourlsPayloads,
+} from "../domain/yourls-actions.js";
 
 // 已完成事件紀錄的篩選狀態(留在 module level,切頁回來保留)
 let doneFilter = {
@@ -24,7 +30,13 @@ function filterDoneTodos(done) {
       if (!hay.includes(q)) return false;
     }
     return true;
-  });
+  }).sort(compareTodoNewestFirst);
+}
+
+function compareTodoNewestFirst(a, b) {
+  const at = String(a?.created_at || "");
+  const bt = String(b?.created_at || "");
+  return bt.localeCompare(at) || String(b?.id || "").localeCompare(String(a?.id || ""));
 }
 
 export function render(root) {
@@ -121,6 +133,20 @@ export function render(root) {
 
   root.querySelector("#btn-add-todo").onclick = () => openTodoEditor();
 
+  root.querySelectorAll("[data-yourls-approve]").forEach((el) => {
+    el.onclick = () => {
+      let result = { ok: false, created: 0 };
+      update((st) => {
+        result = approveYourlsTodo(st, el.dataset.yourlsApprove, {
+          now: nowTaipeiStamp(),
+          makeId: (index) => uid(`yourls_${index + 1}`),
+        });
+      }, "批准 Yourls 待辦");
+      if (result.ok) toast(`已批准,送出 ${result.created} 筆 Yourls 操作`, "ok");
+      else toast("此待辦目前不能批准", "bad");
+    };
+  });
+
   root.querySelectorAll("[data-done]").forEach((el) => {
     el.onclick = () => {
       update((st) => {
@@ -133,15 +159,6 @@ export function render(root) {
       toast("已標記完成", "ok");
     };
   });
-  root.querySelectorAll("[data-undo]").forEach((el) => {
-    el.onclick = () => {
-      update((st) => {
-        const t = st.todos.find((x) => x.id === el.dataset.undo);
-        if (t) t.status = "pending";
-      }, "重新打開待辦");
-      toast("已重新打開", "ok");
-    };
-  });
   root.querySelectorAll("[data-edit]").forEach((el) => {
     el.onclick = () => openTodoEditor(el.dataset.edit);
   });
@@ -151,10 +168,7 @@ export function render(root) {
       const id = el.dataset.revoke;
       const todo = getState().todos.find((t) => t.id === id);
       if (!todo) return;
-      const hasUndo = !!todo.undo_payload && (
-        (todo.undo_payload.ad_snapshots?.length || 0) > 0 ||
-        (todo.undo_payload.added_ad_ids?.length || 0) > 0
-      );
+      const hasUndo = todoHasUndo(getState(), todo);
       const ok = await confirmAsync({
         title: hasUndo ? "撤回此決定" : "刪除此待辦",
         body: hasUndo
@@ -166,7 +180,8 @@ export function render(root) {
       let undoResult = { ok: false };
       update((st) => {
         if (hasUndo) {
-          undoResult = applyUndo(st, todo.undo_payload);
+          const liveTodo = st.todos.find((t) => t.id === id) || todo;
+          undoResult = applyTodoUndo(st, liveTodo);
         }
         st.todos = st.todos.filter((t) => t.id !== id);
       }, hasUndo ? "撤回待辦" : "刪除待辦");
@@ -184,26 +199,60 @@ function listHtml(todos, isDone, searchTerm = "") {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>時間</th><th>類型</th><th>內容</th><th></th></tr>
+          <tr><th>時間</th><th>類型</th><th>內容</th>${isDone ? "" : "<th></th>"}</tr>
         </thead>
         <tbody>
-          ${todos.map((t) => `
-            <tr>
-              <td class="mono ink-2" style="font-size:12px">${highlightMatch(t.created_at, searchTerm)}</td>
-              <td><span class="pill todo-type-pill ${todoTypeClass(t.action_type)}">${highlightMatch(displayActionType(t.action_type), searchTerm)}</span></td>
-              <td style="white-space:pre-wrap;line-height:1.6">${highlightTodoDesc(t.description, searchTerm)}</td>
-              <td class="right nowrap">
-                ${isDone
-                  ? `<button data-undo="${t.id}">↺ 重新打開</button>`
-                  : `<button data-edit="${t.id}">編輯</button> <button class="primary" data-done="${t.id}">完成</button>`}
-                <button class="danger" data-revoke="${t.id}" title="${t.undo_payload && ((t.undo_payload.ad_snapshots?.length || 0) + (t.undo_payload.added_ad_ids?.length || 0)) > 0 ? "撤回:還原此次決定的資料變動" : "刪除提醒(無可還原資料)"}">${t.undo_payload && ((t.undo_payload.ad_snapshots?.length || 0) + (t.undo_payload.added_ad_ids?.length || 0)) > 0 ? "↩ 撤回" : "刪"}</button>
-              </td>
-            </tr>
-          `).join("")}
+          ${todos.map((t) => {
+            const canUndo = !isDone && todoHasUndo(getState(), t);
+            return `
+              <tr>
+                <td class="mono ink-2" style="font-size:12px">${highlightMatch(t.created_at, searchTerm)}</td>
+                <td><span class="pill todo-type-pill ${todoTypeClass(t.action_type)}">${highlightMatch(displayActionType(t.action_type), searchTerm)}</span></td>
+                <td style="white-space:pre-wrap;line-height:1.6">${highlightTodoDesc(t.description, searchTerm)}${yourlsTodoStatusHtml(t)}</td>
+                ${isDone ? "" : `
+                  <td class="right nowrap">
+                    ${pendingTodoButtons(t)}
+                    <button class="danger" data-revoke="${t.id}" title="${canUndo ? "撤回:還原此次決定的資料變動" : "刪除提醒(無可還原資料)"}">${canUndo ? "↩ 撤回" : "刪"}</button>
+                  </td>
+                `}
+              </tr>
+            `;
+          }).join("")}
         </tbody>
       </table>
     </div>
   `;
+}
+
+function pendingTodoButtons(todo) {
+  if (!isYourlsTodo(todo)) {
+    return `<button data-edit="${todo.id}">編輯</button> <button class="primary" data-done="${todo.id}">完成</button>`;
+  }
+  const status = String(todo.yourls_status || "");
+  if (canApproveYourlsTodo(todo)) {
+    const label = status === "failed" ? "重新批准" : "批准";
+    return `<button data-edit="${todo.id}">編輯</button> <button class="primary" data-yourls-approve="${todo.id}">${label}</button>`;
+  }
+  if (status === "queued") return `<button data-edit="${todo.id}">編輯</button> <button disabled>等待 Yourls</button>`;
+  if (status === "running") return `<button data-edit="${todo.id}">編輯</button> <button disabled>Yourls 執行中</button>`;
+  if (status === "applied") return `<button disabled>已套用</button>`;
+  return `<button data-edit="${todo.id}">編輯</button>`;
+}
+
+function yourlsTodoStatusHtml(todo) {
+  if (!isYourlsTodo(todo)) return "";
+  const status = String(todo.yourls_status || "pending_approval");
+  const count = todoYourlsPayloads(todo).length;
+  const actionText = count > 1 ? `${count} 筆 Yourls 操作` : "1 筆 Yourls 操作";
+  const labels = {
+    pending_approval: "待批准",
+    queued: "已批准,等待 Yourls worker",
+    running: "Yourls worker 執行中",
+    applied: `Yourls 已套用${todo.yourls_applied_at ? ` (${escape(todo.yourls_applied_at)})` : ""}`,
+    failed: `Yourls 套用失敗${todo.yourls_last_error ? `:${escape(todo.yourls_last_error)}` : ""}`,
+  };
+  const color = status === "failed" ? "var(--danger)" : status === "applied" ? "var(--ok)" : "var(--accent)";
+  return `<div style="margin-top:6px;font-size:12px;color:${color}">${actionText}｜${labels[status] || escape(status)}</div>`;
 }
 
 // 舊資料顯示成目前使用的短名稱;不批次改動已同步出去的待辦資料。
@@ -288,10 +337,14 @@ function escape(v) {
 // 若帶 searchTerm,將命中字串包 <mark> 高亮
 function highlightTodoDesc(desc, searchTerm = "") {
   if (!desc) return "<span class='ink-3'>—</span>";
-  let escaped = escape(desc);
+  let escaped = escape(normalizeTodoDescText(desc));
   escaped = escaped.replace(/( → )([^\n]+)/g, (m, arrow, after) =>
     `${arrow}<strong style="color:#1f7a3a">${after}</strong>`);
   return applySearchHighlight(escaped, searchTerm);
+}
+
+function normalizeTodoDescText(desc) {
+  return String(desc || "").replaceAll("請至連結隨機縮網址後台調整權重", "請至隨機縮網址後台確認");
 }
 
 // 一般欄位的搜尋高亮(時間 / 類型 等);desc 用上面那個版本

@@ -126,6 +126,8 @@ export function defaultState() {
     daily_budgets: {},
     ads: [],
     todos: [],
+    yourls_actions: [],
+    yourls_execution_logs: [],
     performance_data: [],
     // 預算變動歷程：budget_changes[product_id][YYYY-MM] = [{at_date, amount}, ...]
     // 第一筆代表月初預算；後續為「於 at_date 起改為 amount」的調整

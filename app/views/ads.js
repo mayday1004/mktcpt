@@ -11,6 +11,7 @@ import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes, normaliz
 import { displayWeightsForAd } from "../domain/spending.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
+import { buildYourlsActionPayload } from "../domain/yourls-actions.js";
 
 const SHORT_URL_BAG_TYPE = "提包";
 const SHORT_URL_SLOT_OPTIONS = [
@@ -2532,6 +2533,9 @@ function openEditor(id, renewFrom = null, prefill = null) {
         added_ad_ids.push(newAdId);
       }
       // 拆 t 時同時建破圈側 t-variant ad
+      const appliedAd = id
+        ? st.ads.find((x) => x.id === id) || finalPatch
+        : { id: newAdId, ...finalPatch, ...(pairId ? { split_pair_id: pairId, split_role: "parent" } : {}) };
       if (splitWeights) {
         const tvAdId = uid("ad");
         const tvKeys = Object.keys(splitWeights.poquanInternal);
@@ -2576,14 +2580,23 @@ function openEditor(id, renewFrom = null, prefill = null) {
               .map(([pid, w]) => `${(st.products.find((p) => p.id === pid)?.name || pid)} ${w}%`)
               .join(" / ")
           : "";
+        const yourlsAction = buildYourlsActionPayload({
+          kind: id ? "update_weights" : "create_channel",
+          ad: appliedAd,
+          weights,
+          products: st.products,
+          actionType: id ? "手動改權重" : "新增廣告",
+          effectiveDate: appliedAd.start_date,
+        });
         st.todos.push({
           id: uid("todo"),
           created_at: nowTaipeiStamp(),
           action_type: id ? "手動改權重" : "新增廣告",
-          description: buildTodoDesc(finalPatch, splitWeights ? splitWeights.normal : weights, st.products, id ? origWeights : null, finalPatch.start_date)
+          description: buildTodoDesc(appliedAd, splitWeights ? splitWeights.normal : weights, st.products, id ? origWeights : null, appliedAd.start_date)
             + (splitWeights ? `\n\n自動拆 t:建立 ${splitCodes.tVariantCode} ${poquanCny.toLocaleString()} RMB / ${splitSummary}` : ""),
           status: "pending",
           undo_payload: { ad_snapshots, added_ad_ids },
+          ...(yourlsAction ? { yourls_action: yourlsAction } : {}),
         });
       }
     });
@@ -2674,9 +2687,9 @@ function buildTodoDesc(ad, weights, products, oldWeights = null, effectiveDate =
   const label = `${prefix ? `${prefix} ` : ""}${ad.ad_code} ${ad.ad_name}`;
   const newSummary = formatTodoWeightSummary(weights, products);
   if (oldWeights !== null) {
-    return `${label}｜${formatTodoWeightSummary(oldWeights, products)} → ${newSummary}\n（請至連結隨機縮網址後台調整權重）`;
+    return `${label}｜${formatTodoWeightSummary(oldWeights, products)} → ${newSummary}\n（請至隨機縮網址後台確認）`;
   }
-  return `${label}｜${newSummary}\n（請至連結隨機縮網址後台調整權重）`;
+  return `${label}｜${newSummary}\n（請至隨機縮網址後台確認）`;
 }
 
 function formatTodoDate(ymd) {
@@ -2851,6 +2864,14 @@ function openWeightAdjust(seg) {
         }
       }
 
+      const yourlsAction = buildYourlsActionPayload({
+        kind: "update_weights",
+        ad: seg,
+        weights: newWeights,
+        products: st.products,
+        actionType: "手動改權重",
+        effectiveDate: eff,
+      });
       st.todos.push({
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
@@ -2861,6 +2882,7 @@ function openWeightAdjust(seg) {
             : ""),
         status: "pending",
         undo_payload: { ad_snapshots, added_ad_ids },
+        ...(yourlsAction ? { yourls_action: yourlsAction } : {}),
       });
     });
     modal.close();
@@ -3198,6 +3220,14 @@ function openFamilyWeightAdjust(pairId) {
         }
       }
 
+      const yourlsAction = buildYourlsActionPayload({
+        kind: "update_weights",
+        ad: parentSeg,
+        weights: newWeights,
+        products: st.products,
+        actionType: "手動改權重",
+        effectiveDate: eff,
+      });
       st.todos.push({
         id: uid("todo"),
         created_at: nowTaipeiStamp(),
@@ -3206,6 +3236,7 @@ function openFamilyWeightAdjust(pairId) {
           + `\n（${parentSeg.ad_code} / ${tVariantSeg.ad_code} 整體視角調整）`,
         status: "pending",
         undo_payload: { ad_snapshots, added_ad_ids },
+        ...(yourlsAction ? { yourls_action: yourlsAction } : {}),
       });
     });
     modal.close();

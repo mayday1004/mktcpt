@@ -29,12 +29,102 @@ export function captureUndoSnapshot(state, adIds) {
   return snapshots;
 }
 
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function uniqStrings(values) {
+  return [...new Set(asArray(values).map((v) => String(v || "").trim()).filter(Boolean))];
+}
+
+function normalizeUndoPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return { ad_snapshots: [], added_ad_ids: [] };
+  }
+  return {
+    ad_snapshots: asArray(payload.ad_snapshots),
+    added_ad_ids: uniqStrings(payload.added_ad_ids),
+  };
+}
+
+function todoYourlsPayloads(todo) {
+  if (Array.isArray(todo?.yourls_actions)) return todo.yourls_actions.filter(Boolean);
+  if (todo?.yourls_action) return [todo.yourls_action];
+  return [];
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function descContainsAdCode(desc, code) {
+  const text = String(desc || "");
+  const raw = String(code || "").trim();
+  if (!raw) return false;
+  const re = new RegExp(`(^|[^A-Za-z0-9_-])${escapeRegExp(raw)}([^A-Za-z0-9_-]|$)`, "i");
+  return re.test(text);
+}
+
+function todoMonthDay(todo) {
+  const m = String(todo?.description || "").trim().match(/^(\d{1,2})\/(\d{1,2})\s+/);
+  if (!m) return "";
+  return `${String(m[1]).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
+}
+
+function inferAddedAdIdsFromTodo(state, todo) {
+  if (String(todo?.action_type || "") !== "新增廣告") return [];
+  const ads = asArray(state?.ads);
+  const ids = new Set();
+  const codeCandidates = new Set();
+  const desc = String(todo?.description || "");
+  const md = todoMonthDay(todo);
+
+  for (const payload of todoYourlsPayloads(todo)) {
+    const sourceId = String(payload?.source_ad_id || "").trim();
+    const sourceCode = String(payload?.source_ad_code || "").trim();
+    if (sourceId) ids.add(sourceId);
+    if (sourceCode) codeCandidates.add(sourceCode);
+  }
+
+  for (const ad of ads) {
+    if (!ad?.id) continue;
+    if (ids.has(String(ad.id))) continue;
+    if (String(ad.renewal_reason || "初始") !== "初始") continue;
+    if (ad.renewal_of) continue;
+    const code = String(ad.ad_code || "");
+    if (!code) continue;
+    if (codeCandidates.has(code) || descContainsAdCode(desc, code)) ids.add(String(ad.id));
+  }
+
+  if (!md) return [...ids];
+  const datedIds = ads
+    .filter((ad) => ids.has(String(ad?.id)) && String(ad?.start_date || "").slice(5, 10) === md)
+    .map((ad) => String(ad.id));
+  return datedIds.length > 0 ? datedIds : [...ids];
+}
+
+export function undoPayloadForTodo(state, todo) {
+  const payload = normalizeUndoPayload(todo?.undo_payload);
+  return {
+    ad_snapshots: payload.ad_snapshots,
+    added_ad_ids: uniqStrings([
+      ...payload.added_ad_ids,
+      ...inferAddedAdIdsFromTodo(state, todo),
+    ]),
+  };
+}
+
+export function todoHasUndo(state, todo) {
+  const payload = undoPayloadForTodo(state, todo);
+  return payload.ad_snapshots.length > 0 || payload.added_ad_ids.length > 0;
+}
+
 // 撤回:把 state.ads 還原回 ad_snapshots,並刪掉 added_ad_ids
 // 在 update() 內呼叫(會直接 mutate state)
 // 回傳 { ok, restoredCount, deletedCount }
 export function applyUndo(state, payload) {
   if (!payload) return { ok: false, msg: "此待辦沒有可還原的資料變動" };
-  const { ad_snapshots = [], added_ad_ids = [] } = payload;
+  const { ad_snapshots = [], added_ad_ids = [] } = normalizeUndoPayload(payload);
   if (ad_snapshots.length === 0 && added_ad_ids.length === 0) {
     return { ok: false, msg: "此待辦沒有可還原的資料變動" };
   }
@@ -44,7 +134,7 @@ export function applyUndo(state, payload) {
   if (added_ad_ids.length > 0) {
     const idSet = new Set(added_ad_ids);
     const before = state.ads.length;
-    state.ads = state.ads.filter((a) => !idSet.has(a.id));
+    state.ads = state.ads.filter((a) => !idSet.has(String(a.id)));
     deletedCount = before - state.ads.length;
   }
 
@@ -62,4 +152,8 @@ export function applyUndo(state, payload) {
   }
 
   return { ok: true, restoredCount, deletedCount };
+}
+
+export function applyTodoUndo(state, todo) {
+  return applyUndo(state, undoPayloadForTodo(state, todo));
 }
