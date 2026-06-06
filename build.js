@@ -13,8 +13,8 @@ const t0 = Date.now();
 
 loadLocalEnv(".env.local");
 
-const deploySheetsUrl = readEnv("SHEETS_WEBAPP_URL", "BUYADS_APPS_SCRIPT_URL");
-const deploySheetsToken = readEnv("SHEETS_TOKEN", "BUYADS_APPS_SCRIPT_TOKEN");
+const deploySheetsUrl = readEnv("SHEETS_WEBAPP_URL");
+const deploySheetsToken = readEnv("SHEETS_TOKEN");
 
 function loadLocalEnv(fileName) {
   const filePath = path.resolve(fileName);

@@ -89,8 +89,8 @@ bash setup_mac.sh
 然後打開 `.env.local`，填入必要環境變數：
 
 ```text
-BUYADS_APPS_SCRIPT_URL=https://script.google.com/macros/s/.../exec
-BUYADS_APPS_SCRIPT_TOKEN=你的 Apps Script token
+SHEETS_WEBAPP_URL=https://script.google.com/macros/s/.../exec
+SHEETS_TOKEN=你的 Apps Script token
 YOURLS_BASE_URL=https://yourls-admin.iavnight.com/admin
 ```
 
@@ -220,8 +220,8 @@ Railway 有 Static Outbound IP，但通常需要符合平台方案限制；且 Y
 YOURLS_BASE_URL=https://yourls-admin.example.com/admin
 YOURLS_USERNAME=...
 YOURLS_PASSWORD=...
-BUYADS_APPS_SCRIPT_URL=https://script.google.com/macros/s/.../exec
-BUYADS_APPS_SCRIPT_TOKEN=...
+SHEETS_WEBAPP_URL=https://script.google.com/macros/s/.../exec
+SHEETS_TOKEN=...
 WORKER_ID=office-b-yourls-worker
 DRY_RUN=1
 ```
@@ -231,8 +231,8 @@ DRY_RUN=1
 | `YOURLS_BASE_URL` | Yourls 後台網址 |
 | `YOURLS_USERNAME` | Yourls 後台帳號 |
 | `YOURLS_PASSWORD` | Yourls 後台密碼 |
-| `BUYADS_APPS_SCRIPT_URL` | buyads 目前使用的 Apps Script Web App URL |
-| `BUYADS_APPS_SCRIPT_TOKEN` | Apps Script token |
+| `SHEETS_WEBAPP_URL` | buyads 目前使用的 Apps Script Web App URL |
+| `SHEETS_TOKEN` | Apps Script token |
 | `WORKER_ID` | worker 識別，例如 `office-b-yourls-worker` |
 | `DRY_RUN` | `1` 時只解析與驗證，不送出表單 |
 
