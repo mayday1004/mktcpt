@@ -287,6 +287,7 @@ function openTodoEditor(id) {
   const s = getState();
   const t = id ? structuredClone(s.todos.find((x) => x.id === id)) : null;
   const isEdit = !!t;
+  const canMarkDone = isEdit && (t.status || "pending") !== "done";
   const html = `
     <h2>${isEdit ? "編輯待辦" : "新增待辦"}</h2>
     <div class="field">
@@ -301,32 +302,49 @@ function openTodoEditor(id) {
     </div>
     <div class="modal-actions">
       <button id="t-cancel">取消</button>
-      <button class="primary" id="t-save">${isEdit ? "更新" : "新增"}</button>
+      ${canMarkDone ? `<button class="primary" id="t-mark-done">標記已完成</button>` : ""}
+      ${isEdit ? "" : `<button class="primary" id="t-save">新增</button>`}
     </div>
   `;
   const dlg = modal.open(html);
   dlg.querySelector("#t-cancel").onclick = () => modal.close();
-  dlg.querySelector("#t-save").onclick = () => {
+  const readTodoEditorFields = () => {
     const action_type = dlg.querySelector("#t-type").value || "備註";
     const description = dlg.querySelector("#t-desc").value.trim();
-    if (!description) { toast("請填內容", "bad"); return; }
-    update((st) => {
-      if (isEdit) {
+    if (!description) { toast("請填內容", "bad"); return null; }
+    return { action_type, description };
+  };
+  if (canMarkDone) {
+    dlg.querySelector("#t-mark-done").onclick = () => {
+      const fields = readTodoEditorFields();
+      if (!fields) return;
+      update((st) => {
         const idx = st.todos.findIndex((x) => x.id === id);
-        if (idx >= 0) st.todos[idx] = { ...st.todos[idx], action_type, description };
-      } else {
+        if (idx >= 0) {
+          st.todos[idx] = { ...st.todos[idx], ...fields, status: "done" };
+          applyDoneEliminateTodos(st);
+        }
+      }, "完成待辦");
+      modal.close();
+      toast("已標記完成", "ok");
+    };
+  }
+  if (!isEdit) {
+    dlg.querySelector("#t-save").onclick = () => {
+      const fields = readTodoEditorFields();
+      if (!fields) return;
+      update((st) => {
         st.todos.push({
           id: uid("todo"),
           created_at: nowTaipeiStamp(),
-          action_type,
-          description,
+          ...fields,
           status: "pending",
         });
-      }
-    }, isEdit ? "更新待辦" : "新增備註待辦");
-    modal.close();
-    toast(isEdit ? "已更新" : "已新增", "ok");
-  };
+      }, "新增備註待辦");
+      modal.close();
+      toast("已新增", "ok");
+    };
+  }
 }
 
 function escape(v) {
