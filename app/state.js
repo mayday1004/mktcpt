@@ -3,6 +3,7 @@ import { nowTaipeiTime } from "./lib/dates.js";
 import { runColdStartGate } from "./lib/version-gate.js";
 import { isDeployManaged } from "./lib/deploy-config.js";
 import { applyDoneEliminateTodos, normalizeTodosInState } from "./domain/todo-utils.js";
+import { materializeTodosAppliedSnapshots } from "./domain/undo.js";
 import { normalizeWeightsToTotal } from "./domain/auto-split.js";
 import { reconcileYourlsTodos } from "./domain/yourls-actions.js";
 import { markSyncDeleted } from "./io/sync-deletions.js";
@@ -226,6 +227,7 @@ function migrate(st) {
   if (!Array.isArray(st.yourls_actions)) st.yourls_actions = [];
   if (!Array.isArray(st.yourls_execution_logs)) st.yourls_execution_logs = [];
   reconcileYourlsTodos(st);
+  materializeTodosAppliedSnapshots(st);
   applyDoneEliminateTodos(st);
   st.version = VERSION;
   // 部署模式下,本機絕不快取 sheets_webapp_url / sheets_token,

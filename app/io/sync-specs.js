@@ -15,6 +15,7 @@
 
 import { METRICS, RENEWAL_REASONS, PRODUCT_TYPES } from "../schema.js";
 import { applyDoneEliminateTodos, normalizeTodoCreatedAt } from "../domain/todo-utils.js";
+import { materializeTodosAppliedSnapshots } from "../domain/undo.js";
 import {
   YOURLS_ACTION_SHEET,
   YOURLS_EXEC_LOG_SHEET,
@@ -704,6 +705,7 @@ export const TABLE_SYNC_SPECS = [
       if (idx >= 0) state.todos[idx] = rec;
       else state.todos.push(rec);
       reconcileYourlsTodos(state);
+      materializeTodosAppliedSnapshots(state);
       applyDoneEliminateTodos(state);
     },
     removeFromState(state, _id) {

@@ -1246,13 +1246,10 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
 }
 .tl-weight-history .weight-history-row {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: 96px minmax(0, 1fr);
   align-items: start;
   gap: 10px;
   min-width: 0;
-}
-.tl-weight-history .weight-history-row.previous {
-  opacity: 0.78;
 }
 .tl-weight-history .weight-history-label {
   color: var(--ink-3);
@@ -1278,6 +1275,34 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
   font-size: 12px;
   line-height: 1.35;
   white-space: nowrap;
+}
+.weight-delta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 18px;
+  padding: 0 2px;
+  border-radius: 0;
+  background: transparent;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.weight-delta-chip.up {
+  color: var(--ok);
+}
+.weight-delta-chip.down {
+  color: var(--bad);
+}
+.weight-delta-chip.neutral {
+  background: transparent;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+.weight-delta-chip .delta-arrow {
+  font-size: 9px;
+  line-height: 1;
 }
 .weight-more {
   flex: 0 0 auto;
@@ -1372,6 +1397,9 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
   padding: 10px 0 14px 26px;
   min-height: 28px;
 }
+.tl-node.collapsed {
+  padding-bottom: 8px;
+}
 .tl-rail {
   position: absolute;
   left: 6px; top: 0; bottom: 0;
@@ -1391,6 +1419,44 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
 .tl-dot.warn { background: var(--warn); }
 .tl-content { display: flex; flex-direction: column; gap: 4px; }
 .tl-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tl-collapse-btn {
+  position: absolute;
+  left: -34px;
+  top: 9px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-family: var(--mono);
+  line-height: 20px;
+  cursor: pointer;
+}
+.tl-collapse-btn:hover {
+  background: #eef4ff;
+  border-color: #c4d8f5;
+  color: var(--accent);
+}
+.tl-collapsed-summary {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 760px;
+}
+.tl-collapsed-summary .pill {
+  background: #f3f5f8;
+  color: var(--ink-3);
+  border-color: #e4e8ef;
+  border-left-color: #d8dde6 !important;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.25;
+  padding: 1px 6px 1px 5px;
+  opacity: 0.72;
+}
 .tl-meta {
   display: flex; gap: 14px; flex-wrap: wrap;
   font-size: 12px; color: var(--ink-2);

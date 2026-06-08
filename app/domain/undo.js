@@ -39,11 +39,12 @@ function uniqStrings(values) {
 
 function normalizeUndoPayload(payload) {
   if (!payload || typeof payload !== "object") {
-    return { ad_snapshots: [], added_ad_ids: [] };
+    return { ad_snapshots: [], added_ad_ids: [], applied_ad_snapshots: [] };
   }
   return {
     ad_snapshots: asArray(payload.ad_snapshots),
     added_ad_ids: uniqStrings(payload.added_ad_ids),
+    applied_ad_snapshots: asArray(payload.applied_ad_snapshots),
   };
 }
 
@@ -51,6 +52,70 @@ function todoYourlsPayloads(todo) {
   if (Array.isArray(todo?.yourls_actions)) return todo.yourls_actions.filter(Boolean);
   if (todo?.yourls_action) return [todo.yourls_action];
   return [];
+}
+
+function purchaseModeFor(weights) {
+  const keys = Object.keys(weights || {}).filter((key) => Number(weights[key]) > 0);
+  return keys.length === 1 && Number(weights[keys[0]]) === 100 ? "independent" : "shared";
+}
+
+function weightsFromYourlsPayload(payload) {
+  const out = {};
+  for (const item of asArray(payload?.weights)) {
+    const pid = String(item?.product_id || "").trim();
+    const w = Number(item?.weight_pct) || 0;
+    if (pid && w > 0) out[pid] = w;
+  }
+  return out;
+}
+
+function inferAppliedAdSnapshotsFromTodo(state, todo, payload) {
+  const payloads = todoYourlsPayloads(todo);
+  if (payloads.length === 0) return [];
+
+  const beforePayload = normalizeUndoPayload(todo?.undo_payload);
+  const beforeById = new Map(beforePayload.ad_snapshots.map((snap) => [String(snap?.id || ""), snap]));
+  const addedIds = [...beforePayload.added_ad_ids];
+  const usedAddedIds = new Set();
+  const inferred = [];
+
+  for (const action of payloads) {
+    if (String(action?.kind || "") !== "update_weights") continue;
+    const sourceId = String(action?.source_ad_id || "").trim();
+    const before = beforeById.get(sourceId) ||
+      asArray(state?.ads).find((ad) => String(ad?.id || "") === sourceId);
+    if (!before) continue;
+    const effective = String(action?.effective_date || before.start_date || "").slice(0, 10);
+    const weights = weightsFromYourlsPayload(action);
+    if (!effective || Object.keys(weights).length === 0) continue;
+
+    if (effective <= String(before.start_date || "")) {
+      inferred.push({
+        ...clone(before),
+        weights,
+        purchase_mode: purchaseModeFor(weights),
+      });
+      continue;
+    }
+    if (effective >= String(before.end_date || "")) continue;
+
+    inferred.push({ ...clone(before), end_date: effective });
+    const addedId = addedIds.find((id) => !usedAddedIds.has(id));
+    if (!addedId) continue;
+    usedAddedIds.add(addedId);
+    inferred.push({
+      ...clone(before),
+      id: addedId,
+      start_date: effective,
+      end_date: before.end_date,
+      weights,
+      purchase_mode: purchaseModeFor(weights),
+      renewal_of: before.id,
+      renewal_reason: "權重調整",
+      code_at_creation: before.ad_code,
+    });
+  }
+  return inferred;
 }
 
 function escapeRegExp(value) {
@@ -111,6 +176,7 @@ export function undoPayloadForTodo(state, todo) {
       ...payload.added_ad_ids,
       ...inferAddedAdIdsFromTodo(state, todo),
     ]),
+    applied_ad_snapshots: payload.applied_ad_snapshots,
   };
 }
 
@@ -156,4 +222,90 @@ export function applyUndo(state, payload) {
 
 export function applyTodoUndo(state, todo) {
   return applyUndo(state, undoPayloadForTodo(state, todo));
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function sortedTodosWithAppliedSnapshots(state) {
+  return asArray(state?.todos)
+    .filter((todo) =>
+      asArray(todo?.undo_payload?.applied_ad_snapshots).length > 0 ||
+      (asArray(todo?.undo_payload?.ad_snapshots).length > 0 && todoYourlsPayloads(todo).length > 0)
+    )
+    .slice()
+    .sort((a, b) =>
+      String(a?.created_at || "").localeCompare(String(b?.created_at || "")) ||
+      String(a?.id || "").localeCompare(String(b?.id || ""))
+    );
+}
+
+function sameWeights(a, b) {
+  const ak = Object.keys(a || {}).sort();
+  const bk = Object.keys(b || {}).sort();
+  if (ak.length !== bk.length) return false;
+  for (let i = 0; i < ak.length; i++) {
+    const key = ak[i];
+    if (key !== bk[i]) return false;
+    if (Number(a?.[key] || 0) !== Number(b?.[key] || 0)) return false;
+  }
+  return true;
+}
+
+function adMatchesSnapshot(ad, snap) {
+  if (!ad || !snap) return false;
+  return String(ad.ad_code || "") === String(snap.ad_code || "") &&
+    String(ad.start_date || "") === String(snap.start_date || "") &&
+    String(ad.end_date || "") === String(snap.end_date || "") &&
+    String(ad.renewal_reason || "") === String(snap.renewal_reason || "") &&
+    sameWeights(ad.weights, snap.weights);
+}
+
+function isSparseAd(ad) {
+  return !String(ad?.ad_code || "").trim() ||
+    !String(ad?.start_date || "").trim() ||
+    !String(ad?.end_date || "").trim();
+}
+
+export function materializeTodoAppliedSnapshots(state, todo) {
+  const payload = undoPayloadForTodo(state, todo);
+  const applied = asArray(payload.applied_ad_snapshots).length > 0
+    ? asArray(payload.applied_ad_snapshots)
+    : inferAppliedAdSnapshotsFromTodo(state, todo, payload);
+  if (applied.length === 0) return 0;
+  if (!Array.isArray(state.ads)) state.ads = [];
+
+  const beforeById = new Map(asArray(payload.ad_snapshots).map((snap) => [String(snap?.id || ""), snap]));
+  const addedIds = new Set(uniqStrings(payload.added_ad_ids));
+  let changed = 0;
+
+  for (const snap of applied) {
+    const id = String(snap?.id || "");
+    if (!id) continue;
+    const idx = state.ads.findIndex((ad) => String(ad?.id || "") === id);
+    if (idx < 0) {
+      state.ads.push(clone(snap));
+      changed += 1;
+      continue;
+    }
+
+    const existing = state.ads[idx];
+    const before = beforeById.get(id);
+    const shouldApply = isSparseAd(existing) ||
+      (before && adMatchesSnapshot(existing, before)) ||
+      (addedIds.has(id) && isSparseAd(existing));
+    if (!shouldApply) continue;
+    state.ads[idx] = clone(snap);
+    changed += 1;
+  }
+  return changed;
+}
+
+export function materializeTodosAppliedSnapshots(state) {
+  let changed = 0;
+  for (const todo of sortedTodosWithAppliedSnapshots(state)) {
+    changed += materializeTodoAppliedSnapshots(state, todo);
+  }
+  return changed;
 }

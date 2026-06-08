@@ -34,14 +34,17 @@ function buildShortUrlType(slot, hasBag) {
 // 模組級展開狀態（記住使用者點開的 ad_code，重渲染後不重置）
 const expanded = new Set();
 const expandedWeights = new Set();
+const expandedTimelineNodes = new Set();
 // 模組級分頁（"all" 或 product.id）
 let activeTab = "all";
 // 模組級日期區間過濾（皆 inclusive 視覺意義，內部用 overlaps 比對）
-// 預設 = 「昨天」一天:start = 昨天, end = 今天(exclusive,= 包含昨天當天有效的廣告)
+// 預設 = 昨天 ~ 當月月底:保留昨天正在看的工作點,同時把本月後續已建立的權重調整段一起納入
 function _defaultYesterdayRange() {
   const today = todayTaipei();              // "YYYY-MM-DD"
   const yesterday = addDays(today, -1);
-  return { start: yesterday, end: yesterday };
+  const [y, m] = today.split("-").map(Number);
+  const nextMonth = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+  return { start: yesterday, end: addDays(nextMonth, -1) };
 }
 const _initialRange = _defaultYesterdayRange();
 let filterStart = _initialRange.start;  // YYYY-MM-DD
@@ -1000,14 +1003,21 @@ function renderGroup(group, products, opts = {}) {
 
   if (!isOpen) return headRow + weightDetailRow;
 
-  const timelineSegs = latestSnapshotSegs(segs, latest);
+  const timeline = timelineSegsForReference(segs, latest);
   // 展開時:即使單段也顯示 timeline node(讓備註 / 廣告文案 / 站長 / 短網址資訊有地方看)
   return headRow + weightDetailRow + `
     <tr class="seg-timeline-row">
       <td></td>
       <td colspan="8">
         <div class="seg-timeline">
-          ${timelineSegs.map(({ seg, index }) => renderTimelineNode(seg, index, segs, products, { familyScale: opts.familyScale, referenceSeg: latest })).join("")}
+          ${timeline.items.map(({ seg, index }, pos) => renderTimelineNode(seg, index, segs, products, {
+            familyScale: opts.familyScale,
+            referenceSeg: latest,
+            timelineMode: timeline.mode,
+            timelinePos: pos,
+            timelineCount: timeline.items.length,
+            prevSeg: pos > 0 ? timeline.items[pos - 1].seg : null,
+          })).join("")}
         </div>
       </td>
     </tr>
@@ -1030,6 +1040,41 @@ function latestSnapshotSegs(segs, referenceSeg) {
   );
 
   return snapshot.length > 0 ? snapshot : [refItem];
+}
+
+function timelineSegsForReference(segs, referenceSeg) {
+  const indexed = segs.map((seg, index) => ({ seg, index }));
+  const refItem = indexed.find(({ seg }) => seg.id === referenceSeg?.id) || indexed[indexed.length - 1];
+  if (!refItem?.seg) return { mode: "snapshot", items: [] };
+
+  const byId = new Map(indexed.map((item) => [item.seg.id, item]));
+  const path = [];
+  const seen = new Set();
+  let curItem = refItem;
+  while (curItem?.seg && !seen.has(curItem.seg.id)) {
+    seen.add(curItem.seg.id);
+    path.push(curItem);
+    curItem = curItem.seg.renewal_of ? byId.get(curItem.seg.renewal_of) : null;
+  }
+  path.reverse();
+
+  const refPos = path.findIndex(({ seg }) => seg.id === refItem.seg.id);
+  if (refPos >= 0) {
+    let anchorPos = refPos;
+    for (let i = refPos; i >= 0; i--) {
+      if (path[i].seg.renewal_reason !== "權重調整") {
+        anchorPos = i;
+        break;
+      }
+    }
+    const contractItems = path.slice(anchorPos, refPos + 1);
+    const hasWeightAdjust = contractItems.some(({ seg }) => seg.renewal_reason === "權重調整");
+    if (hasWeightAdjust && contractItems.length > 1) {
+      return { mode: "weight-chain", items: contractItems };
+    }
+  }
+
+  return { mode: "snapshot", items: latestSnapshotSegs(segs, referenceSeg) };
 }
 
 function renderWeightDetailRow(seg, products, opts = {}) {
@@ -1073,25 +1118,44 @@ function renderWeightDetailRow(seg, products, opts = {}) {
 }
 
 function renderTimelineNode(seg, idx, segs, products, opts = {}) {
-  const prev = idx > 0 ? segs[idx - 1] : null;
+  const prev = Object.prototype.hasOwnProperty.call(opts, "prevSeg")
+    ? opts.prevSeg
+    : (idx > 0 ? segs[idx - 1] : null);
   const delta = prev ? segDelta(prev, seg, products) : "";
   const reasonCls = reasonClass(seg.renewal_reason);
   // 廣告文案 / 站長 / 短網址 等資訊只在最新段(段落鏈的 latest)顯示 — 這些是「廣告層級」資料,
   // 多段都同步,顯示在最新段避免重複
-  const isLatest = idx === segs.length - 1;
-  const extraInfo = isLatest ? renderAdExtras(seg) : "";
-  const isReference = opts.referenceSeg?.id ? seg.id === opts.referenceSeg.id : isLatest;
-  const weightHistory = isReference ? renderWeightHistoryPanel(seg, products, { allSegs: segs, referenceSeg: seg, familyScale: opts.familyScale }) : "";
+  const isGlobalLatest = idx === segs.length - 1;
+  const isReference = opts.referenceSeg?.id ? seg.id === opts.referenceSeg.id : isGlobalLatest;
+  const isWeightChain = opts.timelineMode === "weight-chain";
+  const pos = Number.isFinite(opts.timelinePos) ? opts.timelinePos : idx;
+  const count = Number.isFinite(opts.timelineCount) ? opts.timelineCount : segs.length;
+  const canCollapse = isWeightChain && seg.renewal_reason === "權重調整" && !isReference && pos > 0 && count > 2;
+  const isCollapsed = canCollapse && !expandedTimelineNodes.has(seg.id);
+  const extraInfo = isReference && !isCollapsed ? renderAdExtras(seg) : "";
+  const showHistory = !isCollapsed && (isWeightChain ? pos > 0 : isReference);
+  const weightHistory = showHistory ? renderWeightHistoryPanel(seg, products, { allSegs: segs, referenceSeg: seg, familyScale: opts.familyScale }) : "";
+  const collapsedSummary = isCollapsed
+    ? `<span class="tl-collapsed-summary">${weightSummary(seg, products, "inline", { familyScale: opts.familyScale })}</span>`
+    : "";
+  const actions = isCollapsed
+    ? ""
+    : (isReference
+      ? actionButtons(seg, /*compact=*/false)
+      : actionButtons(seg, /*compact=*/false, { lifecycle: false }));
   return `
-    <div class="tl-node">
+    <div class="tl-node ${isCollapsed ? "collapsed" : ""}">
       <div class="tl-rail"></div>
+      ${canCollapse ? `<button class="tl-collapse-btn" data-timeline-toggle="${esc(seg.id)}" title="${isCollapsed ? "展開此權重調整" : "收合此權重調整"}">${isCollapsed ? "▸" : "▾"}</button>` : ""}
       <div class="tl-dot ${reasonCls.includes("warn") ? "warn" : ""}"></div>
       <div class="tl-content">
         <div class="tl-title">
           <span class="${reasonCls}" style="font-size:11px">${esc(seg.renewal_reason || "—")}</span>
           <span class="mono ink-2" style="font-size:12px;margin-left:8px">#${idx + 1} ${seg.start_date} → ${seg.end_date}</span>
           ${delta ? `<span class="ink-3" style="font-size:11px;margin-left:8px">Δ ${esc(delta)}</span>` : ""}
+          ${collapsedSummary}
         </div>
+        ${isCollapsed ? "" : `
         <div class="tl-meta">
           <span>${seg.amortize_days} 天 @ ${seg.exchange_rate}</span>
           <span>${seg.currency === "USDT" ? `${Math.round(seg.amount_orig || 0).toLocaleString()} USDT × ${seg.currency_rate} = ${Math.round(seg.amount_cny || 0).toLocaleString()} RMB` : `${Math.round(seg.amount_cny || 0).toLocaleString()} RMB`}</span>
@@ -1101,9 +1165,8 @@ function renderTimelineNode(seg, idx, segs, products, opts = {}) {
         ${weightHistory}
         ${(seg.notes && !/^V2 /.test(seg.notes.trim())) ? `<div class="tl-notes ink-2" style="font-size:12px;margin-top:4px;padding:4px 8px;background:#f7f9fc;border-radius:4px">📝 ${esc(seg.notes)}</div>` : ""}
         ${extraInfo}
-        <div class="tl-actions">
-          ${actionButtons(seg, /*compact=*/false)}
-        </div>
+        ${actions ? `<div class="tl-actions">${actions}</div>` : ""}
+        `}
       </div>
     </div>
   `;
@@ -1287,14 +1350,15 @@ function previousWeightSnapshotForReference(segs, products, opts = {}) {
       (a.seg.start_date || "").localeCompare(b.seg.start_date || "") ||
       (a.seg.end_date || "").localeCompare(b.seg.end_date || "")
     );
-  const refPos = referenceSeg?.id
+  let refPos = referenceSeg?.id
     ? valid.findIndex(({ seg }) => seg.id === referenceSeg.id)
     : valid.length - 1;
+  if (refPos < 0) refPos = valid.length;
   for (let i = refPos - 1; i >= 0; i--) {
     const { seg: candidate, index } = valid[i];
-    const snap = weightSnapshotDetails(allSegs, products, { referenceSeg: candidate });
-    if (snap.entries.length === 0) continue;
-    return { ...snap, recordNo: index + 1 };
+    const entries = productWeightEntries(candidate, products);
+    if (entries.length === 0) continue;
+    return { entries, snapshotSegs: [candidate], referenceSeg: candidate, recordNo: index + 1 };
   }
   return null;
 }
@@ -1307,27 +1371,56 @@ function formatWeightHistoryDate(ymd) {
   return `${m}/${d}`;
 }
 
-function renderWeightHistoryChips(entries) {
-  return `
-    <div class="weight-history-chips">
-      ${entries.map(({ pid, name, weight, rawWeight }) => {
-        const tip = rawWeight !== undefined ? ` title="此 ad 內 ${Math.round(rawWeight)}%"` : "";
-        return `<span class="weight-history-chip" style="border-left:3px solid ${productColor(pid)}"${tip}>${esc(name)} ${Math.round(weight)}%</span>`;
-      }).join("")}
-    </div>
-  `;
+function mapRoundedWeights(entries, scale) {
+  const visibleEntries = scale ? scaleWithLargestRemainder(entries, scale) : entries;
+  const map = new Map();
+  for (const entry of visibleEntries) {
+    map.set(entry.pid, {
+      ...entry,
+      weight: Math.round(Number(entry.weight) || 0),
+    });
+  }
+  return { entries: visibleEntries, map };
 }
 
-function renderWeightHistoryLine(snapshot, label, cls, scale) {
-  const entries = scale ? scaleWithLargestRemainder(snapshot.entries, scale) : snapshot.entries;
-  const date = formatWeightHistoryDate(snapshot.referenceSeg?.start_date);
-  const reason = snapshot.referenceSeg?.renewal_reason || "";
-  const title = `${label}${snapshot.referenceSeg?.start_date ? ` ${snapshot.referenceSeg.start_date}` : ""}${reason ? ` · ${reason}` : ""}`;
-  const record = snapshot.recordNo ? ` #${snapshot.recordNo}` : "";
+function weightDeltaEntries(currentEntries, previousEntries, scale) {
+  const current = mapRoundedWeights(currentEntries, scale);
+  const previous = mapRoundedWeights(previousEntries, scale);
+  const orderedPids = [
+    ...current.entries.map((entry) => entry.pid),
+    ...previous.entries.map((entry) => entry.pid).filter((pid) => !current.map.has(pid)),
+  ];
+  return orderedPids.map((pid) => {
+    const cur = current.map.get(pid);
+    const prev = previous.map.get(pid);
+    const curWeight = cur?.weight || 0;
+    const prevWeight = prev?.weight || 0;
+    return {
+      pid,
+      name: cur?.name || prev?.name || pid,
+      rawWeight: cur?.rawWeight,
+      delta: curWeight - prevWeight,
+    };
+  }).filter((entry) => entry.delta !== 0);
+}
+
+function renderWeightDeltaLine(currentEntries, previous, label, cls, scale) {
+  const deltas = weightDeltaEntries(currentEntries, previous.entries, scale);
+  const date = formatWeightHistoryDate(previous.referenceSeg?.start_date);
+  const reason = previous.referenceSeg?.renewal_reason || "";
+  const title = `${label}${previous.referenceSeg?.start_date ? ` ${previous.referenceSeg.start_date}` : ""}${reason ? ` · ${reason}` : ""}`;
+  const record = previous.recordNo ? ` #${previous.recordNo}` : "";
+  const chips = deltas.length > 0
+    ? deltas.map(({ pid, name, delta, rawWeight }) => {
+      const trendCls = delta > 0 ? "up" : "down";
+      const tip = rawWeight !== undefined ? ` title="此 ad 內 ${Math.round(rawWeight)}%"` : "";
+      return `<span class="weight-delta-chip ${trendCls}"${tip}><span class="delta-arrow">${delta > 0 ? "▲" : "▼"}</span>${esc(name)} ${delta > 0 ? "+" : ""}${delta}%</span>`;
+    }).join("")
+    : `<span class="weight-delta-chip neutral">權重無變動</span>`;
   return `
     <div class="weight-history-row ${cls}" title="${esc(title)}">
       <span class="weight-history-label">${label}${record}${date ? ` ${date}` : ""}</span>
-      ${renderWeightHistoryChips(entries)}
+      <div class="weight-history-chips">${chips}</div>
     </div>
   `;
 }
@@ -1338,9 +1431,10 @@ function renderWeightHistoryPanel(seg, products, opts = {}) {
     ? previousWeightSnapshotForReference(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
     : null;
   if (!previous) return "";
+  const currentEntries = productWeightEntries(seg, products);
   return `
     <div class="tl-weight-history">
-      ${renderWeightHistoryLine(previous, "上筆", "previous", scale)}
+      ${renderWeightDeltaLine(currentEntries, previous, "較上筆", "delta", scale)}
     </div>
   `;
 }
@@ -1369,8 +1463,9 @@ function weightSummary(seg, products, mode = "bar", opts = {}) {
   });
 }
 
-function actionButtons(seg, compact) {
+function actionButtons(seg, compact, opts = {}) {
   const id = seg.id;
+  const showLifecycle = opts.lifecycle !== false;
   const lockIcon = seg.lock_full
     ? `<span class="lock-icon" title="🚫 禁止挪動">🚫</span>`
     : (seg.lock_perf_adjust
@@ -1378,14 +1473,17 @@ function actionButtons(seg, compact) {
       : "");
   // 2026-05 按鈕 layout 重整(§5.7):[編輯][權重調整][⋯]
   // 在 split_pair 配對內的廣告 → 「權重調整」按鈕完全不顯示,改用家族列整體視角入口(§5.7.2)
-  const weightBtn = seg.split_pair_id
-    ? ""
-    : `<button data-act="weight" data-id="${id}" title="權重調整">權重調整</button>`;
+  const weightBtn = showLifecycle && !seg.split_pair_id
+    ? `<button data-act="weight" data-id="${id}" title="權重調整">權重調整</button>`
+    : "";
+  const moreBtn = showLifecycle
+    ? `<button data-act="more" data-id="${id}" title="更多動作(續費 / 結束 / 鎖定 / 淘汰)">⋯</button>`
+    : "";
   return `
     ${lockIcon}
     <button data-edit="${id}">編輯</button>
     ${weightBtn}
-    <button data-act="more" data-id="${id}" title="更多動作(續費 / 結束 / 鎖定 / 淘汰)">⋯</button>
+    ${moreBtn}
   `;
 }
 
@@ -1473,6 +1571,14 @@ function bindHandlers(root, s) {
       e.stopPropagation();
       const code = el.dataset.weightToggle;
       if (expandedWeights.has(code)) expandedWeights.delete(code); else expandedWeights.add(code);
+      render(root);
+    };
+  });
+  root.querySelectorAll("[data-timeline-toggle]").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const id = el.dataset.timelineToggle;
+      if (expandedTimelineNodes.has(id)) expandedTimelineNodes.delete(id); else expandedTimelineNodes.add(id);
       render(root);
     };
   });
@@ -2595,7 +2701,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
           description: buildTodoDesc(appliedAd, splitWeights ? splitWeights.normal : weights, st.products, id ? origWeights : null, appliedAd.start_date)
             + (splitWeights ? `\n\n自動拆 t:建立 ${splitCodes.tVariantCode} ${poquanCny.toLocaleString()} RMB / ${splitSummary}` : ""),
           status: "pending",
-          undo_payload: { ad_snapshots, added_ad_ids },
+          undo_payload: buildAdUndoPayload(st, ad_snapshots, added_ad_ids, [...(id ? [id] : []), ...added_ad_ids]),
           ...(yourlsAction ? { yourls_action: yourlsAction } : {}),
         });
       }
@@ -2690,6 +2796,27 @@ function buildTodoDesc(ad, weights, products, oldWeights = null, effectiveDate =
     return `${label}｜${formatTodoWeightSummary(oldWeights, products)} → ${newSummary}\n（請至隨機縮網址後台確認）`;
   }
   return `${label}｜${newSummary}\n（請至隨機縮網址後台確認）`;
+}
+
+function captureAppliedAdSnapshots(state, ids) {
+  const seen = new Set();
+  const snapshots = [];
+  for (const id of ids || []) {
+    const key = String(id || "");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const ad = state.ads.find((a) => String(a.id || "") === key);
+    if (ad) snapshots.push(JSON.parse(JSON.stringify(ad)));
+  }
+  return snapshots;
+}
+
+function buildAdUndoPayload(state, adSnapshots, addedAdIds, appliedIds) {
+  return {
+    ad_snapshots: adSnapshots,
+    added_ad_ids: addedAdIds,
+    applied_ad_snapshots: captureAppliedAdSnapshots(state, appliedIds),
+  };
 }
 
 function formatTodoDate(ymd) {
@@ -2881,7 +3008,7 @@ function openWeightAdjust(seg) {
             ? `\n\n⚙️ 自動拆 t:${result.sourceRename.from} → ${result.sourceRename.to}(同家族碰撞觸發)`
             : ""),
         status: "pending",
-        undo_payload: { ad_snapshots, added_ad_ids },
+        undo_payload: buildAdUndoPayload(st, ad_snapshots, added_ad_ids, [...snapshotIds, ...added_ad_ids]),
         ...(yourlsAction ? { yourls_action: yourlsAction } : {}),
       });
     });
@@ -3235,7 +3362,7 @@ function openFamilyWeightAdjust(pairId) {
         description: buildTodoDesc(parentSeg, newWeights, st.products, roundedIntegral, eff)
           + `\n（${parentSeg.ad_code} / ${tVariantSeg.ad_code} 整體視角調整）`,
         status: "pending",
-        undo_payload: { ad_snapshots, added_ad_ids },
+        undo_payload: buildAdUndoPayload(st, ad_snapshots, added_ad_ids, [parentSeg.id, tVariantSeg.id, ...added_ad_ids]),
         ...(yourlsAction ? { yourls_action: yourlsAction } : {}),
       });
     });
