@@ -33,8 +33,8 @@ export const METRICS = [
 ];
 
 export const PRODUCT_TYPES = {
-  app:    { label: "APP",  band_pct: 30,   desc: "每日攤提可 ±30%" },
-  island: { label: "小島", band_pct: 0.5,  desc: "每日攤提僅 ±0.5%" },
+  app:    { label: "APP",  band_pct: 30 },
+  island: { label: "小島", band_pct: 0.5 },
 };
 
 // 「不檢查每日帶寬」標記:由產品的 no_band 欄位決定(可在 Sheets「產品」分頁

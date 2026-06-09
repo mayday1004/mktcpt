@@ -235,7 +235,7 @@ function row(state, p, ym) {
   return `
     <tr>
       <td><strong>${p.name}</strong><div class="ink-3 mono" style="font-size:11px">${p.id}</div></td>
-      <td><span class="pill ${p.type}">${PRODUCT_TYPES[p.type].label}</span><div class="ink-3" style="font-size:11px;margin-top:2px">${PRODUCT_TYPES[p.type].desc}</div></td>
+      <td><span class="pill ${p.type}">${PRODUCT_TYPES[p.type].label}</span></td>
       <td class="num">${budgetCell}</td>
       <td>${targets}</td>
       <td class="right nowrap">
@@ -270,8 +270,8 @@ function openEditor(id, ym) {
       <div class="field">
         <label>類型 ${id ? '<span class="ink-3" style="font-size:11px;font-weight:400">（建議勿變更）</span>' : ""}</label>
         <select id="f-type">
-          <option value="app" ${p.type === "app" ? "selected" : ""}>APP（月預算 / 建議日花費 ±30%）</option>
-          <option value="island" ${p.type === "island" ? "selected" : ""}>小島（日預算 / 建議日花費 ±0.5%）</option>
+          <option value="app" ${p.type === "app" ? "selected" : ""}>APP</option>
+          <option value="island" ${p.type === "island" ? "selected" : ""}>小島</option>
         </select>
       </div>
     </div>
