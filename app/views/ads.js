@@ -2677,6 +2677,10 @@ function openEditor(id, renewFrom = null, prefill = null) {
     // 續費不進待辦(連結分流通常不需要動);新增 / 編輯-改權重才進
     const isRenewal = !id && !!a.renewal_of;
     const shouldCreateTodo = weightsChanged && !isRenewal;
+    if (shouldCreateTodo && shortUrlSlot === "L1" && !shortUrlParam) {
+      toast("L1 廣告要走 Yourls 批准，請先填縮網址參數", "bad");
+      return;
+    }
 
     update((st) => {
       // 撤回快照
