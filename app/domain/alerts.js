@@ -142,7 +142,7 @@ export function computeAlerts(state, ymd /* today YYYY-MM-DD */) {
   return out;
 }
 
-// 列出 N 天內到期的廣告（給概覽頁的「即將到期」卡用）
+// 列出 N 天內到期的廣告（給概覽頁/廣告頁的「即將到期」卡用）
 //
 // 規則:
 //   1. 以「renewal chain 尾段」為單位 = 沒被任何段 renewal_of 指到的段
@@ -150,30 +150,47 @@ export function computeAlerts(state, ymd /* today YYYY-MM-DD */) {
 //      - 獨立採買 N 個產品共代碼 → N 個尾段(每個產品線一個)
 //        例:st100 色狗导航 由 AV9 / JK / HYC 各買 100% → 3 個獨立 ad → 3 個尾段
 //        舊邏輯只取 latestByCode 一筆,會讓另外 2 個產品在「即將到期」卡漏失產品 pill。
-//   2. 已淘汰的段跳過
+//   2. 預設已淘汰/已續費的段跳過；廣告頁可要求保留本週已處理項目作回顧
 //   3. 「送天數」/「送天數結束」是舊系統的暫時段(實務上不應該還是鏈尾),防呆跳過
 //   4. 渲染端(renderExpiringCard / dashboard renderActionRequired)會用 ad_name 二次去重,
 //      所以同一支廣告的多個尾段仍然合併成一列,但所有產品 pill 都會列出
-export function expiringAds(state, days = 10, todayYmd) {
+export function expiringAds(state, days = 10, todayYmd, options = {}) {
+  if (todayYmd && typeof todayYmd === "object") {
+    options = todayYmd;
+    todayYmd = undefined;
+  }
   const today = todayYmd || todayTaipei();
   const horizon = addDays(today, days);
   const SKIP_REASONS = new Set(["送天數", "送天數結束"]);
+  const includeHandledWithinDays = Number.isFinite(Number(options.includeHandledWithinDays))
+    ? Number(options.includeHandledWithinDays)
+    : -1;
 
   const referenced = new Set(state.ads.map((a) => a.renewal_of).filter(Boolean));
+  const renewed = new Set(state.ads
+    .filter((a) => a.renewal_of && a.renewal_reason !== "權重調整")
+    .map((a) => a.renewal_of));
 
   const out = [];
   for (const a of state.ads) {
-    if (a.eliminated) continue;
     if (!a.end_date) continue;
-    if (referenced.has(a.id)) continue;  // 不是鏈尾:已被後續段取代
     if (a.end_date < today || a.end_date > horizon) continue;
     if (SKIP_REASONS.has(a.renewal_reason)) continue;
+
+    const daysLeft = Math.max(0, Math.round((Date.parse(a.end_date) - Date.parse(today)) / 86400000));
+    const status = a.eliminated ? "eliminated" : renewed.has(a.id) ? "renewed" : "pending";
+    if (status !== "pending") {
+      if (includeHandledWithinDays < 0 || daysLeft > includeHandledWithinDays) continue;
+    } else if (referenced.has(a.id)) {
+      continue;  // 不是鏈尾:已被後續段取代
+    }
+
     out.push({
       ad: a,
-      daysLeft: Math.max(0, Math.round((Date.parse(a.end_date) - Date.parse(today)) / 86400000)),
+      daysLeft,
       poorPerf: evaluatePoorPerf(state, a),
+      status,
     });
   }
   return out.sort((a, b) => a.daysLeft - b.daysLeft);
 }
-

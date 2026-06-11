@@ -35,6 +35,7 @@ function buildShortUrlType(slot, hasBag) {
 const expanded = new Set();
 const expandedWeights = new Set();
 const expandedTimelineNodes = new Set();
+let expiringThisWeekOpen = false;
 // 模組級分頁（"all" 或 product.id）
 let activeTab = "all";
 // 模組級日期區間過濾（皆 inclusive 視覺意義，內部用 overlaps 比對）
@@ -227,7 +228,7 @@ export function render(root) {
     }
   }
 
-  const expiring = expiringAds(s, 13);  // 14 天視窗 (0~13 天)
+  const expiring = expiringAds(s, 13, { includeHandledWithinDays: 6 });  // 14 天視窗；本週保留已處理項目
 
   root.innerHTML = `
     <div class="view-head">
@@ -556,7 +557,7 @@ function renderChurnCard(state, productFilter, filterStart, filterEnd) {
   `;
 }
 
-// 即將到期清單（10 天內，已淘汰的不顯示）
+// 即將到期清單：待處理顯示操作；本週內已續費/已淘汰仍保留成狀態列
 // 計算「家族總額」(供 expiring card 顯示):
 //   - 共購家族(含破圈成員)→ carve-out:取每個 code 的 latest seg 加總(= 一般 + 破圈 = 合約總額)
 //   - 兄弟廣告(無破圈)→ sum 所有 ads,skip「接收前段」(renewal_of + 權重調整)
@@ -603,19 +604,20 @@ function computeFamilyTotal(allAds, familyBase, filterRange) {
   return total;
 }
 
-// 每筆有兩個動作：續費（開新段）/ 淘汰（標 eliminated 跳過後續通知）
+// 待處理項目有兩個動作：續費（開新段）/ 淘汰（標 eliminated 跳過後續通知）
 function renderExpiringCard(expiring, products, allAds) {
   if (!expiring || expiring.length === 0) return "";
   const nameOf = Object.fromEntries((products || []).map((p) => [p.id, p.name]));
 
   // 依「廣告名稱」分組（同名 = 同一支廣告）
   const byName = new Map();
-  for (const { ad, daysLeft, poorPerf } of expiring) {
+  for (const { ad, daysLeft, poorPerf, status = "pending" } of expiring) {
     const key = ad.ad_name || ad.ad_code;
     if (!byName.has(key)) {
       byName.set(key, {
         adName: ad.ad_name,
         latestAd: ad,
+        actionAd: status === "pending" ? ad : null,
         codes: new Set(),
         productIds: new Set(),
         earliestEnd: ad.end_date,
@@ -625,6 +627,10 @@ function renderExpiringCard(expiring, products, allAds) {
         currency: ad.currency || "CNY",
         segments: 0,
         poorPerf: null,
+        pendingCount: 0,
+        renewedCount: 0,
+        eliminatedCount: 0,
+        status: "pending",
       });
     }
     const g = byName.get(key);
@@ -640,10 +646,22 @@ function renderExpiringCard(expiring, products, allAds) {
     g.amountOrig += Number(ad.amount_orig) || Number(ad.amount_cny) || 0;
     g.segments += 1;
     if (poorPerf) g.poorPerf = poorPerf;
+    if (status === "eliminated") g.eliminatedCount += 1;
+    else if (status === "renewed") g.renewedCount += 1;
+    else {
+      g.pendingCount += 1;
+      if (!g.actionAd || ad.end_date < g.actionAd.end_date) g.actionAd = ad;
+    }
   }
 
   // 按剩餘天數排序(近到遠);成效全爛只當 badge 顯示,不影響順序。
   const grouped = [...byName.values()].sort((a, b) => a.earliestDays - b.earliestDays);
+  for (const g of grouped) {
+    if (g.pendingCount > 0) g.status = "pending";
+    else if (g.eliminatedCount > 0 && g.renewedCount > 0) g.status = "handled";
+    else if (g.eliminatedCount > 0) g.status = "eliminated";
+    else if (g.renewedCount > 0) g.status = "renewed";
+  }
 
   const WD = ["日", "一", "二", "三", "四", "五", "六"];
   const fmtEnd = (ymd) => {
@@ -651,23 +669,38 @@ function renderExpiringCard(expiring, products, allAds) {
     const d = new Date(ymd + "T00:00:00");
     return `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`;
   };
+  const thisWeekCount = grouped.filter((g) => g.earliestDays <= 6).length;
+  const nextWeekCount = grouped.length - thisWeekCount;
+  const handledCount = grouped.filter((g) => g.status !== "pending").length;
 
   return `
     <div class="card expiring-card">
-      <div class="card-head">
-        <h2>即將到期 <span class="ink-3" style="font-size:12px;font-weight:400">（14 天內,${grouped.length} 支廣告）</span></h2>
-        <div class="ink-3" style="font-size:12px">
-          <span class="exp-legend exp-red"></span>本週(6 天內)到期 ·
-          <span class="exp-legend exp-blue"></span>下週(7~13 天)到期 ·
-          🚨 = 所有產品成效 < 30% 建議淘汰
+      <div class="card-head expiring-head">
+        <div class="expiring-title">
+          <h2>即將到期 <span class="ink-3" style="font-size:12px;font-weight:400">（14 天內,${grouped.length} 支廣告）</span></h2>
+        </div>
+        <div class="expiring-summary">
+          <span><span class="exp-legend exp-red"></span>本週 ${thisWeekCount}</span>
+          <span><span class="exp-legend exp-blue"></span>下週 ${nextWeekCount}</span>
+          ${handledCount > 0 ? `<span class="exp-status exp-status-done">已處理 ${handledCount}</span>` : ""}
+          <span class="ink-3">🚨 = 所有產品成效 &lt; 30% 建議淘汰</span>
         </div>
       </div>
       <div class="expiring-split">
-        <div class="expiring-list">
+        <div class="expiring-list expiring-red-list">
           ${(() => {
             const reds = grouped.filter((g) => g.earliestDays <= 6);
             if (reds.length === 0) return `<div class="ink-3" style="font-size:12px;padding:8px">本週(6 天內)無到期</div>`;
-            return reds.map((g) => renderExpiringItem(g, nameOf, allAds)).join("");
+            const redHandled = reds.filter((g) => g.status !== "pending").length;
+            return `
+              <div class="expiring-list-head">
+                <span>本週(6 天內) ${reds.length} 支${redHandled ? ` · 已處理 ${redHandled}` : ""}</span>
+                <button class="icon-btn expiring-red-toggle" data-expiring-red-toggle title="${expiringThisWeekOpen ? "收合本週到期" : "展開本週到期"}">${expiringThisWeekOpen ? "▾" : "▸"}</button>
+              </div>
+              ${expiringThisWeekOpen
+                ? reds.map((g) => renderExpiringItem(g, nameOf, allAds)).join("")
+                : `<div class="expiring-collapsed">本週紅色區塊已收合</div>`}
+            `;
           })()}
         </div>
         <div class="expiring-list">
@@ -707,8 +740,15 @@ function renderExpiringItem(g, nameOf, allAds) {
     ? `${Math.round(famTotal).toLocaleString()} USDT`
     : `${Math.round(famTotal).toLocaleString()} RMB`;
   const amountTitle = hasFamily ? `家族(${famBase})總額` : "";
+  const statusHtml = (() => {
+    if (g.status === "renewed") return `<span class="exp-status exp-status-renewed">已續費</span>`;
+    if (g.status === "eliminated") return `<span class="exp-status exp-status-eliminated">已淘汰</span>`;
+    if (g.status === "handled") return `<span class="exp-status exp-status-done">已處理</span>`;
+    return "";
+  })();
+  const actionAd = g.actionAd || g.latestAd;
   return `
-    <div class="expiring-item ${tone}">
+    <div class="expiring-item ${tone} ${g.status !== "pending" ? "exp-row-handled" : ""}">
       <span class="exp-days">${g.earliestDays}天</span>
       <span class="exp-end mono">${fmtEnd(g.earliestEnd)}</span>
       <span class="exp-code mono">${esc(codeStr)}</span>
@@ -717,8 +757,10 @@ function renderExpiringItem(g, nameOf, allAds) {
       <span class="exp-products">${productPills}</span>
       <span class="exp-amount mono"${amountTitle ? ` title="${esc(amountTitle)}"` : ""}>${amountStr}</span>
       <span class="exp-actions">
-        <button class="primary" data-exp-renew="${esc(g.latestAd.id)}">續費</button>
-        <button data-exp-eliminate="${esc(g.latestAd.id)}" title="標記為到期不再投放,從清單移除">淘汰</button>
+        ${g.status === "pending" ? `
+          <button class="primary" data-exp-renew="${esc(actionAd.id)}">續費</button>
+          <button data-exp-eliminate="${esc(actionAd.id)}" title="標記為到期不再投放">淘汰</button>
+        ` : statusHtml}
       </span>
     </div>
   `;
@@ -1646,6 +1688,12 @@ function bindHandlers(root, s) {
   });
 
   // 即將到期清單：續費 / 淘汰
+  root.querySelectorAll("[data-expiring-red-toggle]").forEach((el) => {
+    el.onclick = () => {
+      expiringThisWeekOpen = !expiringThisWeekOpen;
+      render(root);
+    };
+  });
   // 「續費」走 wizard，獨立採買 N 個產品時逐步續費(§5.7 wizard)
   root.querySelectorAll("[data-exp-renew]").forEach((el) => {
     el.onclick = () => {
@@ -1661,7 +1709,7 @@ function bindHandlers(root, s) {
   });
 }
 
-// 淘汰：標記為「不再投放、不再通知」。實際資料保留，只是不會再出現在到期清單與警告
+// 淘汰：標記為「不再投放、不再通知」。實際資料保留，警告停止追蹤，廣告頁本週清單可保留狀態
 // 結束:把 end_date 改到提前結束日,不開新段(§5.7)
 async function openEndAd(seg) {
   const today = todayTaipei();
@@ -1705,7 +1753,7 @@ async function openEndAd(seg) {
 async function openEliminate(seg) {
   const ok = await confirmAsync({
     title: "淘汰廣告",
-    body: "標記為「到期不再投放」— 廣告資料保留供查詢，但會從即將到期清單與警告移除。可隨時取消淘汰恢復追蹤。",
+    body: "標記為「到期不再投放」— 廣告資料保留供查詢，警告會停止追蹤；若 6 天內到期，廣告頁會保留為「已淘汰」狀態列。可隨時取消淘汰恢復追蹤。",
     details: [
       `${seg.ad_code} ${seg.ad_name}`,
       `期間 ${seg.start_date} ~ ${seg.end_date}`,
@@ -1725,7 +1773,7 @@ async function openEliminate(seg) {
       id: uid("todo"),
       created_at: nowTaipeiStamp(),
       action_type: "淘汰廣告",
-      description: `${seg.ad_code} ${seg.ad_name}：到期不再續費，已從即將到期清單移除`,
+      description: `${seg.ad_code} ${seg.ad_name}：到期不再續費，已標記為淘汰`,
       status: "pending",
       undo_payload: { ad_snapshots, added_ad_ids: [] },
     });

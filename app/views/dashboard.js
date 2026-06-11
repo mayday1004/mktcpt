@@ -53,6 +53,7 @@ let dailyProjectionMode = "renewal";
 let dailyGridMonth = "current";
 // 每日摘要選的產品（'all' = 全部產品合計；其他 = 特定產品 id）
 let groupDailyPid = "all";
+let actionExpiringThisWeekOpen = false;
 
 export function render(root) {
   const s = getState();
@@ -193,6 +194,12 @@ function bindDetailHandlers(root) {
   root.querySelectorAll("[data-daily-grid-month]").forEach((el) => {
     el.onclick = () => { dailyGridMonth = el.dataset.dailyGridMonth; render(root); };
   });
+  root.querySelectorAll("[data-action-expiring-red-toggle]").forEach((el) => {
+    el.onclick = () => {
+      actionExpiringThisWeekOpen = !actionExpiringThisWeekOpen;
+      render(root);
+    };
+  });
 }
 
 // 取某產品的「整體最新成效」— 對該產品每支廣告各取最新一筆 record，所有 metric 加總成單筆。
@@ -267,7 +274,7 @@ function kpiPerfStats(state, pids) {
 // 沒事時整個區塊不渲染。
 function renderActionRequired(state) {
   const today = todayStr();
-  const expiring = expiringAds(state, 13);  // 14 天視窗
+  const expiring = expiringAds(state, 13, { includeHandledWithinDays: 6 });  // 14 天視窗；本週保留已處理項目
   const upcoming = upcomingAds(state, 10);
   // detect 用 projection state:預設「成效還行的廣告會續費」、「全爛廣告」視同預設淘汰
   const decisionState = projectedDecisionState(state);
@@ -279,10 +286,21 @@ function renderActionRequired(state) {
   // 即將到期：按剩餘天數排序(近到遠);同名廣告去重(同 ads 頁邏輯)。
   // 成效全爛只當作 badge 顯示,不影響排序順序。
   const byName = new Map();
-  for (const { ad, daysLeft, poorPerf } of expiring) {
+  for (const { ad, daysLeft, poorPerf, status = "pending" } of expiring) {
     const key = ad.ad_name || ad.ad_code;
     if (!byName.has(key)) {
-      byName.set(key, { adName: ad.ad_name, latestAd: ad, codes: new Set(), earliestEnd: ad.end_date, earliestDays: daysLeft, poorPerf: null });
+      byName.set(key, {
+        adName: ad.ad_name,
+        latestAd: ad,
+        codes: new Set(),
+        earliestEnd: ad.end_date,
+        earliestDays: daysLeft,
+        poorPerf: null,
+        pendingCount: 0,
+        renewedCount: 0,
+        eliminatedCount: 0,
+        status: "pending",
+      });
     }
     const g = byName.get(key);
     g.codes.add(ad.ad_code);
@@ -292,8 +310,17 @@ function renderActionRequired(state) {
       g.earliestDays = daysLeft;
     }
     if (poorPerf) g.poorPerf = poorPerf;
+    if (status === "eliminated") g.eliminatedCount += 1;
+    else if (status === "renewed") g.renewedCount += 1;
+    else g.pendingCount += 1;
   }
   const expGroups = [...byName.values()].sort((a, b) => a.earliestDays - b.earliestDays);
+  for (const g of expGroups) {
+    if (g.pendingCount > 0) g.status = "pending";
+    else if (g.eliminatedCount > 0 && g.renewedCount > 0) g.status = "handled";
+    else if (g.eliminatedCount > 0) g.status = "eliminated";
+    else if (g.renewedCount > 0) g.status = "renewed";
+  }
 
   const WD = ["日", "一", "二", "三", "四", "五", "六"];
   const fmtEnd = (ymd) => {
@@ -307,16 +334,26 @@ function renderActionRequired(state) {
     const poorBadge = g.poorPerf
       ? `<span class="pill exp-perf-bad" title="${escape(g.poorPerf.map((p) => `${p.productName} ${(p.ratio * 100).toFixed(0)}%`).join("、"))}">🚨 成效全爛</span>`
       : "";
-    return `<div class="expiring-item ${tone}">
+    const statusHtml = g.status === "renewed"
+      ? `<span class="exp-status exp-status-renewed">已續費</span>`
+      : g.status === "eliminated"
+        ? `<span class="exp-status exp-status-eliminated">已淘汰</span>`
+        : g.status === "handled"
+          ? `<span class="exp-status exp-status-done">已處理</span>`
+          : "";
+    return `<div class="expiring-item ${tone} ${g.status !== "pending" ? "exp-row-handled" : ""}">
       <span class="exp-days">${g.earliestDays}天</span>
       <span class="exp-end mono">${fmtEnd(g.earliestEnd)}</span>
       <span class="exp-code mono">${[...g.codes].join("/")}</span>
       <strong class="exp-name">${escape(g.adName || "—")}</strong>
       ${poorBadge}
+      <span class="exp-products"></span>
+      ${statusHtml}
     </div>`;
   };
   const reds = expGroups.filter((g) => g.earliestDays <= 6);
   const blues = expGroups.filter((g) => g.earliestDays > 6);
+  const redHandled = reds.filter((g) => g.status !== "pending").length;
   const expiringHtml = expGroups.length === 0 ? "" : `
     <div class="ar-block">
       <div class="ar-block-head">
@@ -324,9 +361,17 @@ function renderActionRequired(state) {
         <a class="ar-link" href="#ads">→ 廣告頁處理</a>
       </div>
       <div class="expiring-split" style="margin-top:6px">
-        <div class="expiring-list">
+        <div class="expiring-list expiring-red-list">
           ${reds.length > 0
-            ? reds.map(renderExpItem).join("")
+            ? `
+              <div class="expiring-list-head">
+                <span>本週(6 天內) ${reds.length} 支${redHandled ? ` · 已處理 ${redHandled}` : ""}</span>
+                <button class="icon-btn expiring-red-toggle" data-action-expiring-red-toggle title="${actionExpiringThisWeekOpen ? "收合本週到期" : "展開本週到期"}">${actionExpiringThisWeekOpen ? "▾" : "▸"}</button>
+              </div>
+              ${actionExpiringThisWeekOpen
+                ? reds.map(renderExpItem).join("")
+                : `<div class="expiring-collapsed">本週紅色區塊已收合</div>`}
+            `
             : `<div class="ink-3" style="font-size:12px;padding:8px">本週(6 天內)無到期</div>`}
         </div>
         <div class="expiring-list">

@@ -197,7 +197,7 @@ function migrate(st) {
         a.purchase_mode = (wk.length === 1 && a.weights[wk[0]] === 100) ? "independent" : "shared";
       }
       if (typeof a.lock_perf_adjust !== "boolean") a.lock_perf_adjust = false;
-      // 淘汰旗標：到期未續費、使用者明確標記不再通知。即將到期清單會跳過
+      // 淘汰旗標：到期未續費、使用者明確標記不再通知。警告會跳過；廣告頁本週清單可保留作回顧
       if (typeof a.eliminated !== "boolean") a.eliminated = false;
       // 清掉舊匯入腳本(samples/build_v2_weight_log_priority.py)誤塞進 notes 的內部
       // debug 訊息(例:「V2 fallback INDEPENDENT(…)」、「V2 匯入(權重紀錄為主;…)」)。
