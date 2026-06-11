@@ -33,8 +33,8 @@ export const METRICS = [
 ];
 
 export const PRODUCT_TYPES = {
-  app:    { label: "APP",  band_pct: 30 },
-  island: { label: "小島", band_pct: 0.5 },
+  app:    { label: "APP",  band_pct: 30,   desc: "每日攤提可 ±30%" },
+  island: { label: "小島", band_pct: 0.5,  desc: "每日攤提僅 ±0.5%" },
 };
 
 // 「不檢查每日帶寬」標記:由產品的 no_band 欄位決定(可在 Sheets「產品」分頁
@@ -112,6 +112,8 @@ export function defaultState() {
       monthly_rates: {},
       sheets_webapp_url: "",
       sheets_token: "",
+      yourls_wake_url: "",
+      yourls_wake_token: "",
       // 縮網址前綴對應(2026-05,§5.7.x):業務 slot L1/L3/L5 → 實際 URL 子網域前綴
       // 預設值 = 同名(slot id 就是前綴);使用者可在縮網址頁修改
       short_url_prefix_map: { L1: "L1", L3: "L3", L5: "L5" },

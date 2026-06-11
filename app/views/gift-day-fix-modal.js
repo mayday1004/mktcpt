@@ -239,6 +239,7 @@ export function openGiftDayFixModal(onApplied) {
           products: st.products,
           actionType: "補花費缺口",
           effectiveDate: p.effective,
+          previousWeights: seg.weights,
         });
         try {
           if (p.effective <= seg.start_date) {

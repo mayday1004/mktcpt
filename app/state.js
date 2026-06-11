@@ -1,7 +1,7 @@
 import { VERSION, defaultState } from "./schema.js";
 import { nowTaipeiTime } from "./lib/dates.js";
 import { runColdStartGate } from "./lib/version-gate.js";
-import { isDeployManaged } from "./lib/deploy-config.js";
+import { isDeployManaged, isYourlsWakeDeployManaged } from "./lib/deploy-config.js";
 import { applyDoneEliminateTodos, normalizeTodosInState } from "./domain/todo-utils.js";
 import { materializeTodosAppliedSnapshots } from "./domain/undo.js";
 import { normalizeWeightsToTotal } from "./domain/auto-split.js";
@@ -130,6 +130,12 @@ function normalizeLegacySplitPairWeights(st) {
   }
 }
 
+function reconcileDerivedState(st) {
+  reconcileYourlsTodos(st);
+  materializeTodosAppliedSnapshots(st);
+  applyDoneEliminateTodos(st);
+}
+
 // Migrate older state shapes to current schema. Non-destructive.
 function migrate(st) {
   if (!st || typeof st !== "object") return defaultState();
@@ -226,15 +232,17 @@ function migrate(st) {
   normalizeTodosInState(st);
   if (!Array.isArray(st.yourls_actions)) st.yourls_actions = [];
   if (!Array.isArray(st.yourls_execution_logs)) st.yourls_execution_logs = [];
-  reconcileYourlsTodos(st);
-  materializeTodosAppliedSnapshots(st);
-  applyDoneEliminateTodos(st);
+  reconcileDerivedState(st);
   st.version = VERSION;
   // 部署模式下,本機絕不快取 sheets_webapp_url / sheets_token,
   // 一律走 DEPLOY_SHEETS_URL/TOKEN(避免 JSON 匯入、舊版 cache、別台機器留下的 placeholder 污染)
   if (isDeployManaged() && st.settings) {
     st.settings.sheets_webapp_url = "";
     st.settings.sheets_token = "";
+  }
+  if (isYourlsWakeDeployManaged() && st.settings) {
+    st.settings.yourls_wake_url = "";
+    st.settings.yourls_wake_token = "";
   }
   return st;
 }
@@ -245,6 +253,10 @@ function persist() {
       (state.settings.sheets_webapp_url || state.settings.sheets_token)) {
     // 任何途徑(舊 cache / 匯入 / migrate)塞進 state 的本機 URL/token,持久化前清掉
     toSave = { ...state, settings: { ...state.settings, sheets_webapp_url: "", sheets_token: "" } };
+  }
+  if (isYourlsWakeDeployManaged() && toSave.settings &&
+      (toSave.settings.yourls_wake_url || toSave.settings.yourls_wake_token)) {
+    toSave = { ...toSave, settings: { ...toSave.settings, yourls_wake_url: "", yourls_wake_token: "" } };
   }
   localStorage.setItem(KEY, JSON.stringify(toSave));
 }
@@ -288,6 +300,7 @@ export function update(mutator, label) {
   pushUndo(label);
   mutator(state);
   markRemovedSyncRows(beforeSyncIds, collectSyncEntityIds(state));
+  reconcileDerivedState(state);
   persist();
   emit();
 }
@@ -296,6 +309,7 @@ export function update(mutator, label) {
 // 仍會 persist + emit 讓畫面更新。
 export function applySync(mutator) {
   mutator(state);
+  reconcileDerivedState(state);
   persist();
   emit();
 }

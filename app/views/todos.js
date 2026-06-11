@@ -1,5 +1,7 @@
 import { getState, update, uid } from "../state.js";
-import { nowTaipeiStamp } from "../lib/dates.js";
+import { manualSync, waitForSyncIdle } from "../io/sync.js";
+import { wakeYourlsWorker } from "../io/yourls-wake.js";
+import { nowTaipeiStamp, todayTaipei } from "../lib/dates.js";
 import { applyTodoUndo, todoHasUndo } from "../domain/undo.js";
 import { applyDoneEliminateTodos } from "../domain/todo-utils.js";
 import {
@@ -32,11 +34,26 @@ function filterDoneTodos(done) {
     return true;
   }).sort(compareTodoNewestFirst);
 }
-
 function compareTodoNewestFirst(a, b) {
   const at = String(a?.created_at || "");
   const bt = String(b?.created_at || "");
   return bt.localeCompare(at) || String(b?.id || "").localeCompare(String(a?.id || ""));
+}
+
+function yourlsEffectiveDates(todo) {
+  return todoYourlsPayloads(todo)
+    .map((payload) => String(payload?.effective_date || "").match(/\d{4}-\d{2}-\d{2}/)?.[0] || "")
+    .filter(Boolean)
+    .sort();
+}
+
+function firstYourlsEffectiveDate(todo) {
+  return yourlsEffectiveDates(todo)[0] || "";
+}
+
+function isFutureYourlsTodo(todo) {
+  const date = firstYourlsEffectiveDate(todo);
+  return !!date && date > todayTaipei();
 }
 
 export function render(root) {
@@ -134,16 +151,43 @@ export function render(root) {
   root.querySelector("#btn-add-todo").onclick = () => openTodoEditor();
 
   root.querySelectorAll("[data-yourls-approve]").forEach((el) => {
-    el.onclick = () => {
-      let result = { ok: false, created: 0 };
-      update((st) => {
-        result = approveYourlsTodo(st, el.dataset.yourlsApprove, {
-          now: nowTaipeiStamp(),
-          makeId: (index) => uid(`yourls_${index + 1}`),
-        });
-      }, "批准 Yourls 待辦");
-      if (result.ok) toast(`已批准,送出 ${result.created} 筆 Yourls 操作`, "ok");
-      else toast("此待辦目前不能批准", "bad");
+    el.onclick = async () => {
+      const todoId = el.dataset.yourlsApprove;
+      el.disabled = true;
+      try {
+        await waitForSyncIdle();
+        let result = { ok: false, created: 0 };
+        update((st) => {
+          result = approveYourlsTodo(st, todoId, {
+            now: nowTaipeiStamp(),
+            makeId: (index) => uid(`yourls_${index + 1}`),
+          });
+        }, "批准 Yourls 待辦");
+        if (!result.ok) {
+          toast("此待辦目前不能批准", "bad");
+          return;
+        }
+        const approvedTodo = getState().todos.find((t) => t.id === todoId);
+        const effectiveDate = firstYourlsEffectiveDate(approvedTodo);
+        const isScheduled = effectiveDate && effectiveDate > todayTaipei();
+        toast(
+          isScheduled
+            ? `已批准 ${result.created} 筆 Yourls 操作,已排程 ${effectiveDate} 執行並同步到 yourls帕魯`
+            : `已批准 ${result.created} 筆 Yourls 操作,正在同步並喚醒 yourls帕魯`,
+          "ok",
+        );
+        await manualSync({ waitIfBusy: true });
+        const wake = await wakeYourlsWorker();
+        if (wake.skipped) {
+          toast("已批准並同步; 尚未設定 yourls帕魯 wake URL/token", "bad");
+        } else {
+          toast("已批准，開始喚醒yourls帕魯", "ok");
+        }
+      } catch (e) {
+        toast(`Yourls 批准流程失敗:${e.message}`, "bad");
+      } finally {
+        if (el.isConnected) el.disabled = false;
+      }
     };
   });
 
@@ -233,6 +277,7 @@ function pendingTodoButtons(todo) {
     const label = status === "failed" ? "重新批准" : "批准";
     return `<button data-edit="${todo.id}">編輯</button> <button class="primary" data-yourls-approve="${todo.id}">${label}</button>`;
   }
+  if (status === "queued" && isFutureYourlsTodo(todo)) return `<button data-edit="${todo.id}">編輯</button> <button disabled>排程中</button>`;
   if (status === "queued") return `<button data-edit="${todo.id}">編輯</button> <button disabled>等待 Yourls</button>`;
   if (status === "running") return `<button data-edit="${todo.id}">編輯</button> <button disabled>Yourls 執行中</button>`;
   if (status === "applied") return `<button disabled>已套用</button>`;
@@ -244,10 +289,14 @@ function yourlsTodoStatusHtml(todo) {
   const status = String(todo.yourls_status || "pending_approval");
   const count = todoYourlsPayloads(todo).length;
   const actionText = count > 1 ? `${count} 筆 Yourls 操作` : "1 筆 Yourls 操作";
+  const effectiveDate = firstYourlsEffectiveDate(todo);
+  const queuedLabel = effectiveDate && effectiveDate > todayTaipei()
+    ? `已批准,排程 ${escape(effectiveDate)} 執行`
+    : "已批准,等待 yourls帕魯";
   const labels = {
     pending_approval: "待批准",
-    queued: "已批准,等待 Yourls worker",
-    running: "Yourls worker 執行中",
+    queued: queuedLabel,
+    running: "yourls帕魯執行中",
     applied: `Yourls 已套用${todo.yourls_applied_at ? ` (${escape(todo.yourls_applied_at)})` : ""}`,
     failed: `Yourls 套用失敗${todo.yourls_last_error ? `:${escape(todo.yourls_last_error)}` : ""}`,
   };

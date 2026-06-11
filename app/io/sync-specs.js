@@ -785,11 +785,13 @@ export const TABLE_SYNC_SPECS = [
       if (idx >= 0) state.yourls_actions[idx] = rec;
       else state.yourls_actions.push(rec);
       reconcileYourlsTodos(state);
+      materializeTodosAppliedSnapshots(state);
       applyDoneEliminateTodos(state);
     },
     removeFromState(state, _id) {
       state.yourls_actions = (state.yourls_actions || []).filter((a) => a.action_id !== _id);
       reconcileYourlsTodos(state);
+      materializeTodosAppliedSnapshots(state);
     },
     legacyParse(headers, rows) {
       const idx = (h) => headers.indexOf(h);
@@ -872,7 +874,7 @@ export const TABLE_SYNC_SPECS = [
   // 同步的 key 限定為「跨裝置共享、不會因為環境而不同」的:
   //   - current_month、expense_rate、income_rate、usdt_to_cny_rate、usd_to_twd_rate
   //   - monthly_rates 拆成多筆 key（如 "monthly_rate::2026-04::expense"）
-  // 不同步:sheets_webapp_url、sheets_token、auto_sync_*（裝置相關）
+  // 不同步:sheets_webapp_url、sheets_token、yourls_wake_url、yourls_wake_token、auto_sync_*（裝置相關）
   {
     sheetName: "設定",
     dataHeaders: ["key", "value"],

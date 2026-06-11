@@ -15,6 +15,8 @@ loadLocalEnv(".env.local");
 
 const deploySheetsUrl = readEnv("SHEETS_WEBAPP_URL");
 const deploySheetsToken = readEnv("SHEETS_TOKEN");
+const deployYourlsWakeUrl = readEnv("YOURLS_WAKE_URL");
+const deployYourlsWakeToken = readEnv("YOURLS_WAKE_TOKEN");
 
 function loadLocalEnv(fileName) {
   const filePath = path.resolve(fileName);
@@ -29,7 +31,6 @@ function loadLocalEnv(fileName) {
     if (!match) continue;
 
     const [, key, rawValue] = match;
-    if (process.env[key] && process.env[key].trim()) continue;
     process.env[key] = parseEnvValue(rawValue);
   }
 }
@@ -77,6 +78,8 @@ const result = await esbuild.build({
   define: {
     __BUYADS_SHEETS_URL__: JSON.stringify(deploySheetsUrl),
     __BUYADS_SHEETS_TOKEN__: JSON.stringify(deploySheetsToken),
+    __BUYADS_YOURLS_WAKE_URL__: JSON.stringify(deployYourlsWakeUrl),
+    __BUYADS_YOURLS_WAKE_TOKEN__: JSON.stringify(deployYourlsWakeToken),
     __BUYADS_BUILD__: JSON.stringify(buildId),
   },
 });
@@ -106,6 +109,8 @@ fs.writeFileSync(path.join(dist, "app.js"), finalCode);
 const runtimeConfig = {
   sheetsWebappUrl: deploySheetsUrl,
   sheetsToken: deploySheetsToken,
+  yourlsWakeUrl: deployYourlsWakeUrl,
+  yourlsWakeToken: deployYourlsWakeToken,
 };
 fs.writeFileSync(
   path.join(dist, "config.js"),
@@ -124,6 +129,7 @@ const jsHash = crypto.createHash("sha256").update(finalCode).digest("hex").slice
 const cssHash = crypto.createHash("sha256").update(cssSrc).digest("hex").slice(0, 10);
 
 let html = fs.readFileSync("index.html", "utf8");
+html = html.replace(/\s*<script\s+src="config\.local\.js"\s+data-dev-config><\/script>\s*/g, "\n");
 html = html.replace('href="app/styles.css"', `href="styles.css?v=${cssHash}"`);
 html = html.replace(
   /<script\s+type="module"\s+src="app\/main\.js"\s*><\/script>/,
@@ -136,6 +142,7 @@ fs.writeFileSync(path.join(dist, "version.txt"), buildId + "\n");
 
 const finalSize = Buffer.byteLength(finalCode);
 const deployTag = deploySheetsUrl ? "deploy-config: ON" : "deploy-config: OFF";
+const wakeTag = deployYourlsWakeUrl ? "yourls-wake: ON" : "yourls-wake: OFF";
 console.log(
-  `built in ${Date.now() - t0}ms — bundle ${(bundledSize / 1024).toFixed(1)}kb → ${shouldObfuscate ? "obfuscated" : "minified"} ${(finalSize / 1024).toFixed(1)}kb · ${deployTag} · build ${buildId}`,
+  `built in ${Date.now() - t0}ms — bundle ${(bundledSize / 1024).toFixed(1)}kb → ${shouldObfuscate ? "obfuscated" : "minified"} ${(finalSize / 1024).toFixed(1)}kb · ${deployTag} · ${wakeTag} · build ${buildId}`,
 );

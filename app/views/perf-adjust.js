@@ -1145,6 +1145,7 @@ async function applyAll(pivot, newWeightsByAd, root) {
         products: st.products,
         actionType: "成效調權重",
         effectiveDate: effective,
+        previousWeights: seg.weights,
       });
       try {
         if (effective <= seg.start_date) {

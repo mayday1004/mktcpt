@@ -7,14 +7,27 @@ export const DEPLOY_SHEETS_URL =
 export const DEPLOY_SHEETS_TOKEN =
   globalThis.__BUYADS_CONFIG__?.sheetsToken ||
   (typeof __BUYADS_SHEETS_TOKEN__ !== "undefined" ? __BUYADS_SHEETS_TOKEN__ : "");
+export const DEPLOY_YOURLS_WAKE_URL =
+  globalThis.__BUYADS_CONFIG__?.yourlsWakeUrl ||
+  (typeof __BUYADS_YOURLS_WAKE_URL__ !== "undefined" ? __BUYADS_YOURLS_WAKE_URL__ : "");
+export const DEPLOY_YOURLS_WAKE_TOKEN =
+  globalThis.__BUYADS_CONFIG__?.yourlsWakeToken ||
+  (typeof __BUYADS_YOURLS_WAKE_TOKEN__ !== "undefined" ? __BUYADS_YOURLS_WAKE_TOKEN__ : "");
 
 export const isDeployManaged = () => !!(DEPLOY_SHEETS_URL && DEPLOY_SHEETS_TOKEN);
+export const isYourlsWakeDeployManaged = () => !!(DEPLOY_YOURLS_WAKE_URL && DEPLOY_YOURLS_WAKE_TOKEN);
 
 export function getEffectiveSheetsUrl(settings) {
   return DEPLOY_SHEETS_URL || settings?.sheets_webapp_url || "";
 }
 export function getEffectiveSheetsToken(settings) {
   return DEPLOY_SHEETS_TOKEN || settings?.sheets_token || "";
+}
+export function getEffectiveYourlsWakeUrl(settings) {
+  return DEPLOY_YOURLS_WAKE_URL || settings?.yourls_wake_url || "";
+}
+export function getEffectiveYourlsWakeToken(settings) {
+  return DEPLOY_YOURLS_WAKE_TOKEN || settings?.yourls_wake_token || "";
 }
 
 export function describeSheetsUrlProblem(url) {

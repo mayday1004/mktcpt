@@ -189,12 +189,27 @@ npx serve .
 ```bash
 SHEETS_WEBAPP_URL="https://script.google.com/macros/s/.../exec" \
 SHEETS_TOKEN="your-secret" \
+YOURLS_WAKE_URL="http://MAC_B_IP:8765/wake" \
+YOURLS_WAKE_TOKEN="same-as-mac-b-WAKE_TOKEN" \
 npm run build
 ```
 
 [build.js](build.js) 會把 `app/main.js` 與所有 import 模組打成單一 IIFE(esbuild + javascript-obfuscator 混淆),產 `dist/`。
 
-Docker 兩階段(Node build → Caddy serve),Railway / Fly 等平台一鍵部署,環境變數注入 Sheets URL/Token。
+Docker 兩階段(Node build → Caddy serve),Railway / Fly 等平台一鍵部署,環境變數注入 Sheets URL/Token 與 B 電腦 wake URL/Token。
+
+Railway 變數至少設定：
+
+```text
+SHEETS_WEBAPP_URL=https://script.google.com/macros/s/.../exec
+SHEETS_TOKEN=Apps Script token
+YOURLS_WAKE_URL=http://MAC_B_IP:8765/wake
+YOURLS_WAKE_TOKEN=Mac B .env.local 的 WAKE_TOKEN
+```
+
+`YOURLS_WAKE_URL` 的 `MAC_B_IP` 可以在 Mac B 啟動 `bash run_wake_server.sh` 後看終端機印出的 `A computer can call this B-computer wake URL`。也可以在 Mac B 跑 `ipconfig getifaddr en0` 取 Wi-Fi IP；有線網路常見是 `ipconfig getifaddr en1`。IP 可能會因 DHCP 變動，正式使用時建議在路由器替 Mac B 做 DHCP reservation。
+
+若前端部署在 Railway HTTPS 網域，瀏覽器可能會擋 HTTPS 頁面呼叫區網 HTTP wake URL。這時 `YOURLS_WAKE_URL` 應改成能連到 Mac B 的 HTTPS URL，例如內網 HTTPS 反向代理或 tunnel URL；純本機 HTTP 測試則可直接用 `http://MAC_B_IP:8765/wake`。
 
 ### 檔案結構
 

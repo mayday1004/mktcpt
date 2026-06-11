@@ -82,10 +82,31 @@ function latestSegForCurrentFilter(segs) {
   if (allValid.length === 0) return null;
   const inRange = allValid.filter(segOverlapsCurrentFilter);
   const pool = inRange.length > 0 ? inRange : allValid;
-  return pool.slice().sort((a, b) =>
+  return latestFirst(pool)[0] || null;
+}
+
+function lifecycleDepth(seg, byId) {
+  let depth = 0;
+  let cur = seg;
+  const seen = new Set();
+  while (cur?.renewal_of && !seen.has(cur.renewal_of)) {
+    seen.add(cur.renewal_of);
+    const parent = byId.get(cur.renewal_of);
+    if (!parent) break;
+    depth += 1;
+    cur = parent;
+  }
+  return depth;
+}
+
+function latestFirst(segs) {
+  const list = (segs || []).filter(Boolean);
+  const byId = new Map(list.map((seg) => [seg.id, seg]));
+  return list.slice().sort((a, b) =>
     (b.start_date || "").localeCompare(a.start_date || "") ||
-    (b.end_date || "").localeCompare(a.end_date || "")
-  )[0] || null;
+    (b.end_date || "").localeCompare(a.end_date || "") ||
+    lifecycleDepth(b, byId) - lifecycleDepth(a, byId)
+  );
 }
 
 export function render(root) {
@@ -164,8 +185,7 @@ export function render(root) {
     for (const [code, segs] of codeSegs) {
       const inRange = segs.filter(inFilterForTab);
       const pool = inRange.length > 0 ? inRange : segs;
-      const latest = pool.slice().sort((a, b) =>
-        (b.start_date || "").localeCompare(a.start_date || ""))[0];
+      const latest = latestFirst(pool)[0];
       if (!latest) continue;
       const overlapping = pool.filter((s) =>
         s.start_date < latest.end_date && s.end_date > latest.start_date
@@ -192,8 +212,7 @@ export function render(root) {
     for (const [code, segs] of codeSegs) {
       const inRange = segs.filter(inFilterForTab);
       const pool = inRange.length > 0 ? inRange : segs;
-      const latest = pool.slice().sort((a, b) =>
-        (b.start_date || "").localeCompare(a.start_date || ""))[0];
+      const latest = latestFirst(pool)[0];
       if (!latest) continue;
       overlappingByCode.set(code, pool.filter((s) =>
         s.start_date < latest.end_date && s.end_date > latest.start_date
@@ -1077,6 +1096,17 @@ function timelineSegsForReference(segs, referenceSeg) {
   return { mode: "snapshot", items: latestSnapshotSegs(segs, referenceSeg) };
 }
 
+function lifecycleAncestorIds(referenceSeg, segs) {
+  const byId = new Map((segs || []).map((seg) => [seg.id, seg]));
+  const ids = new Set();
+  let cur = referenceSeg;
+  while (cur?.renewal_of && !ids.has(cur.renewal_of)) {
+    ids.add(cur.renewal_of);
+    cur = byId.get(cur.renewal_of);
+  }
+  return ids;
+}
+
 function renderWeightDetailRow(seg, products, opts = {}) {
   const details = opts.allSegs
     ? weightSnapshotDetails(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
@@ -1248,10 +1278,8 @@ function productWeightEntries(seg, products) {
 function weightSnapshotDetails(segs, products, opts = {}) {
   const allSegs = segs || [];
   const allProducts = products || [];
-  const referenceSeg = opts.referenceSeg || [...allSegs].sort((a, b) =>
-    (b.start_date || "").localeCompare(a.start_date || "") ||
-    (b.end_date || "").localeCompare(a.end_date || "")
-  )[0];
+  const referenceSeg = opts.referenceSeg || latestFirst(allSegs)[0];
+  const byId = new Map(allSegs.map((seg) => [seg.id, seg]));
 
   const collectFrom = (segList) => {
     const m = new Map();
@@ -1261,29 +1289,29 @@ function weightSnapshotDetails(segs, products, opts = {}) {
         if (wn <= 0) continue;
         const cur = m.get(pid);
         const sd = seg.start_date || "";
-        if (!cur || sd >= cur.startDate) {
-          m.set(pid, { weight: wn, startDate: sd });
+        const depth = lifecycleDepth(seg, byId);
+        if (!cur || sd > cur.startDate || (sd === cur.startDate && depth >= cur.depth)) {
+          m.set(pid, { weight: wn, startDate: sd, depth });
         }
       }
     }
     return m;
   };
 
+  const ancestorIds = lifecycleAncestorIds(referenceSeg, allSegs);
   let snapshotSegs = referenceSeg
     ? allSegs.filter((seg) =>
       seg.start_date && seg.end_date &&
       referenceSeg.start_date && referenceSeg.end_date &&
       seg.start_date < referenceSeg.end_date &&
-      seg.end_date > referenceSeg.start_date
+      seg.end_date > referenceSeg.start_date &&
+      (seg.id === referenceSeg.id || !ancestorIds.has(seg.id))
     )
     : [];
   let byPid = collectFrom(snapshotSegs.length > 0 ? snapshotSegs : (referenceSeg ? [referenceSeg] : []));
   // fallback:資料缺日期時,退回「整體 latest seg」避免空白。
   if (byPid.size === 0) {
-    const lastSeg = [...allSegs].sort((a, b) =>
-      (b.start_date || "").localeCompare(a.start_date || "") ||
-      (b.end_date || "").localeCompare(a.end_date || "")
-    )[0];
+    const lastSeg = latestFirst(allSegs)[0];
     if (lastSeg) {
       snapshotSegs = [lastSeg];
       byPid = collectFrom(snapshotSegs);
@@ -1339,16 +1367,15 @@ function renderWeightPills(entries, opts = {}) {
 
 function previousWeightSnapshotForReference(segs, products, opts = {}) {
   const allSegs = segs || [];
-  const referenceSeg = opts.referenceSeg || [...allSegs].sort((a, b) =>
-    (b.start_date || "").localeCompare(a.start_date || "") ||
-    (b.end_date || "").localeCompare(a.end_date || "")
-  )[0];
+  const referenceSeg = opts.referenceSeg || latestFirst(allSegs)[0];
+  const byId = new Map(allSegs.map((seg) => [seg.id, seg]));
   const valid = allSegs
     .map((seg, index) => ({ seg, index }))
     .filter(({ seg }) => seg.start_date && seg.end_date)
     .sort((a, b) =>
       (a.seg.start_date || "").localeCompare(b.seg.start_date || "") ||
-      (a.seg.end_date || "").localeCompare(b.seg.end_date || "")
+      (a.seg.end_date || "").localeCompare(b.seg.end_date || "") ||
+      lifecycleDepth(a.seg, byId) - lifecycleDepth(b.seg, byId)
     );
   let refPos = referenceSeg?.id
     ? valid.findIndex(({ seg }) => seg.id === referenceSeg.id)
@@ -2693,6 +2720,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
           products: st.products,
           actionType: id ? "手動改權重" : "新增廣告",
           effectiveDate: appliedAd.start_date,
+          previousWeights: id ? origWeights : null,
         });
         st.todos.push({
           id: uid("todo"),
@@ -2898,6 +2926,11 @@ function openWeightAdjust(seg) {
     const eff = q("#eff").value;
     if (!eff) { toast("請選生效日", "bad"); return; }
     if (Object.keys(newWeights).length === 0) { toast("至少一個產品權重 > 0", "bad"); return; }
+    const weightSum = Object.values(newWeights).reduce((sum, v) => sum + (Number(v) || 0), 0);
+    if (Math.abs(weightSum - 100) > 0.01) {
+      toast(`權重合計 ${weightSum}% 必須 = 100%`, "bad");
+      return;
+    }
     const notes = q("#f-notes").value.trim();
 
     // 自動拆 t 偵測(§5.7.2):非 pair + 同家族碰撞 → 觸發拆 pair
@@ -2998,6 +3031,7 @@ function openWeightAdjust(seg) {
         products: st.products,
         actionType: "手動改權重",
         effectiveDate: eff,
+        previousWeights: seg.weights,
       });
       st.todos.push({
         id: uid("todo"),
@@ -3035,8 +3069,7 @@ function openFamilyWeightAdjust(pairId) {
     if (!byCode.has(a.ad_code)) byCode.set(a.ad_code, []);
     byCode.get(a.ad_code).push(a);
   }
-  const latestOf = (segs) =>
-    segs.slice().sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""))[0];
+  const latestOf = (segs) => latestFirst(segs)[0];
   const parentSeg = [...byCode.values()]
     .map((segs) => latestOf(segs))
     .find((seg) => seg.split_role === "parent");
@@ -3354,6 +3387,7 @@ function openFamilyWeightAdjust(pairId) {
         products: st.products,
         actionType: "手動改權重",
         effectiveDate: eff,
+        previousWeights: roundedIntegral,
       });
       st.todos.push({
         id: uid("todo"),

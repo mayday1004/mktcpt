@@ -6,12 +6,21 @@ import { clearConflicts } from "../io/conflict-store.js";
 import { downloadText } from "../lib/csv.js";
 import { getExpenseRate, getIncomeRate, getRateSource, getUsdtToCnyRate, getUsdToTwdRate } from "../schema.js";
 import { nowTaipeiStamp } from "../lib/dates.js";
-import { DEPLOY_SHEETS_URL, DEPLOY_SHEETS_TOKEN, isDeployManaged } from "../lib/deploy-config.js";
+import {
+  DEPLOY_SHEETS_TOKEN,
+  DEPLOY_SHEETS_URL,
+  DEPLOY_YOURLS_WAKE_TOKEN,
+  DEPLOY_YOURLS_WAKE_URL,
+  isDeployManaged,
+  isYourlsWakeDeployManaged,
+} from "../lib/deploy-config.js";
 
 let activeSub = "sync";  // sync / rates / data / advanced
 
 export function render(root) {
   const s = getState();
+  const wakeDeployManaged = isYourlsWakeDeployManaged();
+  const canSaveConnection = !isDeployManaged() || !wakeDeployManaged;
 
   root.innerHTML = `
     <div class="view-head">
@@ -73,10 +82,24 @@ export function render(root) {
           <input id="f-token" type="password" ${isDeployManaged() ? "readonly" : ""} value="${escape(isDeployManaged() ? DEPLOY_SHEETS_TOKEN : s.settings.sheets_token)}" placeholder="與 Apps Script 中 SECRET 相同" />
         </div>
         <div class="sheets-form-actions">
-          ${isDeployManaged() ? "" : `<button id="btn-save-sync">儲存設定</button>`}
+          ${canSaveConnection ? `<button id="btn-save-sync">儲存設定</button>` : ""}
           <button id="btn-ping">測試連線</button>
         </div>
       </div>
+
+      <div class="sheets-form">
+        <div class="field" style="flex:3">
+          <label>yourls帕魯 Wake URL${wakeDeployManaged ? " <span class=\"pill\">部署提供</span>" : ""}</label>
+          <input id="f-yourls-wake-url" ${wakeDeployManaged ? "readonly" : ""} value="${escape(wakeDeployManaged ? DEPLOY_YOURLS_WAKE_URL : (s.settings.yourls_wake_url || ""))}" placeholder="http://yourls帕魯IP:8765/wake" />
+        </div>
+        <div class="field" style="flex:2">
+          <label>Wake Token${wakeDeployManaged ? " <span class=\"pill\">部署提供</span>" : ""}</label>
+          <input id="f-yourls-wake-token" type="password" ${wakeDeployManaged ? "readonly" : ""} value="${escape(wakeDeployManaged ? DEPLOY_YOURLS_WAKE_TOKEN : (s.settings.yourls_wake_token || ""))}" placeholder="與 yourls帕魯 WAKE_TOKEN 相同" />
+        </div>
+      </div>
+      <p class="ink-3" style="font-size:12px;margin-top:6px">
+        Yourls 待辦批准成功後，系統會先同步 Google Sheets，再呼叫這個 URL 喚醒 yourls帕魯。
+      </p>
 
       <div class="sheets-actions">
         <button class="primary" id="btn-sync-now">🔄 立即同步</button>
@@ -470,8 +493,8 @@ function bindHandlers(root) {
 
   bind("#btn-export-json", () => {
     const s2 = getState();
-    // 把裝置相關 settings 拿掉,避免別人匯入後本機的 Apps Script URL/token 被覆寫掉
-    const { sheets_webapp_url, sheets_token, ...sharedSettings } = s2.settings || {};
+    // 把裝置相關 settings 拿掉,避免別人匯入後本機 URL/token 被覆寫掉
+    const { sheets_webapp_url, sheets_token, yourls_wake_url, yourls_wake_token, ...sharedSettings } = s2.settings || {};
     const exportData = { ...s2, settings: sharedSettings };
     downloadText(`buyads_${s2.settings.current_month}.json`, JSON.stringify(exportData, null, 2), "application/json");
     toast("已匯出 JSON(不含本機 Apps Script URL/token)", "ok");
@@ -498,6 +521,8 @@ function bindHandlers(root) {
         data.settings = data.settings || {};
         data.settings.sheets_webapp_url = localSettings.sheets_webapp_url || "";
         data.settings.sheets_token = localSettings.sheets_token || "";
+        data.settings.yourls_wake_url = localSettings.yourls_wake_url || "";
+        data.settings.yourls_wake_token = localSettings.yourls_wake_token || "";
         replaceState(data, "匯入 JSON");
         clearConflicts();
         toast("已匯入(本機 Apps Script URL/token 保留不變)", "ok");
@@ -520,10 +545,15 @@ function bindHandlers(root) {
 
 function saveSyncFields(root) {
   // deploy 模式下 URL/token 由 env 提供，input 為唯讀；不要寫回 state 蓋掉拉回的資料
-  if (isDeployManaged()) return;
   update((st) => {
-    st.settings.sheets_webapp_url = root.querySelector("#f-url").value.trim();
-    st.settings.sheets_token = root.querySelector("#f-token").value.trim();
+    if (!isDeployManaged()) {
+      st.settings.sheets_webapp_url = root.querySelector("#f-url").value.trim();
+      st.settings.sheets_token = root.querySelector("#f-token").value.trim();
+    }
+    if (!isYourlsWakeDeployManaged()) {
+      st.settings.yourls_wake_url = root.querySelector("#f-yourls-wake-url")?.value.trim() || "";
+      st.settings.yourls_wake_token = root.querySelector("#f-yourls-wake-token")?.value.trim() || "";
+    }
   });
 }
 

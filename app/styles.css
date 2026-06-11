@@ -2157,6 +2157,7 @@ pre.code {
 }
 .sync-status.ok { color: var(--ok); }
 .sync-status.bad { color: var(--bad); }
+.sync-status:empty { display: none; }
 
 /* Push/pull 進度條 */
 .sync-progress {

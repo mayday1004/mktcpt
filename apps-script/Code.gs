@@ -6,7 +6,7 @@
 //   每張分頁的最後 4 欄固定為 `_id`、`_updated_at`、`_deleted`、`_version`(隱性 metadata)
 //   - `_id`: row 主鍵(自然 id 或複合鍵字串)
 //   - `_updated_at`: server 寫入時用 server 時鐘填的 ISO 字串(單一時間源)
-//   - `_deleted`: tombstone 旗標,"Y" 代表已刪除(讀回時客戶端要過濾)
+//   - `_deleted`: legacy deletion flag; new deleteRows deletes the whole sheet row
 //   - `_version`: 整數,每次成功寫入 +1。CAS 比對用 — 客戶端 push 時帶 _expected_version,
 //                 不等於 sheet 內目前版本就算衝突,不寫入,server 回 conflicts 給客戶端處理。
 //
@@ -42,6 +42,7 @@ function doPost(e) {
       case 'readTable':       return _resp(readTable(body.sheetName));
       case 'readAllTables':   return _resp(readAllTables(body.sheetNames || []));
       case 'upsertRows':      return _resp(upsertRows(body.sheetName, body.headers, body.rows));
+      case 'deleteRows':      return _resp(deleteRows(body.sheetName, body.rows));
       case 'writeTable':      return _resp(writeTable(body.sheetName, body.headers, body.rows));
       case 'yourlsListQueuedActions': return _resp(yourlsListQueuedActions(body.limit || 20));
       case 'yourlsClaimAction':       return _resp(yourlsClaimAction(body.action_id, body.worker_id));
@@ -92,6 +93,11 @@ function _bumpServerVersion() {
 function _resp(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+function _headers(sh) {
+  const lastCol = sh.getLastColumn();
+  return lastCol > 0 ? sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String) : [];
 }
 
 // 整份覆寫(舊 API,留作救援用;不走 CAS,會把 _version 強制重設)
@@ -235,8 +241,22 @@ function upsertRows(name, headers, rows) {
       const cur = existing[id];
 
       if (!cur) {
-        // 不存在 → create(無論 expected_version 為何,都讓客戶端的版本贏)
-        const newVer = expectedVersion > 0 ? expectedVersion + 1 : 1;
+        if (expectedVersion > 0) {
+          const deletedRow = headers.map(function () { return ''; });
+          deletedRow[idIdx] = id;
+          deletedRow[deletedIdx] = 'Y';
+          deletedRow[versionIdx] = expectedVersion;
+          conflicts.push({
+            _id: id,
+            current_row: deletedRow,
+            current_version: expectedVersion,
+            current_updated_at: '',
+            expected_version: expectedVersion,
+            _deleted: true,
+          });
+          continue;
+        }
+        const newVer = 1;
         row[updatedAtIdx] = now;
         row[versionIdx] = newVer;
         newRows.push(row);
@@ -282,6 +302,73 @@ function upsertRows(name, headers, rows) {
 
 // 一次讀取多張 sheet,把 12 個 round trip 合成 1 個。
 // 回傳 { sheets: { [name]: { headers, rows } }, server_version }
+function deleteRows(name, rows) {
+  rows = rows || [];
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sh = ss.getSheetByName(name);
+    const applied = [];
+    const conflicts = [];
+    if (!sh || sh.getLastRow() < 2) {
+      rows.forEach(function (item) {
+        const id = String((item && (item._id || item.id)) || '');
+        if (id) applied.push({ _id: id, _deleted: true });
+      });
+      const meta = readMeta();
+      return { ok: true, applied: applied, conflicts: conflicts, server_version: meta.server_version };
+    }
+
+    const headers = _headers(sh);
+    const idIdx = headers.indexOf('_id');
+    const updatedAtIdx = headers.indexOf('_updated_at');
+    const deletedIdx = headers.indexOf('_deleted');
+    const versionIdx = headers.indexOf('_version');
+    if (idIdx < 0 || updatedAtIdx < 0 || deletedIdx < 0 || versionIdx < 0) {
+      throw new Error('headers must include _id, _updated_at, _deleted, _version');
+    }
+
+    const allVals = sh.getRange(2, 1, sh.getLastRow() - 1, headers.length).getValues();
+    const existing = {};
+    for (let i = 0; i < allVals.length; i++) {
+      const id = String(allVals[i][idIdx] || '');
+      if (!id) continue;
+      existing[id] = { sheetRow: i + 2, version: Number(allVals[i][versionIdx]) || 0, fullRow: allVals[i] };
+    }
+
+    const toDelete = [];
+    rows.forEach(function (item) {
+      const id = String((item && (item._id || item.id)) || '');
+      if (!id) return;
+      const expectedVersion = Number(item._version || item.expected_version || 0) || 0;
+      const cur = existing[id];
+      if (!cur) {
+        applied.push({ _id: id, _deleted: true });
+      } else if (cur.version === expectedVersion) {
+        toDelete.push(cur.sheetRow);
+        applied.push({ _id: id, _deleted: true, _version: cur.version + 1 });
+      } else {
+        conflicts.push({
+          _id: id,
+          current_row: cur.fullRow,
+          current_version: cur.version,
+          current_updated_at: String(cur.fullRow[updatedAtIdx] || ''),
+          expected_version: expectedVersion,
+        });
+      }
+    });
+
+    toDelete.sort(function (a, b) { return b - a; }).forEach(function (sheetRow) {
+      sh.deleteRow(sheetRow);
+    });
+    const bumped = toDelete.length > 0 ? _bumpServerVersion() : readMeta();
+    return { ok: true, applied: applied, conflicts: conflicts, server_version: bumped.server_version };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function readAllTables(names) {
   const out = { sheets: {}, server_version: readMeta().server_version };
   for (let i = 0; i < names.length; i++) {
@@ -327,8 +414,7 @@ function _yourlsEnsureSheet(name, dataHeaders) {
 }
 
 function _yourlsHeaders(sh) {
-  const lastCol = sh.getLastColumn();
-  return lastCol > 0 ? sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String) : [];
+  return _headers(sh);
 }
 
 function _yourlsRowObject(headers, row) {

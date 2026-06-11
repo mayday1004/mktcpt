@@ -51,6 +51,8 @@ export async function pullFromSheets(onProgress) {
   const current = getState();
   data.settings.sheets_webapp_url = current.settings.sheets_webapp_url;
   data.settings.sheets_token = current.settings.sheets_token;
+  data.settings.yourls_wake_url = current.settings.yourls_wake_url;
+  data.settings.yourls_wake_token = current.settings.yourls_wake_token;
   // 報表 custom_metrics 從 Sheets 拉（跨裝置共享公式）；
   // hidden_metrics 是裝置端顯示偏好 → 從本機保留，不被 pull 蓋掉。
   const pulledRC = data.report_config || {};

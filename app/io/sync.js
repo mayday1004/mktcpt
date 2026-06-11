@@ -553,6 +553,7 @@ export async function syncOnce(onProgress, options = {}) {
     const sheetMeta = meta[spec.sheetName] || {};
 
     const upserts = [];
+    const deleteRows = [];
     const upsertIds = [];
     const localIds = new Set(localRecords.map((r) => r._id));
     const isFullPush = forcePushSheets.has(spec.sheetName);
@@ -593,26 +594,40 @@ export async function syncOnce(onProgress, options = {}) {
         continue;
       }
       const expectedVersion = known._version || 0;
-      upserts.push([...dataHeaders.map(() => ""), id, "", "Y", expectedVersion]);
-      upsertIds.push(id);
+      deleteRows.push({ _id: id, _version: expectedVersion });
       deletedIds.push(id);
     }
 
-    if (upserts.length === 0) continue;
+    if (upserts.length === 0 && deleteRows.length === 0) continue;
 
     onProgress?.({ phase: "push", current: totalUpserts + 1, total: TABLE_SYNC_SPECS.length, name: spec.sheetName });
     totalUpserts++;
 
-    let resp;
+    let resp = { applied: [], conflicts: [], server_version: latestPushedVersion };
     try {
-      resp = await call({
-        action: "upsertRows",
-        sheetName: spec.sheetName,
-        headers: fullHeaders,
-        rows: upserts,
-      });
+      if (upserts.length > 0) {
+        const upsertResp = await call({
+          action: "upsertRows",
+          sheetName: spec.sheetName,
+          headers: fullHeaders,
+          rows: upserts,
+        });
+        resp.applied.push(...(upsertResp.applied || []));
+        resp.conflicts.push(...(upsertResp.conflicts || []));
+        if (upsertResp.server_version != null) resp.server_version = upsertResp.server_version;
+      }
+      if (deleteRows.length > 0) {
+        const deleteResp = await call({
+          action: "deleteRows",
+          sheetName: spec.sheetName,
+          rows: deleteRows,
+        });
+        resp.applied.push(...(deleteResp.applied || []));
+        resp.conflicts.push(...(deleteResp.conflicts || []));
+        if (deleteResp.server_version != null) resp.server_version = deleteResp.server_version;
+      }
     } catch (e) {
-      logError("sync.upsertFailed", { sheet: spec.sheetName, count: upserts.length, error: String(e?.message || e) });
+      logError("sync.pushFailed", { sheet: spec.sheetName, upserts: upserts.length, deletes: deleteRows.length, error: String(e?.message || e) });
       throw e;
     }
 
@@ -646,6 +661,7 @@ export async function syncOnce(onProgress, options = {}) {
     // 處理 conflicts:進 conflict-store
     for (const c of (resp.conflicts || [])) {
       const serverDataRow = c.current_row.slice(0, dataHeaders.length);
+      const serverDeleted = c._deleted === true || String(c._deleted || "").toUpperCase() === "Y" || String(c.current_row[dataHeaders.length + 2] || "").toUpperCase() === "Y";
       if (deletedSet.has(c._id)) {
         meta[spec.sheetName][c._id] = {
           _updated_at: c.current_updated_at,
@@ -672,7 +688,7 @@ export async function syncOnce(onProgress, options = {}) {
           dataHeaders: dataHeaders,
           version: c.current_version,
           updatedAt: c.current_updated_at,
-          _deleted: false,
+          _deleted: serverDeleted ? "Y" : false,
         },
       });
     }
@@ -711,7 +727,30 @@ let pollTimer = null;
 let orchestratorStarted = false;
 let consecutiveFailures = 0;
 let nextEarliestSyncAt = 0;
+let syncIdleWaiters = [];
 
+function notifySyncIdle() {
+  if (isSyncing || syncIdleWaiters.length === 0) return;
+  const waiters = syncIdleWaiters;
+  syncIdleWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
+export function waitForSyncIdle(timeoutMs = 120000) {
+  if (!isSyncing) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const done = () => {
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(() => {
+      syncIdleWaiters = syncIdleWaiters.filter((fn) => fn !== done);
+      reject(new Error("同步尚未完成,請稍後再批准"));
+    }, Math.max(1000, Number(timeoutMs) || 120000));
+    syncIdleWaiters.push(done);
+  });
+}
 function hasCredentials() {
   const s = getState();
   return !!(getEffectiveSheetsUrl(s.settings) && getEffectiveSheetsToken(s.settings));
@@ -803,6 +842,7 @@ async function runSyncIfReady(reason, options = {}) {
     isSyncing = false;
     lastSyncEndedAt = Date.now();
     _emitStatus();
+    notifySyncIdle();
   }
 }
 
@@ -841,8 +881,11 @@ export function initSyncOrchestrator() {
 }
 
 // 給「☁️ 推到 Sheets」/「⬇️ 從 Sheets 拉下來」手動按鈕呼叫
-export async function manualSync() {
-  if (isSyncing) throw new Error("同步進行中,請稍候");
+export async function manualSync(options = {}) {
+  if (isSyncing) {
+    if (!options.waitIfBusy) throw new Error("同步進行中,請稍候");
+    await waitForSyncIdle();
+  }
   if (getConflictCount() > 0) throw new Error("有衝突待處理,請先解決");
   _autoSyncSuspendedReason = "";
   _autoSyncSuspendedCredentialKey = "";
@@ -871,5 +914,6 @@ export async function manualSync() {
     isSyncing = false;
     lastSyncEndedAt = Date.now();
     _emitStatus();
+    notifySyncIdle();
   }
 }

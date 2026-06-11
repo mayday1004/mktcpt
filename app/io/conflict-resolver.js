@@ -88,8 +88,12 @@ function conflictDiffFields(conflict) {
   );
 }
 
+function isDeletedFlag(value) {
+  return value === true || String(value || "").toUpperCase() === "Y";
+}
+
 function isTrivialDataConflict(conflict) {
-  if (String(conflict.theirs?._deleted || "").toUpperCase() === "Y") return false;
+  if (isDeletedFlag(conflict.theirs?._deleted)) return false;
   return conflictDiffFields(conflict).length === 0;
 }
 
@@ -167,7 +171,7 @@ function applyTheirs(conflict, onMetaUpdate) {
   }
   try {
     const obj = rowToObj(conflict.theirs.dataRow, conflict.theirs.dataHeaders);
-    if (String(conflict.theirs._deleted || "").toUpperCase() === "Y") {
+    if (isDeletedFlag(conflict.theirs._deleted)) {
       applySync((st) => spec.removeFromState(st, conflict.entityId));
     } else {
       applySync((st) => spec.upsertInState(st, conflict.entityId, obj));

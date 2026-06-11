@@ -22,8 +22,21 @@ export function isL1YourlsAd(ad) {
   return parseShortUrlSlot(ad?.short_url_type) === "L1" && !!String(ad?.short_url_param || "").trim();
 }
 
+function productNameMap(products = []) {
+  return new Map((products || []).map((p) => [p.id, p.name || p.id]));
+}
+
+function yourlsWeightRow(pid, weightPct, productName) {
+  return {
+    product_id: pid,
+    product_name: productName.get(pid) || pid,
+    yourls_product_id: YOURLS_PRODUCT_ID_MAP[pid] || pid,
+    weight_pct: weightPct,
+  };
+}
+
 export function normalizeWeightsForYourls(weights, products = []) {
-  const productName = new Map((products || []).map((p) => [p.id, p.name || p.id]));
+  const productName = productNameMap(products);
   const entries = Object.entries(weights || {})
     .map(([pid, raw]) => ({ pid, raw: Number(raw) || 0 }))
     .filter((entry) => entry.raw > 0);
@@ -46,12 +59,16 @@ export function normalizeWeightsForYourls(weights, products = []) {
   return scaled
     .filter((entry) => entry.floor > 0)
     .sort((a, b) => b.floor - a.floor || String(a.pid).localeCompare(String(b.pid)))
-    .map((entry) => ({
-      product_id: entry.pid,
-      product_name: productName.get(entry.pid) || entry.pid,
-      yourls_product_id: YOURLS_PRODUCT_ID_MAP[entry.pid] || entry.pid,
-      weight_pct: entry.floor,
-    }));
+    .map((entry) => yourlsWeightRow(entry.pid, entry.floor, productName));
+}
+
+function resetMissingPreviousWeights(previousWeights, normalizedWeights, products = []) {
+  const productName = productNameMap(products);
+  const activeIds = new Set((normalizedWeights || []).map((w) => String(w.product_id || "")));
+  return Object.entries(previousWeights || {})
+    .filter(([pid, raw]) => (Number(raw) || 0) > 0 && !activeIds.has(String(pid)))
+    .sort(([a], [b]) => String(a).localeCompare(String(b)))
+    .map(([pid]) => yourlsWeightRow(pid, 0, productName));
 }
 
 export function weightSummaryFromList(weights) {
@@ -61,11 +78,14 @@ export function weightSummaryFromList(weights) {
     .join(" / ");
 }
 
-export function buildYourlsActionPayload({ kind, ad, weights, products, actionType = "", effectiveDate = "" }) {
+export function buildYourlsActionPayload({ kind, ad, weights, products, actionType = "", effectiveDate = "", previousWeights = null }) {
   if (!isL1YourlsAd(ad)) return null;
   const normalized = normalizeWeightsForYourls(weights || ad.weights, products);
   const total = normalized.reduce((sum, w) => sum + Number(w.weight_pct || 0), 0);
   if (normalized.length === 0 || total !== 100) return null;
+  const payloadWeights = kind === "update_weights"
+    ? [...normalized, ...resetMissingPreviousWeights(previousWeights || ad.weights, normalized, products)]
+    : normalized;
 
   const shortUrlParam = String(ad.short_url_param || "").trim();
   return {
@@ -76,7 +96,7 @@ export function buildYourlsActionPayload({ kind, ad, weights, products, actionTy
     ad_name: String(ad.ad_name || ""),
     action_type: actionType,
     effective_date: effectiveDate || ad.start_date || "",
-    weights: normalized,
+    weights: payloadWeights,
     weight_summary: weightSummaryFromList(normalized),
   };
 }
