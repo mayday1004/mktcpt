@@ -10,8 +10,8 @@
 //   - 全域底部:處理所有衝突按鈕,或「全部用我的」/「全部用對方」快捷
 //
 // 解決邏輯:
-//   - 「用我的」:把該筆衝突當「重新提交」處理 — 用對方的 _version 當 expected_version,
-//                 我的 dataRow 重推 → 因為對得上,server 接受、bump version
+//   - 「用我的」:把該筆衝突當「重新提交」處理 — 一般衝突用對方的 _version 當 expected_version;
+//                 若對方列已刪除,用 expected_version=0 重建。我的 dataRow 重推後 server 接受、bump version
 //   - 「用對方的」:直接套用 theirs 進 local state,更新 sync_meta 版本與 fingerprint
 //   - 「智慧合併」:逐欄位比對,我這邊改過(value != lastKnown)且對方沒改 → 用我的;
 //                  對方改過、我沒改 → 用對方;雙方都改過 → 顯示 radio 強制選一邊
@@ -90,6 +90,30 @@ function conflictDiffFields(conflict) {
 
 function isDeletedFlag(value) {
   return value === true || String(value || "").toUpperCase() === "Y";
+}
+
+function expectedVersionForMine(conflict) {
+  // 遠端列已不存在時,Apps Script 只能用 expected_version=0 重新建立。
+  // 若沿用 deleted conflict 裡的舊 version,會再次被判定為「遠端缺列」而循環跳窗。
+  return isDeletedFlag(conflict.theirs?._deleted) ? 0 : (Number(conflict.theirs?.version) || 0);
+}
+
+function shouldAutoUseMine(conflict) {
+  return conflict?.source === "push"
+    && conflict?.sheetName === "廣告權重"
+    && isDeletedFlag(conflict.theirs?._deleted);
+}
+
+function autoResolveRemoteDeletedWeights(onMetaUpdate) {
+  let resolved = 0;
+  for (const c of getConflicts()) {
+    if (shouldAutoUseMine(c) && applyMine(c, onMetaUpdate)) {
+      removeConflict(c.id);
+      resolved++;
+      logInfo("conflict.autoUseMineRemoteDeletedWeight", { sheet: c.sheetName, id: c.entityId });
+    }
+  }
+  return resolved;
 }
 
 function isTrivialDataConflict(conflict) {
@@ -195,15 +219,15 @@ function applyTheirs(conflict, onMetaUpdate) {
   }
 }
 
-// 「用我的」:本機 state 不動,但同步層需要用 theirs 的 version 當新的 expected_version,
-// 下次 push 時才會成功(不再衝突)。把 sync_meta 內該筆的 _version 改成 theirs.version,
+// 「用我的」:本機 state 不動,但同步層需要更新 expected_version。
+// 一般衝突用 theirs.version;遠端已刪除時用 0 讓下次 push 重建列。
 // 並把 fingerprint 強制設成「跟本機不同」(用 "FORCE_PUSH" 標記),確保下次 sync 一定重推。
 function applyMine(conflict, onMetaUpdate) {
   if (onMetaUpdate) {
     onMetaUpdate({
       sheetName: conflict.sheetName,
       entityId: conflict.entityId,
-      _version: conflict.theirs.version,  // 用對方的版本當 expected
+      _version: expectedVersionForMine(conflict),
       _updated_at: conflict.theirs.updatedAt,
       forcePush: true,  // 標記:即使 fingerprint 對得上也要重推
     });
@@ -235,7 +259,7 @@ function applyMerge(conflict, perFieldChoices, onMetaUpdate) {
       onMetaUpdate({
         sheetName: conflict.sheetName,
         entityId: conflict.entityId,
-        _version: conflict.theirs.version,
+        _version: expectedVersionForMine(conflict),
         _updated_at: conflict.theirs.updatedAt,
         forcePush: true,
       });
@@ -311,6 +335,7 @@ export function openConflictResolver(onMetaUpdate) {
   resolverModalOpen = true;
 
   const render = () => {
+    autoResolveRemoteDeletedWeights(onMetaUpdate);
     const allConflicts = getConflicts();
     const conflicts = [];
     for (const c of allConflicts) {
@@ -412,7 +437,15 @@ function ensureBanner(onClick) {
 
 export function initConflictBanner(onMetaUpdate) {
   const el = ensureBanner(() => openConflictResolver(onMetaUpdate));
+  let autoResolving = false;
   const update = (queue) => {
+    if (!autoResolving) {
+      autoResolving = true;
+      if (autoResolveRemoteDeletedWeights(onMetaUpdate) > 0) {
+        queue = getConflicts();
+      }
+      autoResolving = false;
+    }
     if (queue.length === 0) {
       el.classList.add("hidden");
     } else {

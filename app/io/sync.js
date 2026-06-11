@@ -75,6 +75,7 @@ const VERSION_KEY = "buyads_server_version_v1";  // server 全域版本號的 la
 const META_COLS = ["_id", "_updated_at", "_deleted", "_version"];
 const FP_DELIM = "";  // 不會出現在資料的分隔符
 const TOMBSTONE_FP = "__tombstone__";
+const REMOTE_DELETED_RECREATE_SHEETS = new Set(["廣告權重"]);
 
 function pendingDeleteSet(pendingDeletions, sheetName) {
   return new Set((pendingDeletions?.[sheetName] || []).map((id) => String(id || "")).filter(Boolean));
@@ -90,6 +91,15 @@ function flushPendingDeleteClears(bucket) {
   for (const [sheetName, ids] of Object.entries(bucket)) {
     clearSyncDeleted(sheetName, [...ids]);
   }
+}
+
+function queueRemoteDeletedRecreate(meta, sheetName, id) {
+  if (!meta[sheetName]) meta[sheetName] = {};
+  meta[sheetName][id] = {
+    _updated_at: "",
+    _version: 0,
+    fingerprint: "__force_push__",
+  };
 }
 
 // ===== sync_meta 持久化 =====
@@ -287,6 +297,7 @@ export async function syncOnce(onProgress, options = {}) {
   const hasPendingDeletionIntent = Object.values(pendingDeletions).some((ids) => (ids || []).length > 0);
   const pendingDeleteClears = {};
   const forcePushSheets = new Set();
+  let recreateQueued = 0;
 
   // ---- Step 0: 拿 server 版本號(輕量短路)
   let remoteMeta;
@@ -659,6 +670,7 @@ export async function syncOnce(onProgress, options = {}) {
     }
 
     // 處理 conflicts:進 conflict-store
+    let queuedConflictCount = 0;
     for (const c of (resp.conflicts || [])) {
       const serverDataRow = c.current_row.slice(0, dataHeaders.length);
       const serverDeleted = c._deleted === true || String(c._deleted || "").toUpperCase() === "Y" || String(c.current_row[dataHeaders.length + 2] || "").toUpperCase() === "Y";
@@ -672,6 +684,12 @@ export async function syncOnce(onProgress, options = {}) {
       }
       const lr = localById.get(c._id);
       if (!lr) continue;  // 我們不知道這筆?跳過(理論上不會發生)
+      if (serverDeleted && REMOTE_DELETED_RECREATE_SHEETS.has(spec.sheetName)) {
+        queueRemoteDeletedRecreate(meta, spec.sheetName, c._id);
+        recreateQueued++;
+        logWarn("sync.remoteDeletedRecreateQueued", { sheet: spec.sheetName, id: c._id });
+        continue;
+      }
       // 從 current_row 解出 server 的 dataRow + metadata
       addConflict({
         sheetName: spec.sheetName,
@@ -691,9 +709,10 @@ export async function syncOnce(onProgress, options = {}) {
           _deleted: serverDeleted ? "Y" : false,
         },
       });
+      queuedConflictCount++;
     }
-    if ((resp.conflicts || []).length > 0) {
-      logWarn("sync.conflicts", { sheet: spec.sheetName, count: resp.conflicts.length });
+    if (queuedConflictCount > 0) {
+      logWarn("sync.conflicts", { sheet: spec.sheetName, count: queuedConflictCount });
     }
 
     if (resp.server_version != null) latestPushedVersion = Number(resp.server_version);
@@ -702,7 +721,7 @@ export async function syncOnce(onProgress, options = {}) {
   saveMeta(meta);
   flushPendingDeleteClears(pendingDeleteClears);
   saveServerVersion(latestPushedVersion);
-  return { ok: true, pulled: shouldPull, pushedTables: totalUpserts, conflicts: getConflictCount() };
+  return { ok: true, pulled: shouldPull, pushedTables: totalUpserts, conflicts: getConflictCount(), recreateQueued };
 }
 
 // 給 settings UI 看的:大致狀態
@@ -809,10 +828,17 @@ async function runSyncIfReady(reason, options = {}) {
   isSyncing = true;
   _emitStatus();
   try {
-    const result = await syncOnce(
+    let result = await syncOnce(
       (p) => showSyncBanner({ ...p, name: `${reason} · ${p.name}` }),
       options,
     );
+    if ((result.recreateQueued || 0) > 0 && (result.conflicts || 0) === 0) {
+      logInfo("sync.retryRemoteDeletedRecreate", { reason, count: result.recreateQueued });
+      result = await syncOnce(
+        (p) => showSyncBanner({ ...p, name: `${reason} · ${p.name}` }),
+        options,
+      );
+    }
     consecutiveFailures = 0;
     nextEarliestSyncAt = 0;
     if (result.paused === "conflicts_pending") return;
@@ -892,7 +918,11 @@ export async function manualSync(options = {}) {
   isSyncing = true;
   _emitStatus();
   try {
-    await syncOnce((p) => showSyncBanner(p));
+    let result = await syncOnce((p) => showSyncBanner(p));
+    if ((result.recreateQueued || 0) > 0 && getConflictCount() === 0) {
+      logInfo("sync.manualRetryRemoteDeletedRecreate", { count: result.recreateQueued });
+      result = await syncOnce((p) => showSyncBanner(p));
+    }
     resetSyncFailureState();
     _lastSuccessAt = Date.now();
     if (getConflictCount() > 0) {
