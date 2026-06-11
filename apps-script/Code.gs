@@ -432,6 +432,32 @@ function _yourlsDisplayNow() {
   return Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd HH:mm:ss');
 }
 
+function _yourlsTodayDate() {
+  return Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
+}
+
+function _yourlsDateOnly(value) {
+  const match = String(value || '').match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : '';
+}
+
+function _yourlsEffectiveDate(payload) {
+  return _yourlsDateOnly(payload.effective_date || payload.effective_at);
+}
+
+function _yourlsWaitsForEffectiveDate(payload) {
+  const actionType = String(payload.action_type || '').trim();
+  return actionType === '手動改權重' || actionType === '成效調權重';
+}
+
+function _yourlsQueueReadiness(payload, today) {
+  if (!_yourlsWaitsForEffectiveDate(payload)) return { ready: true };
+  const effectiveDate = _yourlsEffectiveDate(payload);
+  if (!effectiveDate) return { ready: true };
+  if (effectiveDate <= today) return { ready: true };
+  return { ready: false, effective_date: effectiveDate };
+}
+
 function _yourlsFindRow(sh, headers, idHeader, idValue) {
   const idIdx = headers.indexOf(idHeader);
   if (idIdx < 0 || !idValue) return null;
@@ -467,10 +493,12 @@ function yourlsListQueuedActions(limit) {
   if (lastRow < 2) return { ok: true, actions: [] };
   const rows = sh.getRange(2, 1, lastRow - 1, headers.length).getValues();
   const out = [];
+  const today = _yourlsTodayDate();
   rows.forEach(function (row) {
     const obj = _yourlsRowObject(headers, row);
     if (String(obj.status || '') !== 'queued') return;
     const payload = _yourlsSafeJson(obj.payload_json) || {};
+    if (!_yourlsQueueReadiness(payload, today).ready) return;
     out.push({
       action_id: String(obj.action_id || ''),
       todo_id: String(obj.todo_id || ''),
@@ -504,6 +532,16 @@ function yourlsClaimAction(actionId, workerId) {
     if (String(obj.status || '') !== 'queued') {
       return { ok: false, status: String(obj.status || ''), error: 'action is not queued' };
     }
+    const payload = _yourlsSafeJson(obj.payload_json) || {};
+    const readiness = _yourlsQueueReadiness(payload, _yourlsTodayDate());
+    if (!readiness.ready) {
+      return {
+        ok: false,
+        status: 'queued',
+        error: 'action is not ready until effective_date',
+        effective_date: readiness.effective_date,
+      };
+    }
     const now = _yourlsDisplayNow();
     const metaNow = new Date().toISOString();
     const row = found.row.slice();
@@ -516,7 +554,6 @@ function yourlsClaimAction(actionId, workerId) {
     _yourlsTouchRow(row, headers, metaNow);
     sh.getRange(found.sheetRow, 1, 1, headers.length).setValues([row]);
     const bumped = _bumpServerVersion();
-    const payload = _yourlsSafeJson(obj.payload_json) || {};
     return { ok: true, server_version: bumped.server_version, action: { action_id: actionId, payload: payload } };
   } finally {
     lock.releaseLock();

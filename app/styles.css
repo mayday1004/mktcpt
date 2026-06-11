@@ -287,6 +287,17 @@ dialog#modal::backdrop { background: rgba(15, 20, 30, 0.4); backdrop-filter: blu
 .pill.todo-tag-eliminate { background: #fde6e6; color: #b23434; border-color: #f2c2c2; }
 .pill.todo-tag-other { background: #eceff3; color: #58606a; border-color: #d2d8e0; }
 
+/* ============ Todos ============ */
+.todos-pending-card h2 {
+  margin-bottom: 5px;
+}
+.todo-pending-note {
+  margin: 0 0 14px;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 /* ============ Utility ============ */
 .row { display: flex; gap: 8px; align-items: center; }
 .mono { font-family: var(--mono); }

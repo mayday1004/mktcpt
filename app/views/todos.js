@@ -78,8 +78,9 @@ export function render(root) {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card todos-pending-card">
       <h2>待處理（${pending.length}）</h2>
+      <div class="todo-pending-note">Yourls：改權重依生效日執行；新增廣告/補花費缺口批准後立即執行。</div>
       ${pending.length === 0 ? `<div class="empty">目前沒有待辦<br><span class="ink-3" style="font-size:12px">儲存廣告 / 套用成效調整時會自動建立提醒</span></div>` : listHtml(pending, false)}
     </div>
 

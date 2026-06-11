@@ -251,12 +251,12 @@ DRY_RUN=1
 
 只有符合下列條件的待辦才顯示「批准」並寫入 Yourls 操作佇列：
 
-| 場景 | 條件 | Yourls 動作 |
-|---|---|---|
-| 新增廣告 | `action_type = 新增廣告`，且採用連結 slot 是 `L1`，且有 `short_url_param` | 新增渠道 |
-| 手動改權重 | `action_type = 手動改權重`，且該廣告是 `L1`，且有 `short_url_param` | 修改權重 |
-| 成效調權重 | `action_type = 成效調權重`，且涉及廣告有 `L1 + short_url_param` | 修改權重 |
-| 補花費缺口 | 若本質也是權重調整，且涉及廣告有 `L1 + short_url_param` | 修改權重 |
+| 場景 | 條件 | Yourls 動作 | 執行時機 |
+|---|---|---|---|
+| 新增廣告 | `action_type = 新增廣告`，且採用連結 slot 是 `L1`，且有 `short_url_param` | 新增渠道 | 按「批准」後即可執行 |
+| 手動改權重 | `action_type = 手動改權重`，且該廣告是 `L1`，且有 `short_url_param` | 修改權重 | 到 `effective_date` 當天才開始執行 |
+| 成效調權重 | `action_type = 成效調權重`，且涉及廣告有 `L1 + short_url_param` | 修改權重 | 到 `effective_date` 當天才開始執行 |
+| 補花費缺口 | 若本質也是權重調整，且涉及廣告有 `L1 + short_url_param` | 修改權重 | 按「批准」後即可執行 |
 
 非 Yourls 類待辦可以保留原本的手動完成邏輯，或顯示成「標記完成」。不要讓沒有機器 payload 的待辦按「批准」。
 
@@ -270,6 +270,8 @@ DRY_RUN=1
 2. 寫入 `YOURLS操作佇列`。
 3. todo 顯示狀態改成「已批准，等待 Yourls 套用」。
 4. 不進已完成區。
+
+執行時機由 `payload_json.action_type` 決定：`手動改權重`、`成效調權重` 會留在 queued，等台北日期到 `effective_date` 當天才提供給 worker；`新增廣告`、`補花費缺口` 則按批准後就能被 worker 拉走。
 
 worker 回報 `applied` 後：
 
@@ -422,7 +424,7 @@ Yourls worker 送出前必須把 buyads product id 轉成 Yourls 使用的 produ
 
 1. B 電腦 worker 啟動。啟動方式可以是常駐輪詢，也可以是 Windows 工作排程器定期啟動。
 2. worker 呼叫 Apps Script 讀 `YOURLS操作佇列`。
-3. 找出 `status = queued` 的 action，依 `approved_at` 由舊到新排序。
+3. 找出 `status = queued` 且已可執行的 action，依 `approved_at` 由舊到新排序。`手動改權重`、`成效調權重` 未到 `effective_date` 前不會被列出。
 4. 透過 Apps Script claim action：`queued -> running`，寫入 `locked_at`、`worker_id`、`attempt_count`。
 5. claim 成功才繼續；claim 失敗代表已被其他 worker 拿走，直接跳過。
 6. worker 用 B 電腦網路登入 Yourls。
