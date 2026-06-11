@@ -108,11 +108,22 @@ function undoPayloadJson(payload) {
   }
 }
 
+function firstSheetValue(headers, obj, names, fallback = "") {
+  for (const name of names) {
+    if (headers.includes(name)) return obj[name];
+  }
+  return fallback;
+}
+
+function hasAnyHeader(headers, names) {
+  return names.some((name) => headers.includes(name));
+}
+
 // ── 正規化分頁（一般 push/pull 走這些） ────────────────────────────
 export const TABLES = [
   {
     name: "產品",
-    headers: ["id", "名稱", "類型", "不檢查每日帶寬", "是否破圈", "母產品ID"],
+    headers: ["id", "名稱", "類型", "不檢查每日帶寬", "是破圈", "母產品ID"],
     toRows: (s) => s.products.map((p) => [
       p.id,
       p.name,
@@ -197,18 +208,17 @@ export const TABLES = [
   {
     name: "廣告",
     headers: [
-      "id", "廣告代碼", "廣告名稱", "廣告分組", "對應產品",
+      "id", "廣告代碼", "廣告名稱", "廣告分組",
       "幣別", "原幣金額", "原幣→RMB匯率",
       "人民幣金額", "匯率", "台幣金額",
       "開始日期", "結束日期", "攤提天數", "每日攤提(台幣)",
-      "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動", "備註",
-      "破圈分流配對ID", "破圈分流角色", "段建立時代碼",
-      "廣告文案", "聯絡用TG號", "站長聯繫", "縮網址類型", "縮網址參數",
-      "縮網址舊網域覆寫", "縮網址新網域覆寫", "縮網址舊前綴", "縮網址已通知",
+      "購買模式", "續費來源", "調整原因", "鎖定不調整", "禁止挪動",
+      "廣告文案", "聯絡用TG號", "站長聯繫", "備註", "已淘汰",
+      "縮網址類型", "縮網址參數", "縮網址舊網域", "縮網址舊前綴", "縮網址新網域", "縮網址已通知",
+      "段建立代碼", "配對ID", "配對角色",
     ],
     toRows: (s) => s.ads.map((a) => [
       a.id, a.ad_code, a.ad_name, a.group || "",
-      summarizeWeights(a.weights),
       a.currency || "CNY",
       a.amount_orig != null ? a.amount_orig : a.amount_cny,
       a.currency_rate || 1,
@@ -219,19 +229,20 @@ export const TABLES = [
       a.renewal_reason || "初始",
       a.lock_perf_adjust ? "Y" : "",
       a.lock_full ? "Y" : "",
-      a.notes || "",
-      a.split_pair_id || "",
-      a.split_role || "",
-      a.code_at_creation || "",
       a.ad_copy || "",
       a.contact_tg || "",
       a.contact_info || "",
+      a.notes || "",
+      a.eliminated ? "Y" : "",
       a.short_url_type || "",
       a.short_url_param || "",
       a.short_url_old_override || "",
-      a.short_url_new_override || "",
       a.short_url_old_prefix || "",
+      a.short_url_new_override || "",
       a.short_url_notified ? "Y" : "",
+      a.code_at_creation || "",
+      a.split_pair_id || "",
+      a.split_role || "",
     ]),
   },
   {
@@ -308,18 +319,28 @@ export const TABLES = [
   {
     name: "設定",
     headers: ["key", "value"],
-    toRows: (s) => [
-      ["current_month", s.settings.current_month || ""],
-      ["expense_rate", s.settings.expense_rate ?? 4.8],
-      ["income_rate", s.settings.income_rate ?? 4.6],
-      ["usdt_to_cny_rate", s.settings.usdt_to_cny_rate ?? 7],
-      ["usd_to_twd_rate", s.settings.usd_to_twd_rate ?? 32],
-      ["short_url_new_domain", s.settings.short_url_new_domain || ""],
-      ["short_url_old_domain", s.settings.short_url_old_domain || ""],
-      ["short_url_prefix_L1", s.settings.short_url_prefix_map?.L1 || "L1"],
-      ["short_url_prefix_L3", s.settings.short_url_prefix_map?.L3 || "L3"],
-      ["short_url_prefix_L5", s.settings.short_url_prefix_map?.L5 || "L5"],
-    ],
+    toRows: (s) => {
+      const settings = s.settings || {};
+      const rows = [
+        ["current_month", settings.current_month || ""],
+        ["expense_rate", settings.expense_rate ?? 4.8],
+        ["income_rate", settings.income_rate ?? 4.6],
+        ["usdt_to_cny_rate", settings.usdt_to_cny_rate ?? 7],
+        ["usd_to_twd_rate", settings.usd_to_twd_rate ?? 32],
+      ];
+      for (const [ym, rates] of Object.entries(settings.monthly_rates || {})) {
+        for (const kind of ["expense", "income", "usdt_to_cny", "usd_to_twd"]) {
+          const value = rates?.[kind];
+          if (Number.isFinite(value) && value > 0) rows.push([`monthly_rate::${ym}::${kind}`, value]);
+        }
+      }
+      if (settings.short_url_new_domain) rows.push(["short_url_new_domain", settings.short_url_new_domain]);
+      if (settings.short_url_old_domain) rows.push(["short_url_old_domain", settings.short_url_old_domain]);
+      if (settings.short_url_prefix_map && typeof settings.short_url_prefix_map === "object") {
+        rows.push(["short_url_prefix_map", JSON.stringify(settings.short_url_prefix_map)]);
+      }
+      return rows;
+    },
   },
   {
     // 報表自訂計算欄位（如「首存ROI」）— 公式跨裝置共享。
@@ -342,15 +363,6 @@ export const TABLES = [
   },
 ];
 
-// "AV9:50, HYC:30, PJ8:20" 人眼易讀的對應產品摘要（整數百分比）
-function summarizeWeights(weights) {
-  if (!weights) return "";
-  const entries = Object.entries(weights)
-    .filter(([, v]) => Number(v) > 0)
-    .sort(([, a], [, b]) => b - a);
-  return entries.map(([pid, w]) => `${pid}:${Math.round(Number(w) || 0)}`).join(", ");
-}
-
 export function assembleFromTables(raw) {
   const pick = (name) => raw[name] || { headers: [], rows: [] };
   const toObj = (headers, row) => Object.fromEntries(headers.map((h, i) => [h, row[i]]));
@@ -359,7 +371,7 @@ export function assembleFromTables(raw) {
   // 只在 Sheets 真的有該欄位時才覆寫對應 flag,否則留給 migrate() 補(避免新欄位
   // 還沒推上 Sheets 之前先 PULL,把 av9_poquan / jk_poquan 的 is_poquan 洗成 false)
   const hasNoBandCol = prodT.headers.includes("不檢查每日帶寬");
-  const hasPoqCol = prodT.headers.includes("是否破圈");
+  const hasPoqCol = hasAnyHeader(prodT.headers, ["是破圈", "是否破圈"]);
   const hasParentCol = prodT.headers.includes("母產品ID");
   const yes = (v) => String(v || "").trim().toUpperCase() === "Y";
   const products = prodT.rows.map((r) => {
@@ -371,7 +383,7 @@ export function assembleFromTables(raw) {
       performance_targets: [],
     };
     if (hasNoBandCol) obj.no_band = yes(o["不檢查每日帶寬"]);
-    if (hasPoqCol) obj.is_poquan = yes(o["是否破圈"]);
+    if (hasPoqCol) obj.is_poquan = yes(firstSheetValue(prodT.headers, o, ["是破圈", "是否破圈"]));
     if (hasParentCol) obj.parent_product_id = String(o["母產品ID"] || "");
     return obj;
   });
@@ -442,6 +454,7 @@ export function assembleFromTables(raw) {
   const adT = pick("廣告");
   const ads = adT.rows.map((r) => {
     const o = toObj(adT.headers, r);
+    const adValue = (names, fallback = "") => firstSheetValue(adT.headers, o, names, fallback);
     const reason = String(o["調整原因"] || "初始");
     const cny = Number(o["人民幣金額"]) || 0;
     const currency = String(o["幣別"] || "CNY").toUpperCase() === "USDT" ? "USDT" : "CNY";
@@ -469,12 +482,14 @@ export function assembleFromTables(raw) {
       lock_perf_adjust: String(o["鎖定不調整"] || "").trim().toUpperCase() === "Y",
       lock_full: String(o["禁止挪動"] || "").trim().toUpperCase() === "Y",
       notes: String(o["備註"] || ""),
-      ...(adT.headers.includes("破圈分流配對ID") && o["破圈分流配對ID"]
-        ? { split_pair_id: String(o["破圈分流配對ID"]) } : {}),
-      ...(adT.headers.includes("破圈分流角色") && o["破圈分流角色"]
-        ? { split_role: String(o["破圈分流角色"]) } : {}),
-      ...(adT.headers.includes("段建立時代碼") && o["段建立時代碼"]
-        ? { code_at_creation: String(o["段建立時代碼"]) } : {}),
+      ...(adT.headers.includes("已淘汰")
+        ? { eliminated: String(o["已淘汰"] || "").trim().toUpperCase() === "Y" } : {}),
+      ...(hasAnyHeader(adT.headers, ["配對ID", "破圈分流配對ID"]) && adValue(["配對ID", "破圈分流配對ID"])
+        ? { split_pair_id: String(adValue(["配對ID", "破圈分流配對ID"])) } : {}),
+      ...(hasAnyHeader(adT.headers, ["配對角色", "破圈分流角色"]) && adValue(["配對角色", "破圈分流角色"])
+        ? { split_role: String(adValue(["配對角色", "破圈分流角色"])) } : {}),
+      ...(hasAnyHeader(adT.headers, ["段建立代碼", "段建立時代碼"]) && adValue(["段建立代碼", "段建立時代碼"])
+        ? { code_at_creation: String(adValue(["段建立代碼", "段建立時代碼"])) } : {}),
       ...(adT.headers.includes("廣告文案")
         ? { ad_copy: String(o["廣告文案"] || "") } : {}),
       ...(adT.headers.includes("聯絡用TG號")
@@ -485,10 +500,10 @@ export function assembleFromTables(raw) {
         ? { short_url_type: String(o["縮網址類型"] || "") } : {}),
       ...(adT.headers.includes("縮網址參數")
         ? { short_url_param: String(o["縮網址參數"] || "") } : {}),
-      ...(adT.headers.includes("縮網址舊網域覆寫")
-        ? { short_url_old_override: String(o["縮網址舊網域覆寫"] || "") } : {}),
-      ...(adT.headers.includes("縮網址新網域覆寫")
-        ? { short_url_new_override: String(o["縮網址新網域覆寫"] || "") } : {}),
+      ...(hasAnyHeader(adT.headers, ["縮網址舊網域", "縮網址舊網域覆寫"])
+        ? { short_url_old_override: String(adValue(["縮網址舊網域", "縮網址舊網域覆寫"]) || "") } : {}),
+      ...(hasAnyHeader(adT.headers, ["縮網址新網域", "縮網址新網域覆寫"])
+        ? { short_url_new_override: String(adValue(["縮網址新網域", "縮網址新網域覆寫"]) || "") } : {}),
       ...(adT.headers.includes("縮網址舊前綴") && o["縮網址舊前綴"]
         ? { short_url_old_prefix: String(o["縮網址舊前綴"]) } : {}),
       ...(adT.headers.includes("縮網址已通知")
@@ -641,9 +656,27 @@ export function assembleFromTables(raw) {
     else if (o.key === "usd_to_twd_rate") settings.usd_to_twd_rate = Number(v) || 32;
     else if (o.key === "short_url_new_domain") settings.short_url_new_domain = String(v || "");
     else if (o.key === "short_url_old_domain") settings.short_url_old_domain = String(v || "");
+    else if (o.key === "short_url_prefix_map") {
+      const raw = String(v || "").trim();
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") settings.short_url_prefix_map = parsed;
+        } catch { /* 舊資料手改錯時保留預設 */ }
+      }
+    }
     else if (o.key === "short_url_prefix_L1") settings.short_url_prefix_map.L1 = String(v || "L1").trim() || "L1";
     else if (o.key === "short_url_prefix_L3") settings.short_url_prefix_map.L3 = String(v || "L3").trim() || "L3";
     else if (o.key === "short_url_prefix_L5") settings.short_url_prefix_map.L5 = String(v || "L5").trim() || "L5";
+    else if (String(o.key || "").startsWith("monthly_rate::")) {
+      const [, ym, kind] = String(o.key).split("::");
+      if (!/^\d{4}-\d{2}$/.test(ym)) return;
+      if (!["expense", "income", "usdt_to_cny", "usd_to_twd"].includes(kind)) return;
+      const num = Number(v) || 0;
+      if (num <= 0) return;
+      if (!settings.monthly_rates[ym]) settings.monthly_rates[ym] = {};
+      settings.monthly_rates[ym][kind] = num;
+    }
   });
 
   // 報表自訂欄位（公式跨裝置共享；hidden_metrics 是裝置端設定，不在這裡）
