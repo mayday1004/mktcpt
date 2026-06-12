@@ -194,9 +194,9 @@ YOURLS_WAKE_TOKEN="same-as-mac-b-WAKE_TOKEN" \
 npm run build
 ```
 
-[build.js](build.js) 會把 `app/main.js` 與所有 import 模組打成單一 IIFE(esbuild + javascript-obfuscator 混淆),產 `dist/`。
+[build.js](build.js) 會把 `app/main.js` 與所有 import 模組打成單一 IIFE(esbuild + javascript-obfuscator 混淆),產 `dist/`。同步 URL/Token 會寫進 `dist/config.js`,不會再烤進 `app.js`。
 
-Docker 兩階段(Node build → Caddy serve),Railway / Fly 等平台一鍵部署,環境變數注入 Sheets URL/Token 與 B 電腦 wake URL/Token。
+Docker 兩階段(Node build → Caddy serve),Railway / Fly 等平台一鍵部署。容器啟動時會由 `docker-entrypoint.sh` 讀 runtime 環境變數重寫 `/srv/config.js`,所以 Railway 變數改完只需要重新部署/重啟服務,瀏覽器端會讀新的 config。
 
 Railway 變數至少設定：
 

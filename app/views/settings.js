@@ -7,6 +7,7 @@ import { downloadText } from "../lib/csv.js";
 import { getExpenseRate, getIncomeRate, getRateSource, getUsdtToCnyRate, getUsdToTwdRate } from "../schema.js";
 import { nowTaipeiStamp } from "../lib/dates.js";
 import {
+  DEPLOY_CONFIG_SOURCE,
   DEPLOY_SHEETS_TOKEN,
   DEPLOY_SHEETS_URL,
   DEPLOY_YOURLS_WAKE_TOKEN,
@@ -48,7 +49,8 @@ export function render(root) {
       ${isDeployManaged() ? `
       <div class="callout" style="background:#eef7ff;border-left:3px solid #2a82c8;padding:10px 12px;border-radius:6px;margin:8px 0 14px;font-size:13px">
         🔒 <strong>URL / Token 由部署環境變數提供</strong>。<br>
-        所有使用者共用同一份 Sheets,推送 / 拉取均可。
+        所有使用者共用同一份 Sheets,推送 / 拉取均可。<br>
+        <span class="ink-3">目前來源:${escape(DEPLOY_CONFIG_SOURCE)}</span>
       </div>` : ""}
 
       <details class="collapse" ${(s.settings.sheets_webapp_url || isDeployManaged()) ? "" : "open"}>

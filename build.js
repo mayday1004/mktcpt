@@ -76,10 +76,6 @@ const result = await esbuild.build({
   legalComments: "none",
   write: false,
   define: {
-    __BUYADS_SHEETS_URL__: JSON.stringify(deploySheetsUrl),
-    __BUYADS_SHEETS_TOKEN__: JSON.stringify(deploySheetsToken),
-    __BUYADS_YOURLS_WAKE_URL__: JSON.stringify(deployYourlsWakeUrl),
-    __BUYADS_YOURLS_WAKE_TOKEN__: JSON.stringify(deployYourlsWakeToken),
     __BUYADS_BUILD__: JSON.stringify(buildId),
   },
 });

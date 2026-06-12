@@ -1,18 +1,42 @@
-// Build-time injected via esbuild `define` (build.js 讀 Railway env vars
-// SHEETS_WEBAPP_URL / SHEETS_TOKEN)。dev 模式（瀏覽器直接載 main.js 不經 bundle）
-// 兩個常數都未宣告，typeof 會回 "undefined"，安全 fallback 為空字串。
-export const DEPLOY_SHEETS_URL =
-  globalThis.__BUYADS_CONFIG__?.sheetsWebappUrl ||
-  (typeof __BUYADS_SHEETS_URL__ !== "undefined" ? __BUYADS_SHEETS_URL__ : "");
-export const DEPLOY_SHEETS_TOKEN =
-  globalThis.__BUYADS_CONFIG__?.sheetsToken ||
-  (typeof __BUYADS_SHEETS_TOKEN__ !== "undefined" ? __BUYADS_SHEETS_TOKEN__ : "");
-export const DEPLOY_YOURLS_WAKE_URL =
-  globalThis.__BUYADS_CONFIG__?.yourlsWakeUrl ||
-  (typeof __BUYADS_YOURLS_WAKE_URL__ !== "undefined" ? __BUYADS_YOURLS_WAKE_URL__ : "");
-export const DEPLOY_YOURLS_WAKE_TOKEN =
-  globalThis.__BUYADS_CONFIG__?.yourlsWakeToken ||
-  (typeof __BUYADS_YOURLS_WAKE_TOKEN__ !== "undefined" ? __BUYADS_YOURLS_WAKE_TOKEN__ : "");
+// Runtime config comes from config.js, generated when the container starts.
+// If config.js exists, trust it completely so stale values baked into an older
+// bundle cannot mask changed Railway variables.
+const RUNTIME_CONFIG =
+  globalThis.__BUYADS_CONFIG__ && typeof globalThis.__BUYADS_CONFIG__ === "object"
+    ? globalThis.__BUYADS_CONFIG__
+    : null;
+
+function hasRuntimeKey(key) {
+  return !!RUNTIME_CONFIG && Object.prototype.hasOwnProperty.call(RUNTIME_CONFIG, key);
+}
+
+function configValue(key, bundledValue = "") {
+  const value = hasRuntimeKey(key) ? RUNTIME_CONFIG[key] : bundledValue;
+  return String(value || "").trim();
+}
+
+export const DEPLOY_SHEETS_URL = configValue(
+  "sheetsWebappUrl",
+  typeof __BUYADS_SHEETS_URL__ !== "undefined" ? __BUYADS_SHEETS_URL__ : "",
+);
+export const DEPLOY_SHEETS_TOKEN = configValue(
+  "sheetsToken",
+  typeof __BUYADS_SHEETS_TOKEN__ !== "undefined" ? __BUYADS_SHEETS_TOKEN__ : "",
+);
+export const DEPLOY_YOURLS_WAKE_URL = configValue(
+  "yourlsWakeUrl",
+  typeof __BUYADS_YOURLS_WAKE_URL__ !== "undefined" ? __BUYADS_YOURLS_WAKE_URL__ : "",
+);
+export const DEPLOY_YOURLS_WAKE_TOKEN = configValue(
+  "yourlsWakeToken",
+  typeof __BUYADS_YOURLS_WAKE_TOKEN__ !== "undefined" ? __BUYADS_YOURLS_WAKE_TOKEN__ : "",
+);
+
+export const DEPLOY_CONFIG_SOURCE = RUNTIME_CONFIG
+  ? "runtime config.js"
+  : (DEPLOY_SHEETS_URL || DEPLOY_SHEETS_TOKEN || DEPLOY_YOURLS_WAKE_URL || DEPLOY_YOURLS_WAKE_TOKEN)
+    ? "bundle fallback"
+    : "local settings";
 
 export const isDeployManaged = () => !!(DEPLOY_SHEETS_URL && DEPLOY_SHEETS_TOKEN);
 export const isYourlsWakeDeployManaged = () => !!(DEPLOY_YOURLS_WAKE_URL && DEPLOY_YOURLS_WAKE_TOKEN);
