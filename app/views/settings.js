@@ -102,9 +102,6 @@ export function render(root) {
           <input id="f-yourls-wake-token" type="password" ${wakeDeployManaged ? "readonly" : ""} value="${escape(wakeDeployManaged ? DEPLOY_YOURLS_WAKE_TOKEN : (s.settings.yourls_wake_token || ""))}" placeholder="與 yourls帕魯 WAKE_TOKEN 相同" />
         </div>
       </div>
-      <p class="ink-3" style="font-size:12px;margin-top:6px">
-        Yourls 待辦批准成功後，系統會先同步 Google Sheets，再通知 Railway wake relay 喚醒 yourls帕魯。
-      </p>
       ${wakeUrlProblem ? `
       <div class="callout" style="background:#fff6ed;border-left:3px solid #d97706;padding:10px 12px;border-radius:6px;margin:8px 0 14px;font-size:13px">
         ${escape(wakeUrlProblem)}

@@ -494,12 +494,10 @@ function yourlsListQueuedActions(limit) {
   if (lastRow < 2) return { ok: true, actions: [] };
   const rows = sh.getRange(2, 1, lastRow - 1, headers.length).getValues();
   const out = [];
-  const today = _yourlsTodayDate();
   rows.forEach(function (row) {
     const obj = _yourlsRowObject(headers, row);
     if (String(obj.status || '') !== 'queued') return;
     const payload = _yourlsSafeJson(obj.payload_json) || {};
-    if (!_yourlsQueueReadiness(payload, today).ready) return;
     out.push({
       action_id: String(obj.action_id || ''),
       todo_id: String(obj.todo_id || ''),

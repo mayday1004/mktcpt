@@ -116,6 +116,19 @@ export function yourlsPayloadWaitsForEffectiveDate(payload) {
   return YOURLS_EFFECTIVE_DATE_ACTION_TYPES.has(String(payload?.action_type || "").trim());
 }
 
+function approvalDate(now) {
+  const match = String(now || "").match(/\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : "";
+}
+
+function payloadForApprovedQueue(payload, now) {
+  const out = { ...(payload || {}) };
+  if (!yourlsPayloadWaitsForEffectiveDate(out)) {
+    out.effective_date = approvalDate(now);
+  }
+  return out;
+}
+
 export function isYourlsTodo(todo) {
   return todoYourlsPayloads(todo).length > 0;
 }
@@ -133,7 +146,7 @@ export function approveYourlsTodo(state, todoId, { makeId, now, approvedBy = "" 
   const createdIds = [];
   const payloads = todoYourlsPayloads(todo);
   for (let i = 0; i < payloads.length; i++) {
-    const payload = payloads[i];
+    const payload = payloadForApprovedQueue(payloads[i], now);
     const actionId = makeId ? makeId(i, payload) : `${todo.id}_${i + 1}_${Date.now().toString(36)}`;
     state.yourls_actions.push({
       action_id: actionId,
