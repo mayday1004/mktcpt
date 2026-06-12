@@ -63,6 +63,18 @@ const numOr = (v, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+function hasMeaningfulAdData(ad) {
+  if (!String(ad?.id || "").trim()) return false;
+  return !!(
+    String(ad.ad_code || "").trim() ||
+    String(ad.ad_name || "").trim() ||
+    String(ad.start_date || "").trim() ||
+    String(ad.end_date || "").trim() ||
+    numOr(ad.amount_cny) > 0 ||
+    numOr(ad.amount_twd) > 0
+  );
+}
+
 // ===== Specs =====
 
 export const TABLE_SYNC_SPECS = [
@@ -345,7 +357,7 @@ export const TABLE_SYNC_SPECS = [
       "縮網址類型", "縮網址參數", "縮網址舊網域", "縮網址舊前綴", "縮網址新網域", "縮網址已通知",
       "段建立代碼", "配對ID", "配對角色",
     ],
-    flatten: (s) => (s.ads || []).map((a) => ({
+    flatten: (s) => (s.ads || []).filter(hasMeaningfulAdData).map((a) => ({
       _id: a.id,
       dataRow: [
         a.id, a.ad_code || "", a.ad_name || "", a.group || "",
@@ -501,11 +513,13 @@ export const TABLE_SYNC_SPECS = [
       const out = [];
       const nameOf = Object.fromEntries((s.products || []).map((p) => [p.id, p.name]));
       for (const a of (s.ads || [])) {
+        if (!hasMeaningfulAdData(a)) continue;
         for (const [pid, w] of Object.entries(a.weights || {})) {
-          if (!Number.isFinite(Number(w)) || Number(w) <= 0) continue;
+          const weight = Number(w);
+          if (!Number.isFinite(weight) || weight <= 0) continue;
           out.push({
             _id: `${a.id}::${pid}`,
-            dataRow: [a.id, a.ad_code || "", a.ad_name || "", pid, nameOf[pid] || "", Math.round(Number(w))],
+            dataRow: [a.id, a.ad_code || "", a.ad_name || "", pid, nameOf[pid] || "", Math.round(weight)],
           });
         }
       }

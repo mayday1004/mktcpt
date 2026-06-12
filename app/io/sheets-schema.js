@@ -119,6 +119,29 @@ function hasAnyHeader(headers, names) {
   return names.some((name) => headers.includes(name));
 }
 
+function numOrZero(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function hasMeaningfulAdData(ad) {
+  if (!String(ad?.id || "").trim()) return false;
+  return !!(
+    String(ad.ad_code || "").trim() ||
+    String(ad.ad_name || "").trim() ||
+    String(ad.start_date || "").trim() ||
+    String(ad.end_date || "").trim() ||
+    numOrZero(ad.amount_cny) > 0 ||
+    numOrZero(ad.amount_twd) > 0
+  );
+}
+
+function positiveWeightEntries(weights) {
+  return Object.entries(weights || {})
+    .map(([pid, raw]) => ({ pid, weight: Number(raw) }))
+    .filter(({ pid, weight }) => String(pid || "").trim() && Number.isFinite(weight) && weight > 0);
+}
+
 // ── 正規化分頁（一般 push/pull 走這些） ────────────────────────────
 export const TABLES = [
   {
@@ -217,7 +240,7 @@ export const TABLES = [
       "縮網址類型", "縮網址參數", "縮網址舊網域", "縮網址舊前綴", "縮網址新網域", "縮網址已通知",
       "段建立代碼", "配對ID", "配對角色",
     ],
-    toRows: (s) => s.ads.map((a) => [
+    toRows: (s) => (s.ads || []).filter(hasMeaningfulAdData).map((a) => [
       a.id, a.ad_code, a.ad_name, a.group || "",
       a.currency || "CNY",
       a.amount_orig != null ? a.amount_orig : a.amount_cny,
@@ -249,10 +272,10 @@ export const TABLES = [
     name: "廣告權重",
     headers: ["廣告ID", "廣告代碼", "廣告名稱", "產品ID", "產品名稱", "權重%"],
     toRows: (s) => {
-      const nameOf = Object.fromEntries(s.products.map((p) => [p.id, p.name]));
-      return s.ads.flatMap((a) =>
-        Object.entries(a.weights || {}).map(([pid, w]) => [
-          a.id, a.ad_code, a.ad_name, pid, nameOf[pid] || "", Math.round(Number(w) || 0),
+      const nameOf = Object.fromEntries((s.products || []).map((p) => [p.id, p.name]));
+      return (s.ads || []).filter(hasMeaningfulAdData).flatMap((a) =>
+        positiveWeightEntries(a.weights).map(({ pid, weight }) => [
+          a.id, a.ad_code, a.ad_name, pid, nameOf[pid] || "", Math.round(weight),
         ])
       );
     },
@@ -509,13 +532,15 @@ export function assembleFromTables(raw) {
       ...(adT.headers.includes("縮網址已通知")
         ? { short_url_notified: String(o["縮網址已通知"] || "").trim().toUpperCase() === "Y" } : {}),
     };
-  });
+  }).filter(hasMeaningfulAdData);
 
   const wT = pick("廣告權重");
   wT.rows.forEach((r) => {
     const o = toObj(wT.headers, r);
     const ad = ads.find((a) => a.id === String(o["廣告ID"]));
-    if (ad) ad.weights[String(o["產品ID"])] = Number(o["權重%"]) || 0;
+    const pid = String(o["產品ID"] || "");
+    const weight = Number(o["權重%"]) || 0;
+    if (ad && pid && weight > 0) ad.weights[pid] = weight;
   });
 
   const perfT = pick("成效資料");
