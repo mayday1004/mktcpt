@@ -12,6 +12,7 @@ import {
   DEPLOY_SHEETS_URL,
   DEPLOY_YOURLS_WAKE_TOKEN,
   DEPLOY_YOURLS_WAKE_URL,
+  describeYourlsWakeUrlProblem,
   isDeployManaged,
   isYourlsWakeDeployManaged,
 } from "../lib/deploy-config.js";
@@ -22,6 +23,8 @@ export function render(root) {
   const s = getState();
   const wakeDeployManaged = isYourlsWakeDeployManaged();
   const canSaveConnection = !isDeployManaged() || !wakeDeployManaged;
+  const effectiveWakeUrl = wakeDeployManaged ? DEPLOY_YOURLS_WAKE_URL : (s.settings.yourls_wake_url || "");
+  const wakeUrlProblem = describeYourlsWakeUrlProblem(effectiveWakeUrl);
 
   root.innerHTML = `
     <div class="view-head">
@@ -102,6 +105,10 @@ export function render(root) {
       <p class="ink-3" style="font-size:12px;margin-top:6px">
         Yourls 待辦批准成功後，系統會先同步 Google Sheets，再呼叫這個 URL 喚醒 yourls帕魯。
       </p>
+      ${wakeUrlProblem ? `
+      <div class="callout" style="background:#fff6ed;border-left:3px solid #d97706;padding:10px 12px;border-radius:6px;margin:8px 0 14px;font-size:13px">
+        ${escape(wakeUrlProblem)}
+      </div>` : ""}
 
       <div class="sheets-actions">
         <button class="primary" id="btn-sync-now">🔄 立即同步</button>

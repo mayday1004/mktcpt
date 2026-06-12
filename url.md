@@ -103,6 +103,10 @@ YOURLS_BASE_URL=https://yourls-admin.iavnight.com/admin
 
 `.env.local` 不會進 git。B 電腦打開 `yourls_worker` 時，也是在這個資料夾裡放自己的 `.env.local`。
 
+若 A 端 buyads 部署在 Railway HTTPS 網域，瀏覽器不能從 HTTPS 頁面直接 `fetch()` 區網 HTTP wake server。Railway 的 `YOURLS_WAKE_URL` 要填可從瀏覽器連到 Mac B 的 HTTPS tunnel / reverse proxy URL；`http://MAC_B_IP:8765/wake` 只適合本機 HTTP 頁面測試。
+
+即使前端先 push 到 Railway，Railway 也不能直接連進 Mac B 的區網 IP；Mac B 必須提供可公開連入的 HTTPS tunnel / reverse proxy，或改用 worker 主動輪詢 Sheets 佇列。
+
 填好 `.env.local` 後，自動登入版執行：
 
 ```bash

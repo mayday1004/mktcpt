@@ -177,15 +177,19 @@ export function render(root) {
         toast(
           isScheduled
             ? `已批准 ${result.created} 筆 Yourls 操作,已排程 ${effectiveDate} 執行並同步到 yourls帕魯`
-            : `已批准 ${result.created} 筆 Yourls 操作,正在同步並喚醒 yourls帕魯`,
+            : `已批准 ${result.created} 筆 Yourls 操作,正在同步到 Sheets`,
           "ok",
         );
         await manualSync({ waitIfBusy: true });
-        const wake = await wakeYourlsWorker();
-        if (wake.skipped) {
-          toast("已批准並同步; 尚未設定 yourls帕魯 wake URL/token", "bad");
-        } else {
-          toast("已批准，開始喚醒yourls帕魯", "ok");
+        try {
+          const wake = await wakeYourlsWorker();
+          if (wake.skipped) {
+            toast("已批准並同步; 未設定 wake 時請讓 Mac B worker 常駐輪詢", "bad");
+          } else {
+            toast("已批准並同步，已送出 yourls帕魯喚醒", "ok");
+          }
+        } catch (wakeError) {
+          toast(`已批准並同步; 但無法喚醒 Mac B:${wakeError.message}`, "bad");
         }
       } catch (e) {
         toast(`Yourls 批准流程失敗:${e.message}`, "bad");

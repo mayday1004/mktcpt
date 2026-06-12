@@ -189,7 +189,7 @@ npx serve .
 ```bash
 SHEETS_WEBAPP_URL="https://script.google.com/macros/s/.../exec" \
 SHEETS_TOKEN="your-secret" \
-YOURLS_WAKE_URL="http://MAC_B_IP:8765/wake" \
+YOURLS_WAKE_URL="https://your-mac-b-tunnel.example.com/wake" \
 YOURLS_WAKE_TOKEN="same-as-mac-b-WAKE_TOKEN" \
 npm run build
 ```
@@ -203,13 +203,11 @@ Railway 變數至少設定：
 ```text
 SHEETS_WEBAPP_URL=https://script.google.com/macros/s/.../exec
 SHEETS_TOKEN=Apps Script token
-YOURLS_WAKE_URL=http://MAC_B_IP:8765/wake
+YOURLS_WAKE_URL=https://your-mac-b-tunnel.example.com/wake
 YOURLS_WAKE_TOKEN=Mac B .env.local 的 WAKE_TOKEN
 ```
 
-`YOURLS_WAKE_URL` 的 `MAC_B_IP` 可以在 Mac B 啟動 `bash run_wake_server.sh` 後看終端機印出的 `A computer can call this B-computer wake URL`。也可以在 Mac B 跑 `ipconfig getifaddr en0` 取 Wi-Fi IP；有線網路常見是 `ipconfig getifaddr en1`。IP 可能會因 DHCP 變動，正式使用時建議在路由器替 Mac B 做 DHCP reservation。
-
-若前端部署在 Railway HTTPS 網域，瀏覽器可能會擋 HTTPS 頁面呼叫區網 HTTP wake URL。這時 `YOURLS_WAKE_URL` 應改成能連到 Mac B 的 HTTPS URL，例如內網 HTTPS 反向代理或 tunnel URL；純本機 HTTP 測試則可直接用 `http://MAC_B_IP:8765/wake`。
+Railway HTTPS 正式環境的 `YOURLS_WAKE_URL` 必須是瀏覽器可連到 Mac B 的 HTTPS tunnel 或反向代理 URL。`http://MAC_B_IP:8765/wake` 只適合本機 HTTP 測試；Railway 網頁不能直接喚醒區網 HTTP wake server。
 
 ### 檔案結構
 

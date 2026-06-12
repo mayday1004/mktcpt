@@ -1,5 +1,6 @@
 import { getState } from "../state.js";
 import {
+  describeYourlsWakeUrlProblem,
   getEffectiveYourlsWakeToken,
   getEffectiveYourlsWakeUrl,
 } from "../lib/deploy-config.js";
@@ -34,13 +35,19 @@ export async function wakeYourlsWorker() {
   if (!wakeUrl) throw new Error("尚未設定 yourls帕魯 wake URL");
   if (!wakeToken) throw new Error("尚未設定 yourls帕魯 wake token");
 
+  const configProblem = describeYourlsWakeUrlProblem(wakeUrl);
+  if (configProblem) {
+    logWarn("yourlsWake.configBlocked", { url: wakeUrl, reason: configProblem });
+    throw new Error(configProblem);
+  }
+
   const url = normalizeWakeUrl(wakeUrl, wakeToken);
   let res;
   try {
     res = await fetch(url, { method: "POST", mode: "cors" });
   } catch (e) {
     logError("yourlsWake.fetchFailed", { url: wakeUrl, error: String(e?.message || e) });
-    throw new Error(`無法喚醒 yourls帕魯：${e?.message || e}`);
+    throw new Error(`無法喚醒 yourls帕魯：${e?.message || e}。若 buyads 在 HTTPS 網域,請確認 YOURLS_WAKE_URL 也是 HTTPS 且瀏覽器可連到 Mac B。`);
   }
 
   const text = await res.text();
