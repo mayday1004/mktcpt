@@ -8,7 +8,9 @@ import {
   approveYourlsTodo,
   canApproveYourlsTodo,
   isYourlsTodo,
+  removeYourlsActionsForTodo,
   todoYourlsPayloads,
+  yourlsPayloadWaitsForEffectiveDate,
 } from "../domain/yourls-actions.js";
 
 // 已完成事件紀錄的篩選狀態(留在 module level,切頁回來保留)
@@ -42,6 +44,7 @@ function compareTodoNewestFirst(a, b) {
 
 function yourlsEffectiveDates(todo) {
   return todoYourlsPayloads(todo)
+    .filter(yourlsPayloadWaitsForEffectiveDate)
     .map((payload) => String(payload?.effective_date || "").match(/\d{4}-\d{2}-\d{2}/)?.[0] || "")
     .filter(Boolean)
     .sort();
@@ -223,17 +226,20 @@ export function render(root) {
       });
       if (!ok) return;
       let undoResult = { ok: false };
+      let removedYourlsActions = 0;
       update((st) => {
+        const liveTodo = st.todos.find((t) => t.id === id) || todo;
+        removedYourlsActions = removeYourlsActionsForTodo(st, liveTodo);
         if (hasUndo) {
-          const liveTodo = st.todos.find((t) => t.id === id) || todo;
           undoResult = applyTodoUndo(st, liveTodo);
         }
         st.todos = st.todos.filter((t) => t.id !== id);
       }, hasUndo ? "撤回待辦" : "刪除待辦");
+      const yourlsSuffix = removedYourlsActions ? `、刪除 Yourls 佇列 ${removedYourlsActions} 筆` : "";
       if (hasUndo && undoResult.ok) {
-        toast(`已撤回(還原 ${undoResult.restoredCount} 段、刪除 ${undoResult.deletedCount} 段)`, "ok");
+        toast(`已撤回(還原 ${undoResult.restoredCount} 段、刪除 ${undoResult.deletedCount} 段${yourlsSuffix})`, "ok");
       } else {
-        toast(hasUndo ? "撤回失敗" : "已刪除", hasUndo ? "bad" : "ok");
+        toast(hasUndo ? "撤回失敗" : `已刪除${yourlsSuffix}`, hasUndo ? "bad" : "ok");
       }
     };
   });

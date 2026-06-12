@@ -8,6 +8,11 @@ export const YOURLS_STATUSES = {
   failed: "failed",
 };
 
+export const YOURLS_EFFECTIVE_DATE_ACTION_TYPES = new Set([
+  "\u624b\u52d5\u6539\u6b0a\u91cd",
+  "\u6210\u6548\u8abf\u6b0a\u91cd",
+]);
+
 export const YOURLS_PRODUCT_ID_MAP = {
   av9_poquan: "AV9-\u7834\u5708",
   jk_poquan: "JK-\u7834\u5708",
@@ -107,6 +112,10 @@ export function todoYourlsPayloads(todo) {
   return [];
 }
 
+export function yourlsPayloadWaitsForEffectiveDate(payload) {
+  return YOURLS_EFFECTIVE_DATE_ACTION_TYPES.has(String(payload?.action_type || "").trim());
+}
+
 export function isYourlsTodo(todo) {
   return todoYourlsPayloads(todo).length > 0;
 }
@@ -154,6 +163,20 @@ export function approveYourlsTodo(state, todoId, { makeId, now, approvedBy = "" 
   todo.yourls_approved_at = now;
   todo.yourls_last_error = "";
   return { ok: true, created: createdIds.length, actionIds: createdIds };
+}
+
+export function removeYourlsActionsForTodo(state, todo) {
+  if (!todo) return 0;
+  state.yourls_actions = Array.isArray(state.yourls_actions) ? state.yourls_actions : [];
+  const todoId = String(todo.id || "");
+  const actionIds = new Set((todo.yourls_action_ids || []).map((id) => String(id || "")).filter(Boolean));
+  const before = state.yourls_actions.length;
+  state.yourls_actions = state.yourls_actions.filter((action) => {
+    const actionId = String(action?.action_id || "");
+    if (actionIds.has(actionId)) return false;
+    return !todoId || String(action?.todo_id || "") !== todoId;
+  });
+  return before - state.yourls_actions.length;
 }
 
 export function parsePayloadJson(raw) {

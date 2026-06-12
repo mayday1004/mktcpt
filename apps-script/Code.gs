@@ -447,7 +447,8 @@ function _yourlsEffectiveDate(payload) {
 
 function _yourlsWaitsForEffectiveDate(payload) {
   const actionType = String(payload.action_type || '').trim();
-  return actionType === '手動改權重' || actionType === '成效調權重';
+  return actionType === '\u624b\u52d5\u6539\u6b0a\u91cd' ||
+    actionType === '\u6210\u6548\u8abf\u6b0a\u91cd';
 }
 
 function _yourlsQueueReadiness(payload, today) {

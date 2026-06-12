@@ -273,6 +273,8 @@ DRY_RUN=1
 
 執行時機由 `payload_json.action_type` 決定：`手動改權重`、`成效調權重` 會留在 queued，等台北日期到 `effective_date` 當天才提供給 worker；`新增廣告`、`補花費缺口` 則按批准後就能被 worker 拉走。
 
+撤回或刪除已批准的待辦時，buyads 必須同步刪除該 todo 對應的 `YOURLS操作佇列` 項目，避免 worker 之後執行已撤回的 action。
+
 worker 回報 `applied` 後：
 
 1. buyads 下次 sync 讀回結果。
