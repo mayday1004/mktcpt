@@ -184,12 +184,16 @@ export function render(root) {
         try {
           const wake = await wakeYourlsWorker();
           if (wake.skipped) {
-            toast("已批准並同步; 未設定 wake 時請讓 Mac B worker 常駐輪詢", "bad");
+            toast("已批准並同步; 未設定 wake 時請讓 Mac B worker 常駐輪詢。", "warn", { duration: 12000, closable: true });
           } else {
             toast("已批准並同步，已送出 yourls帕魯喚醒", "ok");
           }
         } catch (wakeError) {
-          toast(`已批准並同步; 但無法喚醒 Mac B:${wakeError.message}`, "bad");
+          toast(
+            `已批准並同步到 Sheets，但無法喚醒 Mac B。\n${wakeError.message}\nMac B worker 若有常駐輪詢，仍會在下一輪抓到這筆; 不需要重新批准。`,
+            "bad",
+            { sticky: true, closable: true },
+          );
         }
       } catch (e) {
         toast(`Yourls 批准流程失敗:${e.message}`, "bad");

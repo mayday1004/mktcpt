@@ -189,25 +189,35 @@ npx serve .
 ```bash
 SHEETS_WEBAPP_URL="https://script.google.com/macros/s/.../exec" \
 SHEETS_TOKEN="your-secret" \
-YOURLS_WAKE_URL="https://your-mac-b-tunnel.example.com/wake" \
+YOURLS_WAKE_URL="/api/yourls-wake/notify" \
 YOURLS_WAKE_TOKEN="same-as-mac-b-WAKE_TOKEN" \
 npm run build
 ```
 
 [build.js](build.js) 會把 `app/main.js` 與所有 import 模組打成單一 IIFE(esbuild + javascript-obfuscator 混淆),產 `dist/`。同步 URL/Token 會寫進 `dist/config.js`,不會再烤進 `app.js`。
 
-Docker 兩階段(Node build → Caddy serve),Railway / Fly 等平台一鍵部署。容器啟動時會由 `docker-entrypoint.sh` 讀 runtime 環境變數重寫 `/srv/config.js`,所以 Railway 變數改完只需要重新部署/重啟服務,瀏覽器端會讀新的 config。
+Docker 兩階段(Node build → Node runtime server),Railway / Fly 等平台一鍵部署。容器啟動後由 [server.mjs](server.mjs) 讀 runtime 環境變數即時輸出 `/config.js`,所以 Railway 變數改完只需要重新部署/重啟服務,瀏覽器端會讀新的 config。
 
 Railway 變數至少設定：
 
 ```text
 SHEETS_WEBAPP_URL=https://script.google.com/macros/s/.../exec
 SHEETS_TOKEN=Apps Script token
-YOURLS_WAKE_URL=https://your-mac-b-tunnel.example.com/wake
+YOURLS_WAKE_URL=/api/yourls-wake/notify
 YOURLS_WAKE_TOKEN=Mac B .env.local 的 WAKE_TOKEN
 ```
 
-Railway HTTPS 正式環境的 `YOURLS_WAKE_URL` 必須是瀏覽器可連到 Mac B 的 HTTPS tunnel 或反向代理 URL。`http://MAC_B_IP:8765/wake` 只適合本機 HTTP 測試；Railway 網頁不能直接喚醒區網 HTTP wake server。
+Railway 正式環境使用內建 wake relay：前端批准後呼叫 `/api/yourls-wake/notify`，Mac B 的 `wake_server.py` 以 outbound long-poll 等 `/api/yourls-wake/wait`。這樣不需要瀏覽器或 Railway 直接打進 Mac B 內網，也不需要 B 電腦高頻掃 Google Sheets。
+
+Mac B `.env.local` 對應：
+
+```text
+WAKE_TOKEN=同一串 YOURLS_WAKE_TOKEN
+WAKE_RELAY_URL=https://你的Railway網域/api/yourls-wake/wait
+WAKE_RELAY_TOKEN=同一串 YOURLS_WAKE_TOKEN
+```
+
+舊的 `http://MAC_B_IP:8765/wake` 只適合同區網本機 HTTP 測試；Railway HTTPS 頁面不要用它當正式 wake URL。
 
 ### 檔案結構
 
@@ -241,8 +251,8 @@ buyads/
 ├── samples/               # (gitignore) 歷史資料/匯入腳本工作區
 ├── build.js               # esbuild + obfuscator
 ├── package.json
-├── Dockerfile, Caddyfile  # 部署設定
-└── docker-entrypoint.sh
+├── server.mjs             # Railway runtime config + Yourls wake relay
+└── Dockerfile             # 部署設定
 ```
 
 ---

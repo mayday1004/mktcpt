@@ -95,7 +95,7 @@ export function render(root) {
       <div class="sheets-form">
         <div class="field" style="flex:3">
           <label>yourls帕魯 Wake URL${wakeDeployManaged ? " <span class=\"pill\">部署提供</span>" : ""}</label>
-          <input id="f-yourls-wake-url" ${wakeDeployManaged ? "readonly" : ""} value="${escape(wakeDeployManaged ? DEPLOY_YOURLS_WAKE_URL : (s.settings.yourls_wake_url || ""))}" placeholder="http://yourls帕魯IP:8765/wake" />
+          <input id="f-yourls-wake-url" ${wakeDeployManaged ? "readonly" : ""} value="${escape(wakeDeployManaged ? DEPLOY_YOURLS_WAKE_URL : (s.settings.yourls_wake_url || ""))}" placeholder="/api/yourls-wake/notify" />
         </div>
         <div class="field" style="flex:2">
           <label>Wake Token${wakeDeployManaged ? " <span class=\"pill\">部署提供</span>" : ""}</label>
@@ -103,7 +103,7 @@ export function render(root) {
         </div>
       </div>
       <p class="ink-3" style="font-size:12px;margin-top:6px">
-        Yourls 待辦批准成功後，系統會先同步 Google Sheets，再呼叫這個 URL 喚醒 yourls帕魯。
+        Yourls 待辦批准成功後，系統會先同步 Google Sheets，再通知 Railway wake relay 喚醒 yourls帕魯。
       </p>
       ${wakeUrlProblem ? `
       <div class="callout" style="background:#fff6ed;border-left:3px solid #d97706;padding:10px 12px;border-radius:6px;margin:8px 0 14px;font-size:13px">

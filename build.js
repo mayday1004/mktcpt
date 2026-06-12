@@ -15,8 +15,8 @@ loadLocalEnv(".env.local");
 
 const deploySheetsUrl = readEnv("SHEETS_WEBAPP_URL");
 const deploySheetsToken = readEnv("SHEETS_TOKEN");
-const deployYourlsWakeUrl = readEnv("YOURLS_WAKE_URL");
 const deployYourlsWakeToken = readEnv("YOURLS_WAKE_TOKEN");
+const deployYourlsWakeUrl = readEnv("YOURLS_WAKE_URL") || (deployYourlsWakeToken ? "/api/yourls-wake/notify" : "");
 
 function loadLocalEnv(fileName) {
   const filePath = path.resolve(fileName);

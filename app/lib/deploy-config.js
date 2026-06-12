@@ -85,19 +85,20 @@ export function assertValidSheetsUrl(url) {
 export function describeYourlsWakeUrlProblem(url, pageProtocol = globalThis.location?.protocol || "") {
   const value = String(url || "").trim();
   if (!value) return "";
+  if (value.startsWith("/") && !value.startsWith("//")) return "";
 
   let parsed;
   try {
     parsed = new URL(value);
   } catch {
-    return "yourls帕魯 Wake URL 格式不正確。請填完整網址,例如 http://MAC_B_IP:8765/wake 或 HTTPS tunnel URL。";
+    return "yourls帕魯 Wake URL 格式不正確。請填完整網址,或同站路徑 /api/yourls-wake/notify。";
   }
 
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return "yourls帕魯 Wake URL 只支援 http:// 或 https://。";
   }
   if (pageProtocol === "https:" && parsed.protocol === "http:") {
-    return "目前 buyads 是 HTTPS 頁面,瀏覽器會阻擋呼叫 HTTP wake URL。請把 YOURLS_WAKE_URL 改成可從瀏覽器連到 Mac B 的 HTTPS tunnel/reverse proxy URL,或改用本機 HTTP 頁面操作。";
+    return "目前 buyads 是 HTTPS 頁面,瀏覽器會阻擋呼叫 HTTP wake URL。Railway 正式站請使用同站路徑 /api/yourls-wake/notify,並讓 Mac B 用 WAKE_RELAY_URL 等 Railway 通知。";
   }
   return "";
 }

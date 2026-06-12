@@ -1968,9 +1968,30 @@ td.warn { color: var(--warn); }
   padding: 10px 16px; border-radius: 6px; font-size: 13px;
   box-shadow: 0 4px 16px rgba(0,0,0,0.2);
   animation: slideIn 0.2s;
+  max-width: min(520px, calc(100vw - 48px));
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.5;
 }
 .toast.ok { background: #1f9d55; }
 .toast.bad { background: #d94141; }
+.toast.warn { background: #d97706; }
+.toast-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.toast-close {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.18);
+  color: #fff;
+  font-size: 16px;
+  line-height: 18px;
+  padding: 0;
+  cursor: pointer;
+}
+.toast-close:hover { background: rgba(255,255,255,0.28); }
 
 /* 當 modal 開啟時,toast 改 append 進 modal 內,讓它跟著進 top-layer 不被覆蓋 */
 .toast-host-in-modal {

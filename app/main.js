@@ -222,7 +222,8 @@ function bindKeyboard() {
 }
 
 // Global helpers for views
-window.toast = (msg, kind = "") => {
+window.toast = (msg, kind = "", opts = {}) => {
+  const options = typeof opts === "number" ? { duration: opts } : (opts || {});
   // <dialog showModal()> 開啟時走 browser top-layer,凌駕所有 z-index。
   // 若把 toast 放在 body 下方的 toast-host,modal 開著時 toast 會被蓋住 → 改 append 進 modal 內,
   // 讓 toast 跟著進 top-layer。
@@ -240,9 +241,24 @@ window.toast = (msg, kind = "") => {
   }
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
-  el.textContent = msg;
+  const body = document.createElement("span");
+  body.className = "toast-body";
+  body.textContent = msg;
+  el.appendChild(body);
+  if (options.closable || options.sticky) {
+    const close = document.createElement("button");
+    close.className = "toast-close";
+    close.type = "button";
+    close.title = "關閉";
+    close.textContent = "×";
+    close.onclick = () => el.remove();
+    el.appendChild(close);
+  }
   host.appendChild(el);
-  setTimeout(() => el.remove(), 2600);
+  const duration = options.sticky
+    ? 0
+    : Number(options.duration) || (kind === "bad" ? 9000 : kind === "warn" ? 7000 : 2600);
+  if (duration > 0) setTimeout(() => el.remove(), duration);
 };
 
 // Banner 容器:modal 沒開時掛在 body 下,modal 一開就搬進 modal 內,

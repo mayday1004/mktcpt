@@ -6,12 +6,12 @@ import {
 } from "../lib/deploy-config.js";
 import { logError, logInfo, logWarn } from "../lib/sync-log.js";
 
-function normalizeWakeUrl(rawUrl, token) {
+function normalizeWakeUrl(rawUrl) {
   const value = String(rawUrl || "").trim();
   if (!value) return "";
-  const url = new URL(value);
+  const base = globalThis.location?.origin || "http://localhost";
+  const url = new URL(value, base);
   if (!url.pathname || url.pathname === "/") url.pathname = "/wake";
-  if (token) url.searchParams.set("token", token);
   return url.toString();
 }
 
@@ -41,13 +41,16 @@ export async function wakeYourlsWorker() {
     throw new Error(configProblem);
   }
 
-  const url = normalizeWakeUrl(wakeUrl, wakeToken);
+  const url = normalizeWakeUrl(wakeUrl);
   let res;
   try {
-    res = await fetch(url, { method: "POST", mode: "cors" });
+    res = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${wakeToken}` },
+    });
   } catch (e) {
     logError("yourlsWake.fetchFailed", { url: wakeUrl, error: String(e?.message || e) });
-    throw new Error(`無法喚醒 yourls帕魯：${e?.message || e}。若 buyads 在 HTTPS 網域,請確認 YOURLS_WAKE_URL 也是 HTTPS 且瀏覽器可連到 Mac B。`);
+    throw new Error(`無法喚醒 yourls帕魯：${e?.message || e}。Railway 正式站建議使用同站 wake relay：YOURLS_WAKE_URL=/api/yourls-wake/notify。`);
   }
 
   const text = await res.text();
