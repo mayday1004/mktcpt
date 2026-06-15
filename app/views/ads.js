@@ -1556,6 +1556,42 @@ function actionButtons(seg, compact, opts = {}) {
   `;
 }
 
+function rangesOverlap(a, b) {
+  return !!(a?.start_date && a?.end_date && b?.start_date && b?.end_date &&
+    a.start_date < b.end_date && b.start_date < a.end_date);
+}
+
+function deleteTargetsForSegment(allAds, seg) {
+  if (!seg) return [];
+  const targets = [seg];
+  if (seg.split_pair_id) {
+    for (const ad of (allAds || [])) {
+      if (ad.id === seg.id) continue;
+      if (ad.split_pair_id === seg.split_pair_id && rangesOverlap(ad, seg)) targets.push(ad);
+    }
+  }
+  const seen = new Set();
+  return targets.filter((ad) => {
+    const id = String(ad?.id || "");
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+function deleteTargetDetails(targets) {
+  return targets.map((ad) =>
+    `${ad.ad_code} ${ad.ad_name}｜${ad.start_date} ~ ${ad.end_date}｜${Math.round(ad.amount_cny || 0).toLocaleString()} RMB`
+  );
+}
+
+function deleteAdSegments(st, seg) {
+  const liveSeg = st.ads.find((a) => a.id === seg?.id) || seg;
+  const ids = new Set(deleteTargetsForSegment(st.ads, liveSeg).map((ad) => ad.id));
+  st.ads = st.ads.filter((ad) => !ids.has(ad.id));
+  return ids.size;
+}
+
 function bindHandlers(root, s) {
   root.querySelector("#btn-add").onclick = () => openEditor(null);
 
@@ -1661,14 +1697,18 @@ function bindHandlers(root, s) {
     el.onclick = async () => {
       const seg = s.ads.find((a) => a.id === el.dataset.del);
       if (!seg) return;
+      const targets = deleteTargetsForSegment(s.ads, seg);
+      const isPairDelete = targets.length > 1;
       const ok = await confirmAsync({
-        title: "刪除廣告段",
-        body: `確認刪除這一段？同代碼其他段不受影響。`,
-        details: [`${seg.ad_code} ${seg.ad_name}`, `${seg.start_date} ~ ${seg.end_date}`, `每日攤提 ${Math.round(seg.daily_amort_twd || 0).toLocaleString()} TWD`],
+        title: isPairDelete ? "刪除配對廣告段" : "刪除廣告段",
+        body: isPairDelete
+          ? `這是拆分廣告，會同時刪除同區間的 ${targets.length} 段。`
+          : `確認刪除這一段？同代碼其他段不受影響。`,
+        details: deleteTargetDetails(targets),
         okText: "刪除", danger: true,
       });
       if (!ok) return;
-      update((st) => { st.ads = st.ads.filter((a) => a.id !== el.dataset.del); });
+      update((st) => { deleteAdSegments(st, seg); }, isPairDelete ? "刪除配對廣告段" : "刪除廣告段");
       toast("已刪除", "ok");
     };
   });
@@ -3546,14 +3586,18 @@ function openMoreMenu(seg) {
           openEliminate(seg);
         }
       } else if (pick === "del") {
+        const targets = deleteTargetsForSegment(getState().ads || [], seg);
+        const isPairDelete = targets.length > 1;
         const ok = await confirmAsync({
-          title: "刪除廣告段",
-          body: "確認刪除這一段？同代碼其他段不受影響。",
-          details: [`${seg.ad_code} ${seg.ad_name}`, `${seg.start_date} ~ ${seg.end_date}`],
+          title: isPairDelete ? "刪除配對廣告段" : "刪除廣告段",
+          body: isPairDelete
+            ? `這是拆分廣告，會同時刪除同區間的 ${targets.length} 段。`
+            : "確認刪除這一段？同代碼其他段不受影響。",
+          details: deleteTargetDetails(targets),
           okText: "刪除", danger: true,
         });
         if (!ok) return;
-        update((st) => { st.ads = st.ads.filter((a) => a.id !== seg.id); });
+        update((st) => { deleteAdSegments(st, seg); }, isPairDelete ? "刪除配對廣告段" : "刪除廣告段");
         toast("已刪除", "ok");
       }
     };

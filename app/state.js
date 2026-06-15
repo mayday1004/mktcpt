@@ -12,8 +12,21 @@ const KEY = "buyads_state_v1";
 const UNDO_KEY = "buyads_undo_v1";
 const MAX_UNDO = 8;
 const listeners = new Set();
+function collectAdWeightSyncRows(st) {
+  const rows = [];
+  for (const ad of (st.ads || [])) {
+    const adId = String(ad?.id || "").trim();
+    if (!adId) continue;
+    for (const [pid, raw] of Object.entries(ad.weights || {})) {
+      if ((Number(raw) || 0) > 0 && String(pid || "").trim()) rows.push({ id: `${adId}::${pid}` });
+    }
+  }
+  return rows;
+}
+
 const SYNC_DELETE_TRACKERS = [
   { sheetName: "\u5ee3\u544a", select: (st) => st.ads, idOf: (row) => row.id },
+  { sheetName: "\u5ee3\u544a\u6b0a\u91cd", select: collectAdWeightSyncRows, idOf: (row) => row.id },
   { sheetName: "\u5f85\u8fa6", select: (st) => st.todos, idOf: (row) => row.id },
   { sheetName: "YOURLS\u64cd\u4f5c\u4f47\u5217", select: (st) => st.yourls_actions, idOf: (row) => row.action_id },
   { sheetName: "YOURLS\u57f7\u884c\u7d00\u9304", select: (st) => st.yourls_execution_logs, idOf: (row) => row.log_id },
