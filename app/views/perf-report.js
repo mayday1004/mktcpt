@@ -885,8 +885,8 @@ function renderAdView(state) {
       )
     );
     if (!hasIslandSeg && !hasIslandPerf) continue;
-    const currentWeekWeights = latestSnapshotWeightsForRange(segs, weekRange);
-    const lastWeekWeights = latestSnapshotWeightsForRange(segs, lastWeightWeekRange);
+    const currentWeekWeights = snapshotWeightsOnDate(segs, weekRange.start);
+    const lastWeekWeights = snapshotWeightsOnDate(segs, lastWeightWeekRange.start);
     const rep = { ...latest, weights: mergedWeights };
     rows.push(buildAdRowData(
       state,
@@ -951,23 +951,17 @@ function formatUTC(dt) {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
-function latestSnapshotWeightsForRange(segs, range) {
+function snapshotWeightsOnDate(segs, ymd) {
+  if (!ymd) return null;
   const valid = (segs || []).filter((seg) => seg.start_date && seg.end_date);
-  const inRange = range
-    ? valid.filter((seg) => seg.start_date <= range.end && seg.end_date > range.start)
-    : valid;
-  if (inRange.length === 0) return null;
+  const active = valid.filter((seg) => seg.start_date <= ymd && seg.end_date > ymd);
+  if (active.length === 0) return null;
 
-  const referenceSeg = inRange.slice().sort((a, b) =>
+  const referenceSeg = active.slice().sort((a, b) =>
     (b.start_date || "").localeCompare(a.start_date || "") ||
     (b.end_date || "").localeCompare(a.end_date || "")
   )[0];
-  if (!referenceSeg) return null;
-
-  const snapshotSegs = valid.filter((seg) =>
-    seg.start_date < referenceSeg.end_date && seg.end_date > referenceSeg.start_date
-  );
-  return buildSnapshotWeights(snapshotSegs.length > 0 ? snapshotSegs : [referenceSeg], referenceSeg);
+  return buildSnapshotWeights(active, referenceSeg);
 }
 
 function buildSnapshotWeights(activeSnapshotSegs, referenceSeg) {
@@ -1324,14 +1318,14 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
     const islandWeightCell = row.islandWeightIndependent
       ? `<td class="num ink-3" title="本週截面是單一產品 100% 的獨立採買，不加總顯示">-</td>`
       : row.islandWeightPct != null
-      ? `<td class="num" title="本週 ${esc(weekRange.start)}~${esc(weekRange.end)} 內最後權重${row.currentWeekWeightStart ? `（${esc(row.currentWeekWeightStart)} 起）` : ""}的小島產品加總">${fmtPct(row.islandWeightPct)}</td>`
+      ? `<td class="num" title="本週第一天 ${esc(weekRange.start)} 權重${row.currentWeekWeightStart ? `（${esc(row.currentWeekWeightStart)} 起）` : ""}的小島產品加總">${fmtPct(row.islandWeightPct)}</td>`
       : `<td class="num ink-3">—</td>`;
 
     const islandDeltaCls = row.islandWeightDelta > 0 ? "ok" : row.islandWeightDelta < 0 ? "bad" : "";
     const islandDeltaCell = row.islandWeightIndependent
       ? `<td class="num ink-3" title="本週截面為獨立 100%，不計算上週增減">-</td>`
       : row.islandWeightDelta != null
-      ? `<td class="num ${islandDeltaCls}" title="本週小島權重 ${fmtPct(row.islandWeightPct)} - 上週 ${esc(lastWeightWeekRange.start)}~${esc(lastWeightWeekRange.end)} 權重${row.lastWeekWeightStart ? `（${esc(row.lastWeekWeightStart)} 起）` : ""} ${fmtPct(row.lastWeekIslandWeightPct)}"><strong>${fmtPctSigned(row.islandWeightDelta)}</strong></td>`
+      ? `<td class="num ${islandDeltaCls}" title="本週第一天 ${esc(weekRange.start)} 小島權重 ${fmtPct(row.islandWeightPct)} - 上週第一天 ${esc(lastWeightWeekRange.start)} 權重${row.lastWeekWeightStart ? `（${esc(row.lastWeekWeightStart)} 起）` : ""} ${fmtPct(row.lastWeekIslandWeightPct)}"><strong>${fmtPctSigned(row.islandWeightDelta)}</strong></td>`
       : `<td class="num ink-3">—</td>`;
 
     return `
