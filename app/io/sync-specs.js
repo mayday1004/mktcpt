@@ -16,6 +16,7 @@
 import { METRICS, RENEWAL_REASONS, PRODUCT_TYPES } from "../schema.js";
 import { applyDoneEliminateTodos, normalizeTodoCreatedAt } from "../domain/todo-utils.js";
 import { materializeTodosAppliedSnapshots } from "../domain/undo.js";
+import { normalizeAdCode } from "./sheets-schema.js";
 import {
   YOURLS_ACTION_SHEET,
   YOURLS_EXEC_LOG_SHEET,
@@ -582,24 +583,42 @@ export const TABLE_SYNC_SPECS = [
       const periodStart = String(obj["資料起始日"] || "").slice(0, 10);
       const periodEnd = String(obj["資料結束日"] || "").slice(0, 10);
       if (!adCode || !pid) return;
+      const adCodeBase = normalizeAdCode(adCode);
+      const candidates = (state.ads || []).filter((a) =>
+        normalizeAdCode(a.ad_code) === adCodeBase && Number(a.weights?.[pid]) > 0 &&
+        a.start_date < periodEnd && a.end_date > periodStart
+      );
+      let ad = null;
+      if (candidates.length === 1) {
+        ad = candidates[0];
+      } else if (candidates.length > 1) {
+        ad = candidates
+          .map((a) => {
+            const os = a.start_date > periodStart ? a.start_date : periodStart;
+            const oe = a.end_date < periodEnd ? a.end_date : periodEnd;
+            const overlap = Date.parse(oe) - Date.parse(os);
+            return { ad: a, overlap: Number.isFinite(overlap) ? overlap : 0 };
+          })
+          .sort((a, b) =>
+            b.overlap - a.overlap ||
+            (b.ad.end_date || "").localeCompare(a.ad.end_date || "") ||
+            (b.ad.start_date || "").localeCompare(a.ad.start_date || "")
+          )[0]?.ad || null;
+      }
+      const recCode = ad?.ad_code || adCode;
       const rec = {
-        ad_code: adCode,
+        ad_code: recCode,
         product_id: pid,
         group: String(obj["廣告分組"] || ""),
         period_start: periodStart,
         period_end: periodEnd,
       };
-      // 嘗試解析回 ad_id（fuzzy by ad_code + 期間 overlap）
-      const ad = (state.ads || []).find((a) =>
-        a.ad_code === adCode && Number(a.weights?.[pid]) > 0 &&
-        a.start_date < periodEnd && a.end_date > periodStart
-      );
       if (ad) {
         rec.ad_id = ad.id;
         rec.ad_name = ad.ad_name;
       } else {
         rec.ad_id = "";
-        rec.ad_name = (state.ads || []).find((a) => a.ad_code === adCode)?.ad_name || "";
+        rec.ad_name = (state.ads || []).find((a) => normalizeAdCode(a.ad_code) === adCodeBase)?.ad_name || "";
       }
       for (const m of METRICS) {
         const v = obj[m];
@@ -607,7 +626,7 @@ export const TABLE_SYNC_SPECS = [
       }
       state.performance_data = state.performance_data || [];
       const idx = state.performance_data.findIndex((r) =>
-        r.ad_code === adCode && r.product_id === pid &&
+        normalizeAdCode(r.ad_code) === normalizeAdCode(recCode) && r.product_id === pid &&
         r.period_start === periodStart && r.period_end === periodEnd
       );
       if (idx >= 0) state.performance_data[idx] = rec;
@@ -615,8 +634,9 @@ export const TABLE_SYNC_SPECS = [
     },
     removeFromState(state, _id) {
       const [adCode, pid, ps, pe] = _id.split("::");
+      const adCodeBase = normalizeAdCode(adCode);
       state.performance_data = (state.performance_data || []).filter((r) =>
-        !(r.ad_code === adCode && r.product_id === pid && r.period_start === ps && r.period_end === pe)
+        !(normalizeAdCode(r.ad_code) === adCodeBase && r.product_id === pid && r.period_start === ps && r.period_end === pe)
       );
     },
     legacyParse(headers, rows) {

@@ -84,7 +84,7 @@ function computeSpend(ad, productId, start, end) {
 }
 
 // 解析成效輸入列。每列：(資料起始日, 資料結束日, 廣告代碼, 對應產品, 廣告分組, ...13 指標)。
-// 匹配規則：把輸入代碼正規化（去 dh 前綴 + 去英文字尾）後與 state.ads 的代碼正規化結果比對；
+// 匹配規則：把輸入代碼正規化（去 dh/h5dh 前綴 + 去英文字尾）後與 state.ads 的代碼正規化結果比對；
 // 同基本碼下挑「對應產品有權重 + 期間 [start, end) 重疊最大者」勝。
 // 重複多筆同重疊段 → conflicts，讓 modal 讓使用者選。
 export function parsePerfInputRows(headers, rows) {
@@ -246,14 +246,14 @@ export function resolveConflicts(conflicts, chosenByRowNum) {
   return out;
 }
 
-// 依 (廣告代碼, 對應產品, 期間起, 期間迄) 自動覆寫 — 同 key 只保留最新一筆（本次匯入為準）。
+// 依 (正規化廣告代碼, 對應產品, 期間起, 期間迄) 自動覆寫 — 同 key 只保留最新一筆（本次匯入為準）。
 // 期間是 key 的一部分:不同週的資料會並存(「依廣告瀏覽」需要連續兩週才能算成本漲幅)。
 // 選項：
 //   replaceAll: true  — 清空 performance_data 後再匯入本批（避免歷史週期殘留)
 //   clearOlderThan: "YYYY-MM-DD" — 在 merge 前刪除 period_end < 此日 的舊紀錄
 export function mergeIntoState(validRecs, options = {}) {
   const { replaceAll = false, clearOlderThan = null } = options;
-  const key = (r) => `${r.ad_code || r.ad_id}|${r.product_id}|${r.period_start || ""}|${r.period_end || ""}`;
+  const key = (r) => `${r.ad_code ? normalizeAdCode(r.ad_code) : r.ad_id}|${r.product_id}|${r.period_start || ""}|${r.period_end || ""}`;
   let kept = 0, replaced = 0, dropped = 0;
   update((st) => {
     let existing = st.performance_data || [];

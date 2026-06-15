@@ -3055,44 +3055,22 @@ function openWeightAdjust(seg) {
 
     update((st) => {
       const snapshotIds = result.mode === "split"
-        ? [...new Set([seg.id, ...(result.segsToRename || []).map((a) => a.id)])]
+        ? [...new Set(result.snapshotIds || [seg.id])]
         : [seg.id];
       const ad_snapshots = captureUndoSnapshot(st, snapshotIds);
       const added_ad_ids = [];
 
       if (result.mode === "split") {
-        // 拆 t 流程:
-        // 1) 把 source 同 chain 所有段改名 → tVariantCode + 補 split_pair_id/role + code_at_creation
-        const renameTo = result.sourceRename.to;
-        const fromCode = result.sourceRename.from;
-        for (const oldSeg of result.segsToRename) {
-          const live = st.ads.find((a) => a.id === oldSeg.id);
-          if (!live) continue;
-          if (!live.code_at_creation) live.code_at_creation = live.ad_code;
-          live.ad_code = renameTo;
-          live.split_pair_id = result.pairId;
-          live.split_role = "t_variant";
-        }
-        // 2) same-start 直接覆寫 source;切段才把 source 舊段 trim 後再 push 新 t 段。
+        // 非配對舊資料第一次拆 t 時,也要維持 canonical:
+        // parent 只承載一般產品,t-variant 只承載破圈產品。
         const sourceIdx = st.ads.findIndex((a) => a.id === seg.id);
         if (sourceIdx >= 0 && result.sourceReplacement) {
           st.ads[sourceIdx] = { ...st.ads[sourceIdx], ...result.sourceReplacement };
-        } else if (sourceIdx >= 0 && result.closed) {
-          st.ads[sourceIdx] = {
-            ...st.ads[sourceIdx],
-            ...result.closed,
-            ad_code: renameTo,
-            split_pair_id: result.pairId,
-            split_role: "t_variant",
-          };
         }
-        // 3) push 破圈側新段(若有) + 一般側新 ad
-        if (result.sourceNewSeg) {
-          st.ads.push(result.sourceNewSeg);
-          added_ad_ids.push(result.sourceNewSeg.id);
+        for (const added of result.addedSegments || []) {
+          st.ads.push(added);
+          added_ad_ids.push(added.id);
         }
-        st.ads.push(result.newGeneralAd);
-        added_ad_ids.push(result.newGeneralAd.id);
       } else {
         // 一般 / 已 in_pair 路徑
         const i = st.ads.findIndex((a) => a.id === seg.id);
@@ -3131,7 +3109,7 @@ function openWeightAdjust(seg) {
         action_type: "手動改權重",
         description: buildTodoDesc(seg, newWeights, st.products, seg.weights, eff)
           + (result.mode === "split"
-            ? `\n\n⚙️ 自動拆 t:${result.sourceRename.from} → ${result.sourceRename.to}(同家族碰撞觸發)`
+            ? `\n\n⚙️ 自動拆 t:${result.sourceRename.parentCode} + ${result.sourceRename.tVariantCode}(同家族碰撞觸發)`
             : ""),
         status: "pending",
         undo_payload: buildAdUndoPayload(st, ad_snapshots, added_ad_ids, [...snapshotIds, ...added_ad_ids]),
@@ -3141,7 +3119,7 @@ function openWeightAdjust(seg) {
     modal.close();
     toast(
       result.mode === "split"
-        ? `已套用權重調整 + 自動拆 t(${result.sourceRename.from} → ${result.sourceRename.to})`
+        ? `已套用權重調整 + 自動拆 t(${result.sourceRename.parentCode} + ${result.sourceRename.tVariantCode})`
         : "已產生新段(權重調整),已建立待辦",
       "ok"
     );

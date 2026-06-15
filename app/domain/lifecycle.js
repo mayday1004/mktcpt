@@ -101,24 +101,20 @@ export function buildWeightAdjust(source, effectiveDate, newWeights, notes) {
 // 對非配對的 source ad 做權重調整時,若新 weights 觸發同家族母+破圈碰撞,自動拆 pair。
 //
 // 流程:
-//   1. source 整支廣告 ad_code 改名為 stXXXt(所有段 ad_code 跟著改;歷史段 code_at_creation 保留原代碼)
-//   2. source 開新段 5/14 起,weights = 破圈側
-//   3. 新建一般側 ad(stXXX),5/14 起,weights = 一般側
+//   1. 依 source 原代碼決定語意側:stXXX 留 parent,stXXXt 留 t-variant
+//   2. 生效日前若舊 weights 已混合,補出另一側歷史段,讓歷史也符合 canonical
+//   3. 生效日起建立 parent / t-variant 的新段(或 same-start 原地覆寫 source 側)
 //   4. 兩支共用新生 split_pair_id
 //
 // 回傳:
 //   {
 //     mode: "split",
 //     pairId,
-//     sourceRename: { from, to },           // source ad 改名前後
-//     sourceClosedSeg: <trim 後的舊段>,      // 舊段內存物件已被 trim
-//     sourceNewSeg: <破圈側新段 ad 物件>,    // caller push 進 state.ads
-//     newGeneralAd: <一般側新 ad 物件>,      // caller push 進 state.ads
-//     sourceCodeUpdates: [...]              // source 同一 ad 鏈的所有歷史段需要改 ad_code 的清單
+//     sourceRename: { from, to, parentCode, tVariantCode },
+//     sourceReplacement: <source id 覆寫後段>,
+//     addedSegments: <補出的另一側歷史段 + 生效日後新增段>,
+//     snapshotIds: <撤回前需 snapshot 的原段 ids>
 //   }
-//
-// 注意:caller 拿到 sourceCodeUpdates 後,要對 source 的所有歷史段(用 ad_code 比對)做 ad_code 更新
-//      + 設 code_at_creation 為原代碼(如果還沒設)
 export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, newWeights, options) {
   const { notes, allSegsOfSource } = options || {};
   if (effectiveDate < source.start_date || effectiveDate >= source.end_date) {
@@ -141,8 +137,9 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
   }
 
   // Case C: 沒在 pair + 有碰撞 → 觸發拆 t
-  // 若生效日等於段起始日,直接原地改成 t-variant 並補 parent,不產生空段。
-  const { normal, poquan, normalSum, poquanSum, normalInternal, poquanInternal } = splitWeightsByFamily(newWeights, products);
+  // 若生效日等於段起始日,source 留在原語意側並補另一側,不產生空段。
+  const afterSides = splitWeightsByFamily(newWeights, products);
+  const { normalSum, poquanSum } = afterSides;
   if (normalSum <= 0 || poquanSum <= 0) {
     // 理論上 detectFamilyCollision === true 必然兩側都有,這是保險
     const out = buildWeightAdjust(source, effectiveDate, newWeights, notes);
@@ -151,93 +148,123 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
 
   const { parentCode, tVariantCode } = deriveSplitCodes(source.ad_code);
   const pairId = `pair_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-  const totalSum = normalSum + poquanSum;
-  const generalRatio = normalSum / totalSum;
-  const poquanRatio = poquanSum / totalSum;
+  const sameStart = effectiveDate === source.start_date;
+  const beforeSides = splitWeightsByFamily(source.weights || {}, products);
+  const sourceRole = /[tT]$/.test(String(source.ad_code || "")) ? "t_variant" : "parent";
+  const otherRole = sourceRole === "parent" ? "t_variant" : "parent";
+  const codeForRole = (role) => role === "parent" ? parentCode : tVariantCode;
+  const sideOf = (sides, role) => role === "parent"
+    ? { raw: sides.normal, sum: sides.normalSum, internal: sides.normalInternal }
+    : { raw: sides.poquan, sum: sides.poquanSum, internal: sides.poquanInternal };
+  const baseOrig = Number(source.amount_orig) || Number(source.amount_cny) || 0;
+  const baseCny = Number(source.amount_cny) || 0;
+  const baseTwd = Number(source.amount_twd) || 0;
   const baseDaily = Number(source.daily_amort_twd)
     || (Number(source.amount_twd) / Number(source.amortize_days) || 0);
-  const sameStart = effectiveDate === source.start_date;
+  const splitNote = notes && String(notes).trim()
+    ? `${String(notes).trim()}(同家族碰撞,自動拆 t)`
+    : "權重含同家族母+破圈,自動拆 t 配對";
 
-  // 1) source 段 trim end → effectiveDate
-  const closed = sameStart ? null : trimEnd(source, effectiveDate);
-
-  // 2) source 開新段:破圈側,代碼變 stXXXt
-  const poquanPatch = {
-    ad_code: tVariantCode,
-    ad_name: source.ad_name,  // 名稱不自動加 t,避免污染(若使用者要 visually 區分可手動)
-    start_date: effectiveDate,
-    end_date: source.end_date,
-    amount_orig: round2((Number(source.amount_orig) || Number(source.amount_cny) || 0) * poquanRatio),
-    amount_cny: round2((Number(source.amount_cny) || 0) * poquanRatio),
-    amount_twd: (Number(source.amount_twd) || 0) * poquanRatio,
-    daily_amort_twd: baseDaily * poquanRatio,
-    weights: { ...poquanInternal },
-    purchase_mode: pickPurchaseMode(poquanInternal),
-    renewal_reason: "拆t改名",
-    notes: notes && String(notes).trim()
-      ? `${String(notes).trim()}(同家族碰撞,自動拆 t)`
-      : "權重含同家族母+破圈,自動拆 t 配對",
-    split_pair_id: pairId,
-    split_role: "t_variant",
-    code_at_creation: tVariantCode,
-  };
-  const sourceReplacement = sameStart ? { ...source, ...poquanPatch } : null;
-  const sourceNewSeg = sameStart ? null : spawnFrom(source, poquanPatch);
-
-  // 3) 新建一般側 ad(stXXX)
-  const newGeneralAd = {
-    id: uid("ad"),
-    ad_code: parentCode,
-    ad_name: source.ad_name,
-    group: source.group || "",
-    currency: source.currency || "CNY",
-    amount_orig: round2((Number(source.amount_orig) || Number(source.amount_cny) || 0) * generalRatio),
-    currency_rate: source.currency_rate || 1,
-    amount_cny: round2((Number(source.amount_cny) || 0) * generalRatio),
-    exchange_rate: source.exchange_rate,
-    amount_twd: (Number(source.amount_twd) || 0) * generalRatio,
-    start_date: effectiveDate,
-    end_date: source.end_date,
-    amortize_days: source.amortize_days,
-    daily_amort_twd: baseDaily * generalRatio,
-    purchase_mode: pickPurchaseMode(normalInternal),
-    weights: { ...normalInternal },
-    lock_perf_adjust: false,
-    lock_full: false,
-    ad_copy: source.ad_copy || "",
-    contact_tg: source.contact_tg || "",
-    contact_info: source.contact_info || "",
-    short_url_type: source.short_url_type || "",
-    short_url_param: source.short_url_param || "",
-    short_url_old_override: source.short_url_old_override || "",
-    short_url_new_override: source.short_url_new_override || "",
-    short_url_old_prefix: source.short_url_old_prefix || "",
-    short_url_notified: !!source.short_url_notified,
-    eliminated: false,
-    renewal_of: null,
-    renewal_reason: "初始",
-    notes: `自動拆 t 配對(由 ${source.ad_code} 觸發,${effectiveDate} 起)`,
-    split_pair_id: pairId,
-    split_role: "parent",
-    code_at_creation: parentCode,
+  const makeSidePatch = (sides, role, startDate, endDate, renewalOf, renewalReason, opts = {}) => {
+    const side = sideOf(sides, role);
+    const total = (Number(sides.normalSum) || 0) + (Number(sides.poquanSum) || 0);
+    const ratio = total > 0 ? side.sum / total : 0;
+    return {
+      ad_code: codeForRole(role),
+      ad_name: source.ad_name,
+      group: source.group || "",
+      currency: source.currency || "CNY",
+      amount_orig: round2(baseOrig * ratio),
+      currency_rate: source.currency_rate || 1,
+      amount_cny: round2(baseCny * ratio),
+      exchange_rate: source.exchange_rate,
+      amount_twd: baseTwd * ratio,
+      start_date: startDate,
+      end_date: endDate,
+      amortize_days: source.amortize_days,
+      daily_amort_twd: baseDaily * ratio,
+      purchase_mode: pickPurchaseMode(side.internal),
+      weights: { ...side.internal },
+      lock_perf_adjust: opts.preserveSourceFlags ? !!source.lock_perf_adjust : false,
+      lock_full: opts.preserveSourceFlags ? !!source.lock_full : false,
+      ad_copy: source.ad_copy || "",
+      contact_tg: source.contact_tg || "",
+      contact_info: source.contact_info || "",
+      short_url_type: source.short_url_type || "",
+      short_url_param: source.short_url_param || "",
+      short_url_old_override: source.short_url_old_override || "",
+      short_url_new_override: source.short_url_new_override || "",
+      short_url_old_prefix: source.short_url_old_prefix || "",
+      short_url_notified: !!source.short_url_notified,
+      eliminated: opts.preserveSourceFlags ? !!source.eliminated : false,
+      renewal_of: renewalOf || null,
+      renewal_reason: renewalReason,
+      notes: opts.notes || splitNote,
+      split_pair_id: pairId,
+      split_role: role,
+      code_at_creation: codeForRole(role),
+    };
   };
 
-  // 4) 收集 source 同代碼所有歷史段(需要改 ad_code stXXX → stXXXt)
-  // caller 提供 allSegsOfSource(同 ad_code + 同 renewal chain 的所有段)
-  // 沒提供時退而求其次:只改 source 自身
-  const segsToRename = Array.isArray(allSegsOfSource) && allSegsOfSource.length > 0
-    ? allSegsOfSource
-    : [source];
+  const addedSegments = [];
+  const sourceSideAfter = sideOf(afterSides, sourceRole);
+  const otherSideAfter = sideOf(afterSides, otherRole);
+  const otherSideBefore = sideOf(beforeSides, otherRole);
+  const originalEnd = source.end_date;
+
+  let sourceReplacement;
+  let sourcePostSeg = null;
+  let otherPreSeg = null;
+
+  if (sameStart) {
+    sourceReplacement = {
+      ...source,
+      ...makeSidePatch(afterSides, sourceRole, effectiveDate, originalEnd, source.renewal_of || null, source.renewal_reason || "權重調整", { preserveSourceFlags: true }),
+    };
+  } else {
+    sourceReplacement = {
+      ...source,
+      ...makeSidePatch(beforeSides, sourceRole, source.start_date, effectiveDate, source.renewal_of || null, source.renewal_reason || "初始", {
+        preserveSourceFlags: true,
+        notes: source.notes || "",
+      }),
+    };
+    sourcePostSeg = {
+      id: uid("ad"),
+      ...makeSidePatch(afterSides, sourceRole, effectiveDate, originalEnd, source.id, "權重調整", { preserveSourceFlags: true }),
+    };
+    if (sourceSideAfter.sum > 0) addedSegments.push(sourcePostSeg);
+  }
+
+  if (!sameStart && otherSideBefore.sum > 0) {
+    otherPreSeg = {
+      id: uid("ad"),
+      ...makeSidePatch(beforeSides, otherRole, source.start_date, effectiveDate, null, source.renewal_reason || "初始", {
+        notes: `自動拆 t 配對(由 ${source.ad_code} 歷史段補正,${source.start_date} 起)`,
+      }),
+    };
+    addedSegments.push(otherPreSeg);
+  }
+
+  if (otherSideAfter.sum > 0) {
+    const otherRenewalOf = otherPreSeg?.id || null;
+    addedSegments.push({
+      id: uid("ad"),
+      ...makeSidePatch(afterSides, otherRole, effectiveDate, originalEnd, otherRenewalOf, otherRenewalOf ? "權重調整" : "拆t改名", {
+        notes: `自動拆 t 配對(由 ${source.ad_code} 觸發,${effectiveDate} 起)`,
+      }),
+    });
+  }
 
   return {
     mode: "split",
     pairId,
-    sourceRename: { from: source.ad_code, to: tVariantCode },
-    closed,             // trim 過的 source 段(同物件)
-    sourceReplacement,  // same-start split 時直接覆寫 source,避免產生空段
-    sourceNewSeg,       // 破圈側新段(carrying split_pair_id + split_role='t_variant')
-    newGeneralAd,       // 一般側新 ad(carrying split_pair_id + split_role='parent')
-    segsToRename,       // 需要改 ad_code + 標 split_pair_id/role + 補 code_at_creation 的歷史段清單
+    sourceRename: { from: source.ad_code, to: codeForRole(sourceRole), parentCode, tVariantCode },
+    sourceReplacement,  // source id 保留在原語意側:stXXX=parent,stXXXt=t-variant
+    addedSegments,      // 補出的另一側歷史段 + 生效日後雙側段
+    sourceRole,
+    otherRole,
+    snapshotIds: [source.id],
   };
 }
 

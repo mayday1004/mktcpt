@@ -184,7 +184,7 @@ function renderImportCard() {
         <div id="perf-import-status" class="sync-status"></div>
       </div>
       <div class="perf-import-note">
-        匯入規則:依 (廣告代碼 × 產品 × 期間) 去重;不同週的資料會並存。依產品瀏覽會把最近 2 週指標相加,依廣告瀏覽會比對「上週 vs 上上週」。同一基本碼支援 dh 前綴與英文字尾變體的模糊比對。
+        匯入規則:依 (廣告代碼 × 產品 × 期間) 去重;不同週的資料會並存。依產品瀏覽會把最近 2 週指標相加,依廣告瀏覽會比對「上週 vs 上上週」。同一基本碼支援 dh/h5dh 前綴與英文字尾變體的模糊比對。
       </div>
     </div>
   `;

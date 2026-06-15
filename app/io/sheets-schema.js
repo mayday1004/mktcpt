@@ -11,8 +11,8 @@ import {
 // Apps Script 從外部平台拉數據，寫入此分頁。資料期間由使用者自填起訖日，
 // 每週匯入 2 週資料。前端收資料時：
 //   1. 用 (廣告代碼 fuzzy-match, 對應產品) + 期間重疊解析到 ad_id
-//      fuzzy 規則：去掉可選的 "dh" 前綴與可選的英文字尾後比對基本碼。
-//      範例：st100 = dhst100 = st100H = dhst100H；不等於 st1002、dhst1002J。
+//      fuzzy 規則：去掉可選的 "dh" / "h5dh" 前綴與可選的英文字尾後比對基本碼。
+//      範例：st100 = dhst100 = h5dhst100 = st100H = h5dhst100H；不等於 st1002、dhst1002J。
 //   2. 花費由系統內部算（daily_amort × weight × days），不從這裡拿
 //   3. 同 (ad_code, 產品) 只保留最新匯入；重名有衝突在預覽 modal 讓使用者選
 // 外部來源不會給 花費，故 METRICS 中排除 "花費" 欄。
@@ -27,17 +27,18 @@ export const PERF_INPUT_HEADERS = [
 // 將外部後台代碼正規化為基本碼,讓「後台 noise 變體」可以對齊,但保留語意尾綴。
 //
 // 規則(per-product 等價類):
-//   1. 前綴 `dh`(大小寫不分)→ 後台 noise,砍掉。
+//   1. 前綴 `dh` / `h5dh`(大小寫不分)→ 後台 noise,砍掉。
 //   2. 尾巴整段英文字母:
 //        - 剛好等於 `dh`(大小寫不分)→ **語意尾綴「第二位」**,保留為 `dh`。
 //        - 剛好等於 `t`(大小寫不分) → **語意尾綴「破圈」**, 保留為 `t`。
 //        - 其餘任何純字母尾(`H` / `J` / `h` / `j` / `ABC` / `XY` 等)→ 後台 noise,砍掉。
 //
 // 例:
-//   st100 = dhst100 = st100H = st100h = st100J = st100j → "st100"
-//   st100dh = st100DH = dhst100dh → "st100dh"  (第二位,跟 st100 不等)
-//   st100t = st100T → "st100t"                 (破圈,跟 st100 不等)
-//   st1002 / dhst1002J → "st1002"
+//   st100 = dhst100 = h5dhst100 = st100H = h5dhst100H → "st100"
+//   670 = dh670 = h5dh670 = h5dh670H → "670"
+//   st100dh = st100DH = dhst100dh = h5dhst100dh → "st100dh"  (第二位,跟 st100 不等)
+//   st100t = st100T = h5dhst100t → "st100t"                 (破圈,跟 st100 不等)
+//   st1002 / dhst1002J / h5dhst1002J → "st1002"
 //
 // 注意:
 //   - 語意尾綴必須**整段**剛好命中(避免 `st100tH` / `st100Hdh` 之類的混合
@@ -47,7 +48,7 @@ const SEMANTIC_SUFFIXES = new Set(["t", "dh"]);
 export function normalizeAdCode(code) {
   let s = String(code || "").trim();
   if (!s) return "";
-  s = s.replace(/^dh/i, "");                       // 1. 砍可選 dh 前綴
+  s = s.replace(/^(?:h5dh|dh)/i, "");              // 1. 砍可選 h5dh / dh 前綴
   const m = s.match(/^(.*?)([a-zA-Z]+)$/);
   if (!m) return s.toLowerCase();
   const [, base, tail] = m;
@@ -551,8 +552,9 @@ export function assembleFromTables(raw) {
     const periodStart = toYmd(o["資料起始日"]);
     const periodEnd = toYmd(o["資料結束日"]);
     // 用 (廣告代碼, 對應產品, 期間重疊最大者) 解析回 ad_id；廣告名稱由匹配到的廣告補上
+    const adCodeBase = normalizeAdCode(adCode);
     const candidates = ads.filter(
-      (a) => a.ad_code === adCode
+      (a) => normalizeAdCode(a.ad_code) === adCodeBase
         && Number(a.weights?.[productId]) > 0
         && a.start_date < periodEnd
         && a.end_date > periodStart
@@ -571,10 +573,10 @@ export function assembleFromTables(raw) {
       pickedAd = best;
     }
     // 若無法匹配（例：廣告已刪），仍允許保留紀錄但 ad_id 為空、ad_name 退而求其次以 code 做替代
-    const fallbackName = ads.find((a) => a.ad_code === adCode)?.ad_name || "";
+    const fallbackName = ads.find((a) => normalizeAdCode(a.ad_code) === adCodeBase)?.ad_name || "";
     const rec = {
       ad_id: pickedAd?.id || "",
-      ad_code: adCode,
+      ad_code: pickedAd?.ad_code || adCode,
       ad_name: pickedAd?.ad_name || fallbackName,
       product_id: productId,
       group: String(o["廣告分組"] || pickedAd?.group || ""),
