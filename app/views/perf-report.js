@@ -849,6 +849,10 @@ function renderAdView(state) {
 
   const today = todayTaipei();
   const weekRange = naturalWeekRange(today);
+  const lastWeightWeekRange = {
+    start: addDays(weekRange.start, -7),
+    end: addDays(weekRange.end, -7),
+  };
 
   const rows = [];
   for (const [code, segs] of codesMap) {
@@ -881,8 +885,8 @@ function renderAdView(state) {
       )
     );
     if (!hasIslandSeg && !hasIslandPerf) continue;
-    const weekWeights = latestSnapshotWeightsForRange(segs, thisWeek);
-    const previousWeights = previousSnapshotWeightsBefore(segs, weekWeights);
+    const currentWeekWeights = latestSnapshotWeightsForRange(segs, weekRange);
+    const lastWeekWeights = latestSnapshotWeightsForRange(segs, lastWeightWeekRange);
     const rep = { ...latest, weights: mergedWeights };
     rows.push(buildAdRowData(
       state,
@@ -895,8 +899,8 @@ function renderAdView(state) {
       appProducts,
       weekRange,
       today,
-      weekWeights,
-      previousWeights
+      currentWeekWeights,
+      lastWeekWeights
     ));
   }
 
@@ -915,7 +919,7 @@ function renderAdView(state) {
   });
 
   const colStats = computeColumnStats(rows, islandProducts);
-  return renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, weekRange);
+  return renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, weekRange, lastWeightWeekRange);
 }
 
 function listUniquePeriods(state) {
@@ -966,32 +970,6 @@ function latestSnapshotWeightsForRange(segs, range) {
   return buildSnapshotWeights(snapshotSegs.length > 0 ? snapshotSegs : [referenceSeg], referenceSeg);
 }
 
-function latestSnapshotWeightsAsOf(segs, ymd) {
-  if (!ymd) return null;
-  const valid = (segs || []).filter((seg) => seg.start_date && seg.end_date);
-  const active = valid.filter((seg) => seg.start_date <= ymd && seg.end_date > ymd);
-  if (active.length === 0) return null;
-  const referenceSeg = active.slice().sort((a, b) =>
-    (b.start_date || "").localeCompare(a.start_date || "") ||
-    (b.end_date || "").localeCompare(a.end_date || "")
-  )[0];
-  return buildSnapshotWeights(active, referenceSeg);
-}
-
-function previousSnapshotWeightsBefore(segs, currentSnapshot) {
-  const currentStart = currentSnapshot?.referenceStart;
-  if (!currentStart) return null;
-  const dates = [...new Set((segs || [])
-    .map((seg) => seg.start_date || "")
-    .filter((date) => date && date < currentStart))]
-    .sort((a, b) => b.localeCompare(a));
-  for (const date of dates) {
-    const snapshot = latestSnapshotWeightsAsOf(segs, date);
-    if (snapshot) return snapshot;
-  }
-  return null;
-}
-
 function buildSnapshotWeights(activeSnapshotSegs, referenceSeg) {
   const weightsByPid = new Map();
   for (const seg of activeSnapshotSegs) {
@@ -1029,7 +1007,7 @@ function sumWeightsForProducts(snapshot, products) {
   return products.reduce((sum, p) => sum + (Number(weights[p.id]) || 0), 0);
 }
 
-function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today, weekWeights = null, previousWeights = null) {
+function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandProducts, appProducts, weekRange, today, currentWeekWeights = null, lastWeekWeights = null) {
   const reportVars = getReportVars(state);
   const adMatch = (rr) => rr.ad_code === code || rr.ad_id === rep.id || rr.ad_name === rep.ad_name;
   const thisRecs = (state.performance_data || []).filter((r) =>
@@ -1107,10 +1085,10 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
   // 已到期:此 ad_code 跨所有段的最晚 end_date <= today(end_date 是 exclusive)
   const maxEnd = allSegs.reduce((m, a) => ((a.end_date || "") > m ? (a.end_date || "") : m), "");
   const expired = !!maxEnd && maxEnd <= today;
-  const islandWeightPct = sumWeightsForProducts(weekWeights, islandProducts);
-  const previousIslandWeightPct = sumWeightsForProducts(previousWeights, islandProducts);
-  const islandWeightDelta = islandWeightPct != null && previousIslandWeightPct != null
-    ? islandWeightPct - previousIslandWeightPct
+  const islandWeightPct = sumWeightsForProducts(currentWeekWeights, islandProducts);
+  const lastWeekIslandWeightPct = sumWeightsForProducts(lastWeekWeights, islandProducts);
+  const islandWeightDelta = islandWeightPct != null && lastWeekIslandWeightPct != null
+    ? islandWeightPct - lastWeekIslandWeightPct
     : null;
 
   return {
@@ -1123,11 +1101,11 @@ function buildAdRowData(state, code, rep, allSegs, thisWeek, lastWeek, islandPro
     rateRatio: bestRate?.ratio ?? null,
     status,
     expired,
-    islandWeightIndependent: weekWeights?.independent100 === true,
+    islandWeightIndependent: currentWeekWeights?.independent100 === true,
     islandWeightPct,
-    previousIslandWeightPct,
-    weekWeightStart: weekWeights?.referenceStart || "",
-    previousWeightStart: previousWeights?.referenceStart || "",
+    lastWeekIslandWeightPct,
+    currentWeekWeightStart: currentWeekWeights?.referenceStart || "",
+    lastWeekWeightStart: lastWeekWeights?.referenceStart || "",
     islandWeightDelta,
   };
 }
@@ -1290,7 +1268,7 @@ function fmtPctSigned(v) {
   return `${sign}${rounded.toLocaleString()}%`;
 }
 
-function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, weekRange) {
+function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, weekRange, lastWeightWeekRange) {
   if (rows.length === 0) {
     return `<div class="card"><p class="ink-3">上週 ${thisWeek.start}~${thisWeek.end} 沒有任何含小島權重的廣告。</p></div>`;
   }
@@ -1344,16 +1322,16 @@ function renderAdViewHtml(rows, islandProducts, colStats, thisWeek, lastWeek, we
       : `<td></td>`;
 
     const islandWeightCell = row.islandWeightIndependent
-      ? `<td class="num ink-3" title="上週截面是單一產品 100% 的獨立採買，不加總顯示">-</td>`
+      ? `<td class="num ink-3" title="本週截面是單一產品 100% 的獨立採買，不加總顯示">-</td>`
       : row.islandWeightPct != null
-      ? `<td class="num" title="上週 ${esc(thisWeek.start)}~${esc(thisWeek.end)} 內最後權重${row.weekWeightStart ? `（${esc(row.weekWeightStart)} 起）` : ""}的小島產品加總">${fmtPct(row.islandWeightPct)}</td>`
+      ? `<td class="num" title="本週 ${esc(weekRange.start)}~${esc(weekRange.end)} 內最後權重${row.currentWeekWeightStart ? `（${esc(row.currentWeekWeightStart)} 起）` : ""}的小島產品加總">${fmtPct(row.islandWeightPct)}</td>`
       : `<td class="num ink-3">—</td>`;
 
     const islandDeltaCls = row.islandWeightDelta > 0 ? "ok" : row.islandWeightDelta < 0 ? "bad" : "";
     const islandDeltaCell = row.islandWeightIndependent
-      ? `<td class="num ink-3" title="上週截面為獨立 100%，不計算上週增減">-</td>`
+      ? `<td class="num ink-3" title="本週截面為獨立 100%，不計算上週增減">-</td>`
       : row.islandWeightDelta != null
-      ? `<td class="num ${islandDeltaCls}" title="上週小島權重 ${fmtPct(row.islandWeightPct)} - 上次權重${row.previousWeightStart ? `（${esc(row.previousWeightStart)} 起）` : ""} ${fmtPct(row.previousIslandWeightPct)}"><strong>${fmtPctSigned(row.islandWeightDelta)}</strong></td>`
+      ? `<td class="num ${islandDeltaCls}" title="本週小島權重 ${fmtPct(row.islandWeightPct)} - 上週 ${esc(lastWeightWeekRange.start)}~${esc(lastWeightWeekRange.end)} 權重${row.lastWeekWeightStart ? `（${esc(row.lastWeekWeightStart)} 起）` : ""} ${fmtPct(row.lastWeekIslandWeightPct)}"><strong>${fmtPctSigned(row.islandWeightDelta)}</strong></td>`
       : `<td class="num ink-3">—</td>`;
 
     return `
