@@ -192,6 +192,41 @@ export function removeYourlsActionsForTodo(state, todo) {
   return before - state.yourls_actions.length;
 }
 
+function actionBelongsToTodo(action, todoId, actionIds) {
+  const actionId = String(action?.action_id || "");
+  if (actionIds.size > 0 && actionIds.has(actionId)) return true;
+  return !!todoId && String(action?.todo_id || "") === todoId;
+}
+
+export function markYourlsTodoApplied(state, todo, { now = "" } = {}) {
+  if (!todo || !isYourlsTodo(todo)) return { updatedActions: 0, actionIds: [] };
+  state.yourls_actions = Array.isArray(state.yourls_actions) ? state.yourls_actions : [];
+
+  const todoId = String(todo.id || "");
+  const actionIds = new Set((todo.yourls_action_ids || []).map((id) => String(id || "")).filter(Boolean));
+  const appliedAt = String(now || "");
+  const matchedActionIds = [];
+  let updatedActions = 0;
+
+  for (const action of state.yourls_actions) {
+    if (!actionBelongsToTodo(action, todoId, actionIds)) continue;
+    action.status = YOURLS_STATUSES.applied;
+    action.completed_at = appliedAt || action.completed_at || "";
+    action.updated_at = appliedAt || action.updated_at || "";
+    action.last_error = "";
+    if (action.action_id) matchedActionIds.push(action.action_id);
+    updatedActions++;
+  }
+
+  todo.status = "done";
+  todo.yourls_status = YOURLS_STATUSES.applied;
+  todo.yourls_applied_at = appliedAt || todo.yourls_applied_at || "";
+  todo.yourls_last_error = "";
+  if (matchedActionIds.length > 0) todo.yourls_action_ids = matchedActionIds;
+
+  return { updatedActions, actionIds: matchedActionIds };
+}
+
 export function parsePayloadJson(raw) {
   if (raw && typeof raw === "object") return raw;
   const text = String(raw || "").trim();

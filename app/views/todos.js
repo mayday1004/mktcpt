@@ -8,6 +8,7 @@ import {
   approveYourlsTodo,
   canApproveYourlsTodo,
   isYourlsTodo,
+  markYourlsTodoApplied,
   removeYourlsActionsForTodo,
   todoYourlsPayloads,
   yourlsPayloadWaitsForEffectiveDate,
@@ -57,6 +58,17 @@ function firstYourlsEffectiveDate(todo) {
 function isFutureYourlsTodo(todo) {
   const date = firstYourlsEffectiveDate(todo);
   return !!date && date > todayTaipei();
+}
+
+function markTodoDoneInState(st, id, fields = {}, now = nowTaipeiStamp()) {
+  const idx = st.todos.findIndex((x) => x.id === id);
+  if (idx < 0) return false;
+  st.todos[idx] = { ...st.todos[idx], ...fields, status: "done" };
+  if (isYourlsTodo(st.todos[idx])) {
+    markYourlsTodoApplied(st, st.todos[idx], { now });
+  }
+  applyDoneEliminateTodos(st);
+  return true;
 }
 
 export function render(root) {
@@ -205,12 +217,9 @@ export function render(root) {
 
   root.querySelectorAll("[data-done]").forEach((el) => {
     el.onclick = () => {
+      const doneAt = nowTaipeiStamp();
       update((st) => {
-        const t = st.todos.find((x) => x.id === el.dataset.done);
-        if (t) {
-          t.status = "done";
-          applyDoneEliminateTodos(st);
-        }
+        markTodoDoneInState(st, el.dataset.done, {}, doneAt);
       }, "完成待辦");
       toast("已標記完成", "ok");
     };
@@ -290,7 +299,8 @@ function pendingTodoButtons(todo) {
   const status = String(todo.yourls_status || "");
   if (canApproveYourlsTodo(todo)) {
     const label = status === "failed" ? "重新批准" : "批准";
-    return `<button data-edit="${todo.id}">編輯</button> <button class="primary" data-yourls-approve="${todo.id}">${label}</button>`;
+    const doneButton = status === "failed" ? ` <button data-done="${todo.id}" title="已人工確認 Yourls 後台完成">完成</button>` : "";
+    return `<button data-edit="${todo.id}">編輯</button> <button class="primary" data-yourls-approve="${todo.id}">${label}</button>${doneButton}`;
   }
   if (status === "queued" && isFutureYourlsTodo(todo)) return `<button data-edit="${todo.id}">編輯</button> <button disabled>排程中</button>`;
   if (status === "queued") return `<button data-edit="${todo.id}">編輯</button> <button disabled>等待 Yourls</button>`;
@@ -382,12 +392,9 @@ function openTodoEditor(id) {
     dlg.querySelector("#t-mark-done").onclick = () => {
       const fields = readTodoEditorFields();
       if (!fields) return;
+      const doneAt = nowTaipeiStamp();
       update((st) => {
-        const idx = st.todos.findIndex((x) => x.id === id);
-        if (idx >= 0) {
-          st.todos[idx] = { ...st.todos[idx], ...fields, status: "done" };
-          applyDoneEliminateTodos(st);
-        }
+        markTodoDoneInState(st, id, fields, doneAt);
       }, "完成待辦");
       modal.close();
       toast("已標記完成", "ok");
