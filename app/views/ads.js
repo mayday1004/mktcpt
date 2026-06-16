@@ -1561,7 +1561,7 @@ function rangesOverlap(a, b) {
     a.start_date < b.end_date && b.start_date < a.end_date);
 }
 
-function deleteTargetsForSegment(allAds, seg) {
+function pairedTargetsForSegment(allAds, seg) {
   if (!seg) return [];
   const targets = [seg];
   if (seg.split_pair_id) {
@@ -1577,6 +1577,14 @@ function deleteTargetsForSegment(allAds, seg) {
     seen.add(id);
     return true;
   });
+}
+
+function deleteTargetsForSegment(allAds, seg) {
+  return pairedTargetsForSegment(allAds, seg);
+}
+
+function editTargetsForSegment(allAds, seg) {
+  return pairedTargetsForSegment(allAds, seg);
 }
 
 function deleteTargetDetails(targets) {
@@ -2222,6 +2230,12 @@ function openEditor(id, renewFrom = null, prefill = null) {
   const readonlyWeights = id && a?.split_pair_id
     ? displayWeightsForAd(a, s.ads)
     : (a.weights || {});
+  const pairEditTargets = id ? editTargetsForSegment(s.ads, a) : [];
+  const isPairEdit = pairEditTargets.length > 1;
+  const pairEditTargetLabel = pairEditTargets
+    .filter((x) => x.id !== a.id)
+    .map((x) => x.ad_code)
+    .join("、");
   const shortUrlSelection = parseShortUrlType(a.short_url_type);
   const selectedShortUrlSlot = shortUrlSelection.slot || "L1";
 
@@ -2259,7 +2273,7 @@ function openEditor(id, renewFrom = null, prefill = null) {
         <div class="hint">起始月匯率 ${getUsdtToCnyRate(s, (a.start_date || s.settings.current_month).slice(0,7))}</div>
       </div>
       <span class="amount-op usdt-only">=</span>
-      <div class="field"><label>RMB 金額</label><input id="f-cny" type="number" step="any" value="${a.amount_cny || 0}" /></div>
+      <div class="field"><label>RMB 金額${isPairEdit ? "（此側金額）" : ""}</label><input id="f-cny" type="number" step="any" value="${a.amount_cny || 0}" /></div>
       <span class="amount-op">×</span>
       <div class="field">
         <label>RMB→TWD</label>
@@ -2279,6 +2293,11 @@ function openEditor(id, renewFrom = null, prefill = null) {
       <input id="f-daily" disabled value="0" />
       <div class="hint" id="f-daily-hint"></div>
     </div>
+    ${isPairEdit ? `
+    <div class="hint" style="padding:8px 10px;background:#f0f7ff;border:1px solid #cfe1f5;border-radius:6px;font-size:12px;line-height:1.5">
+      此段屬於配對廣告；儲存時會把日期 / 攤提天數同步到 ${esc(pairEditTargetLabel)}，金額依目前比例同比例更新配對側。
+    </div>
+    ` : ""}
 
     ${id ? `
     <h3 class="mt-16">權重分配（唯讀）</h3>
@@ -2724,7 +2743,10 @@ function openEditor(id, renewFrom = null, prefill = null) {
 
     update((st) => {
       // 撤回快照
-      const ad_snapshots = id ? captureUndoSnapshot(st, [id]) : [];
+      const liveSegForEdit = id ? st.ads.find((x) => x.id === id) : null;
+      const liveEditTargets = liveSegForEdit ? editTargetsForSegment(st.ads, liveSegForEdit) : [];
+      const liveEditTargetIds = liveEditTargets.map((x) => x.id).filter(Boolean);
+      const ad_snapshots = id ? captureUndoSnapshot(st, liveEditTargetIds.length ? liveEditTargetIds : [id]) : [];
       const added_ad_ids = [];
       const newAdId = uid("ad");
       // 自動拆 t 配對(2026-05,§5.7.2):依 collision 偵測決定是否建 pair
@@ -2744,10 +2766,46 @@ function openEditor(id, renewFrom = null, prefill = null) {
       } : { ...patch, code_at_creation: normalizedSingleCode };
       if (id) {
         const idx = st.ads.findIndex((x) => x.id === id);
-        st.ads[idx] = { ...st.ads[idx], ...finalPatch };
-        if (pairId) {
-          st.ads[idx].split_pair_id = pairId;
-          st.ads[idx].split_role = "parent";
+        if (idx < 0) return;
+        const sourceSeg = idx >= 0 ? st.ads[idx] : null;
+        const linkedTargets = sourceSeg ? editTargetsForSegment(st.ads, sourceSeg) : [];
+        const syncLinkedPair = linkedTargets.length > 1 && !splitWeights;
+        if (syncLinkedPair) {
+          const oldSourceCny = Number(sourceSeg.amount_cny) || 0;
+          const cnyRatio = oldSourceCny > 0 ? normalCny / oldSourceCny : 1;
+          const oldSourceOrig = Number(sourceSeg.amount_orig != null ? sourceSeg.amount_orig : sourceSeg.amount_cny) || 0;
+          const origRatio = oldSourceOrig > 0 ? amount_orig / oldSourceOrig : cnyRatio;
+          for (const target of linkedTargets) {
+            const targetIdx = st.ads.findIndex((x) => x.id === target.id);
+            if (targetIdx < 0) continue;
+            if (target.id === id) {
+              st.ads[targetIdx] = { ...st.ads[targetIdx], ...finalPatch };
+              continue;
+            }
+            const nextCny = round2((Number(target.amount_cny) || 0) * cnyRatio);
+            const baseOrig = Number(target.amount_orig != null ? target.amount_orig : target.amount_cny) || 0;
+            const nextOrig = currency === "USDT" ? round2(baseOrig * origRatio) : nextCny;
+            st.ads[targetIdx] = {
+              ...st.ads[targetIdx],
+              group: groupValue,
+              currency,
+              amount_orig: nextOrig,
+              currency_rate,
+              amount_cny: nextCny,
+              exchange_rate: rate,
+              amount_twd: nextCny * rate,
+              start_date: start,
+              end_date: end,
+              amortize_days: days,
+              daily_amort_twd: (nextCny * rate) / days,
+            };
+          }
+        } else {
+          st.ads[idx] = { ...st.ads[idx], ...finalPatch };
+          if (pairId) {
+            st.ads[idx].split_pair_id = pairId;
+            st.ads[idx].split_role = "parent";
+          }
         }
       } else {
         st.ads.push({
@@ -2829,7 +2887,9 @@ function openEditor(id, renewFrom = null, prefill = null) {
     modal.close();
     const successMsg = splitWeights
       ? `已儲存 2 支廣告(${splitCodes.parentCode} + ${splitCodes.tVariantCode}),已自動拆 t 配對,已建立待辦`
-      : (weightsChanged ? "已儲存,已建立待辦" : "已儲存");
+      : isPairEdit
+        ? "已儲存，配對側金額 / 日期已同步"
+        : (weightsChanged ? "已儲存,已建立待辦" : "已儲存");
     toast(successMsg, "ok");
   };
 }
