@@ -924,6 +924,12 @@ function renderFamily(fam, products) {
   const familyWeightBtn = familyPairId
     ? `<button class="family-weight-btn" data-fam-weight-pair="${esc(familyPairId)}" title="整體合約視角編輯權重(parent + t-variant 一次調)">權重調整</button>`
     : "";
+  const familyEditBtn = familyPairId
+    ? `<button class="family-edit-btn" data-fam-edit-pair="${esc(familyPairId)}" title="編輯整筆配對廣告資料">編輯</button>`
+    : "";
+  const familyActions = familyEditBtn || familyWeightBtn
+    ? `<span class="family-actions">${familyEditBtn}${familyWeightBtn}</span>`
+    : "";
 
   const familyHeader = `
     <tr class="family-head-row">
@@ -936,7 +942,7 @@ function renderFamily(fam, products) {
           <span class="family-roles">
             ${members.map((g) => `<span class="family-role-pill family-role-${familyRoleOf(g.code) === "一般" ? "normal" : familyRoleOf(g.code) === "破圈" ? "poquan" : "secondary"}">${esc(g.code)} <span class="family-role-tag">${familyRoleOf(g.code)}</span></span>`).join("")}
           </span>
-          ${familyWeightBtn ? `<span class="family-actions">${familyWeightBtn}</span>` : ""}
+          ${familyActions}
         </div>
       </td>
     </tr>
@@ -1731,6 +1737,9 @@ function bindHandlers(root, s) {
     };
   });
   // 家族列「權重調整」按鈕(2026-05,§5.7.2 整體合約視角編輯)
+  root.querySelectorAll("[data-fam-edit-pair]").forEach((el) => {
+    el.onclick = () => openFamilyEditor(el.dataset.famEditPair);
+  });
   root.querySelectorAll("[data-fam-weight-pair]").forEach((el) => {
     el.onclick = () => openFamilyWeightAdjust(el.dataset.famWeightPair);
   });
@@ -3186,26 +3195,137 @@ function openWeightAdjust(seg) {
   };
 }
 
-// 家族視角權重調整(§5.7.2):對 split_pair 的 parent + t-variant 一次編輯
-// 使用者以「整體合約 %」視角填權重(加總 = 100,跨 parent + t-variant);
-// 系統自動拆 normal/poquan、重算雙方 amount + 內部 weights(canonical form)。
-function openFamilyWeightAdjust(pairId) {
-  const s = getState();
-  // 找出 pair 兩支廣告的最新段(latest by start_date)
-  const pairAds = (s.ads || []).filter((a) => a.split_pair_id === pairId);
-  if (pairAds.length === 0) { toast("找不到此配對", "bad"); return; }
+function latestPairSides(pairId, state = getState()) {
+  const pairAds = (state.ads || []).filter((a) => a.split_pair_id === pairId);
+  if (pairAds.length === 0) return { pairAds, parentSeg: null, tVariantSeg: null };
   const byCode = new Map();
   for (const a of pairAds) {
     if (!byCode.has(a.ad_code)) byCode.set(a.ad_code, []);
     byCode.get(a.ad_code).push(a);
   }
-  const latestOf = (segs) => latestFirst(segs)[0];
-  const parentSeg = [...byCode.values()]
-    .map((segs) => latestOf(segs))
-    .find((seg) => seg.split_role === "parent");
-  const tVariantSeg = [...byCode.values()]
-    .map((segs) => latestOf(segs))
-    .find((seg) => seg.split_role === "t_variant");
+  const latestByCode = [...byCode.values()].map((segs) => latestFirst(segs)[0]).filter(Boolean);
+  const parentSeg = latestByCode.find((seg) => seg.split_role === "parent") ||
+    latestByCode.find((seg) => familyRoleOf(seg.ad_code) === "一般") || null;
+  const tVariantSeg = latestByCode.find((seg) => seg.split_role === "t_variant") ||
+    latestByCode.find((seg) => familyRoleOf(seg.ad_code) === "破圈") || null;
+  return { pairAds, parentSeg, tVariantSeg };
+}
+
+function openFamilyEditor(pairId) {
+  const s = getState();
+  const { parentSeg, tVariantSeg } = latestPairSides(pairId, s);
+  if (!parentSeg || !tVariantSeg) { toast("配對結構不完整(找不到 parent 或 t-variant)", "bad"); return; }
+
+  const parentAmt = Number(parentSeg.amount_cny) || 0;
+  const tvAmt = Number(tVariantSeg.amount_cny) || 0;
+  const oldTotal = parentAmt + tvAmt;
+  if (oldTotal <= 0) { toast("合約總額為 0,無法編輯", "bad"); return; }
+
+  const parentShare = parentAmt / oldTotal;
+  const tvShare = tvAmt / oldTotal;
+  const sameCurrency = (parentSeg.currency || "CNY") === (tVariantSeg.currency || "CNY");
+  const currency = sameCurrency ? (parentSeg.currency || "CNY") : "CNY";
+  const currencyRate = currency === "USDT" ? (Number(parentSeg.currency_rate) || 1) : 1;
+  const rate = Number(parentSeg.exchange_rate) || Number(tVariantSeg.exchange_rate) || 4.7;
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+  const html = `
+    <h2>編輯整筆廣告:${esc(parentSeg.ad_code)} / ${esc(tVariantSeg.ad_code)}</h2>
+    <div class="field-row">
+      <div class="field" style="flex:2"><label>廣告名稱</label><input id="fam-name" value="${esc(parentSeg.ad_name || "")}" /></div>
+      <div class="field"><label>廣告分組</label><input id="fam-group" value="${esc(parentSeg.group || "")}" /></div>
+    </div>
+    <div class="amount-row">
+      <div class="field"><label>合約總額 RMB</label><input id="fam-total-cny" type="number" step="any" value="${oldTotal}" /></div>
+      <span class="amount-op">×</span>
+      <div class="field"><label>RMB→TWD</label><input id="fam-rate" type="number" step="any" value="${rate}" /></div>
+      <span class="amount-op">=</span>
+      <div class="field"><label>台幣總額（自動）</label><input id="fam-total-twd" disabled value="${Math.round(oldTotal * rate)}" /></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>開始日（含）</label><input id="fam-start" type="date" value="${parentSeg.start_date || ""}" /></div>
+      <div class="field"><label>結束日（不含）</label><input id="fam-end" type="date" value="${parentSeg.end_date || ""}" /></div>
+      <div class="field"><label>攤提天數</label><input id="fam-days" type="number" value="${parentSeg.amortize_days || 30}" /></div>
+    </div>
+    <div class="field">
+      <label>每日攤提（台幣，自動）</label>
+      <input id="fam-daily" disabled value="0" />
+      <div id="fam-preview" class="hint"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="cancel">取消</button>
+      <button class="primary" id="save">儲存</button>
+    </div>
+  `;
+  const dlg = modal.open(html);
+  const q = (sel) => dlg.querySelector(sel);
+
+  const recalc = () => {
+    const totalCny = Number(q("#fam-total-cny").value) || 0;
+    const nextParent = round2(totalCny * parentShare);
+    const nextTv = round2(totalCny - nextParent);
+    const nextRate = Number(q("#fam-rate").value) || 0;
+    const days = Number(q("#fam-days").value) || 1;
+    q("#fam-total-twd").value = Math.round(totalCny * nextRate);
+    q("#fam-daily").value = Math.round((totalCny * nextRate) / days);
+    q("#fam-preview").innerHTML =
+      `${esc(parentSeg.ad_code)} ${Math.round(parentShare * 100)}% → ${nextParent.toLocaleString()} RMB / ` +
+      `${esc(tVariantSeg.ad_code)} ${Math.round(tvShare * 100)}% → ${nextTv.toLocaleString()} RMB`;
+  };
+  ["fam-total-cny", "fam-rate", "fam-days"].forEach((id) => q("#" + id).addEventListener("input", recalc));
+  recalc();
+
+  q("#cancel").onclick = () => modal.close();
+  q("#save").onclick = () => {
+    const name = q("#fam-name").value.trim();
+    const group = q("#fam-group").value.trim();
+    const totalCny = Number(q("#fam-total-cny").value) || 0;
+    const nextRate = Number(q("#fam-rate").value) || 0;
+    const start = q("#fam-start").value;
+    const end = q("#fam-end").value;
+    const days = Number(q("#fam-days").value) || 0;
+    if (!name) { toast("廣告名稱必填", "bad"); return; }
+    if (totalCny <= 0) { toast("合約總額必須大於 0", "bad"); return; }
+    if (nextRate <= 0) { toast("匯率必須大於 0", "bad"); return; }
+    if (!start || !end) { toast("起訖日期必填", "bad"); return; }
+    if (end <= start) { toast("結束日需晚於開始日", "bad"); return; }
+    if (days <= 0) { toast("攤提天數必須大於 0", "bad"); return; }
+
+    const nextParent = round2(totalCny * parentShare);
+    const nextTv = round2(totalCny - nextParent);
+    update((st) => {
+      const liveParent = st.ads.find((a) => a.id === parentSeg.id);
+      const liveTv = st.ads.find((a) => a.id === tVariantSeg.id);
+      if (!liveParent || !liveTv) return;
+      const applySide = (ad, amount) => {
+        ad.ad_name = name;
+        ad.group = group;
+        ad.currency = currency;
+        ad.currency_rate = currencyRate;
+        ad.amount_orig = currency === "USDT" && currencyRate > 0 ? round2(amount / currencyRate) : amount;
+        ad.amount_cny = amount;
+        ad.exchange_rate = nextRate;
+        ad.amount_twd = amount * nextRate;
+        ad.start_date = start;
+        ad.end_date = end;
+        ad.amortize_days = days;
+        ad.daily_amort_twd = (amount * nextRate) / days;
+      };
+      applySide(liveParent, nextParent);
+      applySide(liveTv, nextTv);
+    }, "編輯配對廣告");
+    modal.close();
+    toast("已更新整筆廣告金額 / 日期", "ok");
+  };
+}
+
+// 家族視角權重調整(§5.7.2):對 split_pair 的 parent + t-variant 一次編輯
+// 使用者以「整體合約 %」視角填權重(加總 = 100,跨 parent + t-variant);
+// 系統自動拆 normal/poquan、重算雙方 amount + 內部 weights(canonical form)。
+function openFamilyWeightAdjust(pairId) {
+  const s = getState();
+  const { pairAds, parentSeg, tVariantSeg } = latestPairSides(pairId, s);
+  if (pairAds.length === 0) { toast("找不到此配對", "bad"); return; }
   if (!parentSeg || !tVariantSeg) { toast("配對結構不完整(找不到 parent 或 t-variant)", "bad"); return; }
 
   const parentAmt = Number(parentSeg.amount_cny) || 0;

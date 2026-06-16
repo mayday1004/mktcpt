@@ -2976,15 +2976,21 @@ pre.code {
 .family-role-poquan { border-color: #f4cc8a; background: #fff8e6; }
 .family-role-secondary { border-color: #c9c3e8; background: #f4f1ff; }
 
-/* 家族列「權重調整」按鈕(2026-05,§5.7.2) — 整體合約視角編輯 */
+/* 家族列動作按鈕(2026-05,§5.7.2) — 整體合約視角編輯 */
 .family-actions {
   display: inline-flex; gap: 6px;
 }
+.family-edit-btn,
 .family-weight-btn {
   font-size: 12px; padding: 4px 12px;
   background: #fff; border: 1px solid #cfd9ef; border-radius: 4px;
-  color: var(--accent); font-weight: 500; cursor: pointer;
+  font-weight: 500; cursor: pointer;
 }
+.family-edit-btn {
+  color: var(--ink-2);
+}
+.family-weight-btn { color: var(--accent); }
+.family-edit-btn:hover,
 .family-weight-btn:hover {
   background: #eef5ff; border-color: var(--accent);
 }
