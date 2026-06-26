@@ -1304,18 +1304,19 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
 .weights-summary {
   display: flex;
   align-items: center;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   font-size: 12px; color: var(--ink-2);
   line-height: 1.5;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 .weights-summary .weight-top-item {
   min-width: 0;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .weights-summary .lead { color: var(--ink); font-weight: 500; }
 .weights-summary .sep { color: var(--ink-3); margin: 0 1px; }

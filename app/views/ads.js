@@ -1,7 +1,7 @@
 import { getState, update, uid } from "../state.js";
 import { suggestWeights } from "../domain/suggest.js";
 import { evalFormula } from "../lib/formula.js";
-import { getExpenseRate, getUsdtToCnyRate } from "../schema.js";
+import { compareProductOrder, getExpenseRate, getUsdtToCnyRate } from "../schema.js";
 import { expiringAds } from "../domain/alerts.js";
 import { renderGiftDayInfo } from "./dashboard.js";
 import { todayTaipei, nowTaipeiStamp, addDays } from "../lib/dates.js";
@@ -1163,14 +1163,8 @@ function renderWeightDetailRow(seg, products, opts = {}) {
   if (rawEntries.length <= 3) return "";
   const scale = opts.familyScale && opts.familyScale > 0 && opts.familyScale < 1 ? opts.familyScale : null;
   const scaled = scale ? scaleWithLargestRemainder(rawEntries, scale) : rawEntries;
-  // 「完整權重產品」面板的顯示順序依 state.products 陣列(= Sheets「產品」分頁列順序),
-  // 不依權重大小排序;未列在 products 的 pid(不該發生)排到最後。
-  const orderMap = new Map((products || []).map((p, i) => [p.id, i]));
-  const entries = scaled.slice().sort((a, b) => {
-    const ai = orderMap.has(a.pid) ? orderMap.get(a.pid) : 999;
-    const bi = orderMap.has(b.pid) ? orderMap.get(b.pid) : 999;
-    return ai - bi || String(a.pid).localeCompare(String(b.pid));
-  });
+  // 「完整權重產品」面板與列表摘要都使用 schema.js 的固定產品順序。
+  const entries = sortWeightEntriesByProductOrder(scaled);
   return `
     <tr class="weight-detail-row">
       <td></td>
@@ -1307,15 +1301,23 @@ function formatCompactDateRange(start, end) {
 }
 
 // 權重摘要:模式 = "bar"(列表用,group 級彙總每產品最新權重) / "inline"(時間軸用,單段純文字 pill)
+function compareWeightPids(a, b) {
+  return compareProductOrder({ id: a }, { id: b });
+}
+
+function sortWeightEntriesByProductOrder(entries) {
+  return entries.slice().sort((a, b) => compareWeightPids(a.pid, b.pid));
+}
+
 function productWeightEntries(seg, products) {
-  return Object.entries(seg.weights || {})
+  const entries = Object.entries(seg.weights || {})
     .filter(([, v]) => Number(v) > 0)
-    .sort(([, a], [, b]) => Number(b) - Number(a))
     .map(([pid, w]) => ({
       pid,
       name: products.find((p) => p.id === pid)?.name || pid,
       weight: Number(w) || 0,
     }));
+  return sortWeightEntriesByProductOrder(entries);
 }
 
 // 整個 group 的權重彙總:以列表列頭選到的「最新段」為基準,取同代碼且與它 overlap 的段。
@@ -1366,13 +1368,12 @@ function weightSnapshotDetails(segs, products, opts = {}) {
     }
   }
 
-  const entries = [...byPid.entries()]
+  const entries = sortWeightEntriesByProductOrder([...byPid.entries()]
     .map(([pid, info]) => ({
       pid,
       name: allProducts.find((p) => p.id === pid)?.name || pid,
       weight: info.weight,
-    }))
-    .sort((a, b) => b.weight - a.weight);
+    })));
   return { entries, snapshotSegs, referenceSeg };
 }
 
@@ -1397,20 +1398,13 @@ function scaleWithLargestRemainder(rawEntries, scale) {
   return rawEntries.map((e, i) => ({ ...e, weight: final[i], rawWeight: Number(e.weight) || 0 }));
 }
 
-function renderWeightPills(entries, opts = {}) {
-  const TOP_N = 3;
-  const top = entries.slice(0, TOP_N).map(({ pid, name, weight, rawWeight }, i) => {
+function renderWeightPills(entries) {
+  const items = entries.map(({ pid, name, weight, rawWeight }, i) => {
     const pct = `${Math.round(weight)}%`;
     const tip = rawWeight !== undefined ? ` title="此 ad 內 ${Math.round(rawWeight)}%"` : "";
     return `<span class="weight-top-item ${i === 0 ? "lead" : ""}" style="border-left:3px solid ${productColor(pid)};padding-left:6px"${tip}>${esc(name)} ${pct}</span>`;
-  }).join("<span class=\"sep\"> · </span>");
-  const moreCount = entries.length - TOP_N;
-  const more = moreCount > 0
-    ? (opts.moreButton
-      ? `<button class="weight-more ${opts.open ? "active" : ""}" data-weight-toggle="${esc(opts.code)}" title="查看完整權重">+${moreCount} 個</button>`
-      : `<span class="more">+${moreCount} 個</span>`)
-    : "";
-  return `<div class="weights-summary">${top}${more}</div>`;
+  }).join("");
+  return `<div class="weights-summary">${items}</div>`;
 }
 
 function previousWeightSnapshotForReference(segs, products, opts = {}) {
@@ -1461,10 +1455,10 @@ function mapRoundedWeights(entries, scale) {
 function weightDeltaEntries(currentEntries, previousEntries, scale) {
   const current = mapRoundedWeights(currentEntries, scale);
   const previous = mapRoundedWeights(previousEntries, scale);
-  const orderedPids = [
+  const orderedPids = [...new Set([
     ...current.entries.map((entry) => entry.pid),
-    ...previous.entries.map((entry) => entry.pid).filter((pid) => !current.map.has(pid)),
-  ];
+    ...previous.entries.map((entry) => entry.pid),
+  ])].sort(compareWeightPids);
   return orderedPids.map((pid) => {
     const cur = current.map.get(pid);
     const prev = previous.map.get(pid);
@@ -1531,11 +1525,7 @@ function weightSummary(seg, products, mode = "bar", opts = {}) {
     }).join(" ");
   }
 
-  return renderWeightPills(entries, {
-    code: opts.code || seg.ad_code,
-    open: opts.open,
-    moreButton: true,
-  });
+  return renderWeightPills(entries);
 }
 
 function actionButtons(seg, compact, opts = {}) {
