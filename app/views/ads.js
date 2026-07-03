@@ -12,6 +12,7 @@ import { displayWeightsForAd } from "../domain/spending.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 import { buildYourlsActionPayload } from "../domain/yourls-actions.js";
+import { ELIMINATION_RESTORED_MARKER, extractEliminatedAdCodes } from "../domain/todo-utils.js";
 
 const SHORT_URL_BAG_TYPE = "提包";
 const SHORT_URL_SLOT_OPTIONS = [
@@ -740,9 +741,12 @@ function renderExpiringItem(g, nameOf, allAds) {
     ? `${Math.round(famTotal).toLocaleString()} USDT`
     : `${Math.round(famTotal).toLocaleString()} RMB`;
   const amountTitle = hasFamily ? `家族(${famBase})總額` : "";
+  const restoreCodes = [...g.codes].join(",");
   const statusHtml = (() => {
     if (g.status === "renewed") return `<span class="exp-status exp-status-renewed">已續費</span>`;
-    if (g.status === "eliminated") return `<span class="exp-status exp-status-eliminated">已淘汰</span>`;
+    if (g.status === "eliminated") {
+      return `<span class="exp-status exp-status-eliminated">已淘汰</span><button data-exp-restore="${esc(restoreCodes)}" title="改回非淘汰狀態">恢復追蹤</button>`;
+    }
     if (g.status === "handled") return `<span class="exp-status exp-status-done">已處理</span>`;
     return "";
   })();
@@ -1061,6 +1065,7 @@ function renderGroup(group, products, opts = {}) {
       <td class="num">${Math.round(latest.daily_amort_twd || 0).toLocaleString()}</td>
       <td>${weightSummary(latest, products, "bar", { code, open: weightsOpen, allSegs: segs, referenceSeg: latest, familyScale: opts.familyScale })}</td>
       <td class="actions-cell right nowrap">
+        ${eliminated ? `<button data-restore-eliminated="${esc(code)}" title="改回非淘汰狀態">恢復追蹤</button>` : ""}
         ${actionButtons(latest, /*compact=*/true)}
       </td>
     </tr>
@@ -1754,6 +1759,45 @@ function bindHandlers(root, s) {
       if (seg) openEliminate(seg);
     };
   });
+  root.querySelectorAll("[data-exp-restore]").forEach((el) => {
+    el.onclick = () => restoreEliminatedCodes(el.dataset.expRestore.split(","));
+  });
+  root.querySelectorAll("[data-restore-eliminated]").forEach((el) => {
+    el.onclick = () => restoreEliminatedCodes([el.dataset.restoreEliminated]);
+  });
+}
+
+function restoreEliminatedCodes(codes) {
+  const codeSet = new Set((codes || []).map((code) => String(code || "").trim()).filter(Boolean));
+  if (codeSet.size === 0) return;
+  const restoredAt = nowTaipeiStamp();
+  const restoredCodeLabel = [...codeSet].join("、");
+  let restoredAds = 0;
+  let markedTodos = 0;
+  update((st) => {
+    for (const ad of (st.ads || [])) {
+      if (codeSet.has(ad.ad_code) && ad.eliminated) {
+        ad.eliminated = false;
+        restoredAds += 1;
+      }
+    }
+    for (const todo of (st.todos || [])) {
+      const todoCodes = extractEliminatedAdCodes(todo);
+      if (!todoCodes.some((code) => codeSet.has(code))) continue;
+      const marker = `${ELIMINATION_RESTORED_MARKER}：${restoredAt}，恢復追蹤：${restoredCodeLabel}`;
+      if (!String(todo.description || "").includes(marker)) {
+        todo.description = `${String(todo.description || "").trim()}\n（${marker}）`;
+        markedTodos += 1;
+      }
+      if ((todo.status || "pending") === "pending") todo.status = "done";
+    }
+  }, "取消淘汰");
+  toast(restoredAds > 0
+    ? `已恢復追蹤 ${[...codeSet].join("、")}`
+    : `已標記 ${[...codeSet].join("、")} 為非淘汰`, "ok");
+  if (markedTodos > 0) {
+    toast(`已同步標記 ${markedTodos} 筆淘汰待辦為已取消`, "ok");
+  }
 }
 
 // 淘汰：標記為「不再投放、不再通知」。實際資料保留，警告停止追蹤，廣告頁本週清單可保留狀態
@@ -3507,6 +3551,7 @@ function openFamilyWeightAdjust(pairId) {
           }
           liveParent.notes = appendNote(liveParent.notes, parentNote);
         } else {
+          const liveParentEnd = liveParent.end_date;
           liveParent.end_date = eff;  // trim
           const pNew = {
             id: uid("ad"),
@@ -3522,7 +3567,7 @@ function openFamilyWeightAdjust(pairId) {
             exchange_rate: liveParent.exchange_rate,
             amount_twd: newParentAmount * rate,
             start_date: eff,
-            end_date: parentSeg.end_date,
+            end_date: liveParentEnd,
             amortize_days: liveParent.amortize_days,
             daily_amort_twd: (Number(liveParent.amortize_days) > 0)
               ? (newParentAmount * rate / liveParent.amortize_days) : 0,
@@ -3576,6 +3621,7 @@ function openFamilyWeightAdjust(pairId) {
           }
           liveTv.notes = appendNote(liveTv.notes, tvNote);
         } else {
+          const liveTvEnd = liveTv.end_date;
           liveTv.end_date = eff;
           const tNew = {
             id: uid("ad"),
@@ -3591,7 +3637,7 @@ function openFamilyWeightAdjust(pairId) {
             exchange_rate: liveTv.exchange_rate,
             amount_twd: newTvAmount * rate,
             start_date: eff,
-            end_date: tVariantSeg.end_date,
+            end_date: liveTvEnd,
             amortize_days: liveTv.amortize_days,
             daily_amort_twd: (Number(liveTv.amortize_days) > 0)
               ? (newTvAmount * rate / liveTv.amortize_days) : 0,
@@ -3725,11 +3771,7 @@ function openMoreMenu(seg) {
         toast(`已設為「${labels[newState]}」`, "ok");
       } else if (pick === "eliminate") {
         if (eliminated) {
-          // 取消淘汰：清掉同代碼所有段的 eliminated
-          update((st) => {
-            st.ads.forEach((a) => { if (a.ad_code === seg.ad_code) a.eliminated = false; });
-          }, "取消淘汰");
-          toast("已恢復追蹤", "ok");
+          restoreEliminatedCodes([seg.ad_code]);
         } else {
           openEliminate(seg);
         }

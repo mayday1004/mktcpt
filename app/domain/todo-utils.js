@@ -1,4 +1,20 @@
 const ELIMINATE_AD_ACTION = "\u6dd8\u6c70\u5ee3\u544a";
+export const ELIMINATION_RESTORED_MARKER = "\u5df2\u53d6\u6d88\u6dd8\u6c70";
+
+function restoredEliminationCodes(description) {
+  const restored = new Set();
+  const text = String(description || "");
+  const re = new RegExp(`${ELIMINATION_RESTORED_MARKER}[^\\n\\uff09)]*\\u6062\\u5fa9\\u8ffd\\u8e64[:\\uff1a ]([^\\n\\uff09)]+)`, "g");
+  let match;
+  while ((match = re.exec(text))) {
+    String(match[1] || "")
+      .split(/[、,\s]+/)
+      .map((code) => code.trim())
+      .filter(Boolean)
+      .forEach((code) => restored.add(code));
+  }
+  return restored;
+}
 
 export function normalizeTodoCreatedAt(value) {
   const s = String(value || "").trim();
@@ -33,6 +49,8 @@ export function extractEliminatedAdCodes(todo) {
       : first;
     if (code) codes.add(code);
   }
+
+  for (const code of restoredEliminationCodes(desc)) codes.delete(code);
 
   return [...codes];
 }

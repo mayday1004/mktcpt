@@ -816,10 +816,10 @@ function renderDetailPanel(s, ym, pid, date) {
   const contributors = [];
   for (const a of detailAds) {
     if (!isInRange(date, a.start_date, a.end_date)) continue;
-    const w = Number(a.weights?.[pid]) || 0;
-    if (w <= 0) continue;
     const per = dailySpendForAd(a, date, detailAds)[pid] || 0;
+    if (per <= 0) continue;
     const displayWeights = displayWeightsForAd(a, detailAds, date);
+    const w = Number(displayWeights?.[pid] ?? a.weights?.[pid]) || 0;
     if (per > 0) contributors.push({ ad: a, weight: displayWeights[pid] ?? w, amount: per });
   }
   contributors.sort((a, b) => b.amount - a.amount);

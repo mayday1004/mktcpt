@@ -10,6 +10,7 @@ import {
   isYourlsTodo,
   markYourlsTodoApplied,
   removeYourlsActionsForTodo,
+  requeueRunningYourlsTodo,
   todoYourlsPayloads,
   yourlsPayloadWaitsForEffectiveDate,
 } from "../domain/yourls-actions.js";
@@ -224,6 +225,40 @@ export function render(root) {
       toast("已標記完成", "ok");
     };
   });
+  root.querySelectorAll("[data-yourls-requeue]").forEach((el) => {
+    el.onclick = async () => {
+      const todoId = el.dataset.yourlsRequeue;
+      const ok = await confirmAsync({
+        title: "重設 Yourls 執行狀態",
+        body: "只有在確認 yourls帕魯已卡住或 Mac B 端已停止時使用。這會把 running 改回等待 Yourls，讓 worker 下一輪可以重新 claim。",
+        okText: "重設等待",
+        danger: true,
+      });
+      if (!ok) return;
+      el.disabled = true;
+      let result = { updatedActions: 0 };
+      try {
+        update((st) => {
+          const todo = st.todos.find((t) => t.id === todoId);
+          result = requeueRunningYourlsTodo(st, todo, { now: nowTaipeiStamp() });
+        }, "重設 Yourls 執行狀態");
+        if (result.updatedActions <= 0) {
+          toast("沒有可重設的 running Yourls 操作", "warn");
+          return;
+        }
+        toast(`已重設 ${result.updatedActions} 筆 Yourls 操作為等待狀態`, "ok");
+        await manualSync({ waitIfBusy: true });
+        try {
+          const wake = await wakeYourlsWorker();
+          if (!wake.skipped) toast("已送出 yourls帕魯喚醒", "ok");
+        } catch (wakeError) {
+          toast(`已重設並同步到 Sheets，但無法喚醒 Mac B。\n${wakeError.message}`, "warn", { sticky: true, closable: true });
+        }
+      } finally {
+        if (el.isConnected) el.disabled = false;
+      }
+    };
+  });
   root.querySelectorAll("[data-edit]").forEach((el) => {
     el.onclick = () => openTodoEditor(el.dataset.edit);
   });
@@ -304,7 +339,9 @@ function pendingTodoButtons(todo) {
   }
   if (status === "queued" && isFutureYourlsTodo(todo)) return `<button data-edit="${todo.id}">編輯</button> <button disabled>排程中</button>`;
   if (status === "queued") return `<button data-edit="${todo.id}">編輯</button> <button disabled>等待 Yourls</button>`;
-  if (status === "running") return `<button data-edit="${todo.id}">編輯</button> <button disabled>Yourls 執行中</button>`;
+  if (status === "running") {
+    return `<button data-edit="${todo.id}">編輯</button> <button data-done="${todo.id}" title="已人工確認 Yourls 後台完成">完成</button> <button data-yourls-requeue="${todo.id}" title="worker 卡住時改回等待狀態">重設等待</button>`;
+  }
   if (status === "applied") return `<button disabled>已套用</button>`;
   return `<button data-edit="${todo.id}">編輯</button>`;
 }

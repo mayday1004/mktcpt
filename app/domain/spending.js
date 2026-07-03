@@ -31,9 +31,18 @@ function activePairSegments(ad, ymd, allAds) {
   return pairSegmentsFor(ad, allAds).filter((a) => isInRange(ymd, a.start_date, a.end_date));
 }
 
-function splitPairDisplayScale(ad, allAds) {
-  const pairSegs = pairSegmentsFor(ad, allAds);
+function splitPairDisplayScale(ad, allAds, ymd = null) {
+  const pairSegs = ymd ? activePairSegments(ad, ymd, allAds) : pairSegmentsFor(ad, allAds);
   if (pairSegs.length <= 1) return null;
+
+  if (ymd) {
+    const total = pairSegs.reduce((sum, seg) => sum + (Number(seg.amount_cny) || 0), 0);
+    const own = pairSegs.find((seg) => seg.id === ad.id) ||
+      pairSegs.find((seg) => seg.ad_code === ad.ad_code && seg.start_date === ad.start_date && seg.end_date === ad.end_date) ||
+      pairSegs.find((seg) => seg.ad_code === ad.ad_code);
+    const ownAmt = Number(own?.amount_cny) || 0;
+    return total > 0 && ownAmt > 0 ? ownAmt / total : null;
+  }
 
   const parentLast = latestSegment(pairSegs.filter((a) => a.split_role === "parent")) ||
     latestSegment(pairSegs.filter((a) => !String(a.ad_code || "").toLowerCase().endsWith("t")));
@@ -84,7 +93,7 @@ function roundScaledWeights(weights, scale) {
 
 export function displayWeightsForAd(ad, allAds, ymd = null) {
   if (ymd && activePairSegments(ad, ymd, allAds).length <= 1) return roundScaledWeights(ad.weights, null);
-  const scale = splitPairDisplayScale(ad, allAds);
+  const scale = splitPairDisplayScale(ad, allAds, ymd);
   return roundScaledWeights(ad.weights, scale);
 }
 

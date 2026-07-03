@@ -227,6 +227,40 @@ export function markYourlsTodoApplied(state, todo, { now = "" } = {}) {
   return { updatedActions, actionIds: matchedActionIds };
 }
 
+export function requeueRunningYourlsTodo(state, todo, { now = "" } = {}) {
+  if (!todo || !isYourlsTodo(todo)) return { updatedActions: 0, actionIds: [] };
+  state.yourls_actions = Array.isArray(state.yourls_actions) ? state.yourls_actions : [];
+
+  const todoId = String(todo.id || "");
+  const actionIds = new Set((todo.yourls_action_ids || []).map((id) => String(id || "")).filter(Boolean));
+  const preservedActionIds = new Set(actionIds);
+  const requeuedActionIds = [];
+  let updatedActions = 0;
+
+  for (const action of state.yourls_actions) {
+    if (!actionBelongsToTodo(action, todoId, actionIds)) continue;
+    if (action.action_id) preservedActionIds.add(action.action_id);
+    if (String(action.status || "") !== YOURLS_STATUSES.running) continue;
+    action.status = YOURLS_STATUSES.queued;
+    action.worker_id = "";
+    action.claimed_at = "";
+    action.completed_at = "";
+    action.last_error = "";
+    action.updated_at = String(now || action.updated_at || "");
+    if (action.action_id) requeuedActionIds.push(action.action_id);
+    updatedActions++;
+  }
+
+  if (updatedActions > 0) {
+    todo.status = "pending";
+    todo.yourls_status = YOURLS_STATUSES.queued;
+    todo.yourls_last_error = "";
+    todo.yourls_action_ids = [...preservedActionIds].filter(Boolean);
+  }
+
+  return { updatedActions, actionIds: requeuedActionIds };
+}
+
 export function parsePayloadJson(raw) {
   if (raw && typeof raw === "object") return raw;
   const text = String(raw || "").trim();
