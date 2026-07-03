@@ -99,7 +99,7 @@ window.addEventListener("DOMContentLoaded", () => {
   initSyncOrchestrator();
   // 衝突 banner:有衝突時釘在右下角,點擊開 resolver
   initConflictBanner(onConflictResolved);
-  // 冷啟動版本 gate 訊息(state.js load 前若清過資料就會留訊息在 sessionStorage)
+  // 保留舊介面的 no-op hook;實際版本更新提示由長 tab 偵測負責
   showColdStartGateToast();
   // 長 tab 偵測:每 30 秒 fetch /version.txt,看 server 有沒有新 deploy → banner 提示重整
   initLongTabWatch();
@@ -124,15 +124,12 @@ function bindUndoBtn() {
   };
 }
 
-const SIDEBAR_KEY = "buyads_sidebar_collapsed";
 function bindSidebarToggle() {
   const aside = document.querySelector(".sidebar");
   const btn = document.getElementById("sidebar-toggle");
   if (!aside || !btn) return;
-  if (localStorage.getItem(SIDEBAR_KEY) === "1") aside.classList.add("collapsed");
   btn.onclick = () => {
     aside.classList.toggle("collapsed");
-    localStorage.setItem(SIDEBAR_KEY, aside.classList.contains("collapsed") ? "1" : "0");
   };
 }
 

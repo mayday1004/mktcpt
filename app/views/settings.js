@@ -45,8 +45,8 @@ export function render(root) {
     <div class="card sheets-card">
       <h2>☁️ Google Sheets 同步（混合模式）</h2>
       <p class="sheets-desc">
-        本機 localStorage 為主，按鈕手動推送 / 拉回到 Google 試算表。<br>
-        全量拉回前會自動下載一份本機 JSON 備份,避免誤覆蓋。報表(月度 / 每日花費 / 分組 / 攤提)為單向推送(規劃中)。
+        Google Sheets 為資料來源；頁面重新整理後會重新拉取雲端資料。<br>
+        全量拉回前會自動下載一份目前畫面 JSON 備份,避免誤覆蓋。報表(月度 / 每日花費 / 分組 / 攤提)為單向推送(規劃中)。
       </p>
 
       ${isDeployManaged() ? `

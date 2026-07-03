@@ -1,6 +1,5 @@
 import { VERSION, defaultState } from "./schema.js";
 import { nowTaipeiTime } from "./lib/dates.js";
-import { runColdStartGate } from "./lib/version-gate.js";
 import { isDeployManaged, isYourlsWakeDeployManaged } from "./lib/deploy-config.js";
 import { applyDoneEliminateTodos, normalizeTodosInState } from "./domain/todo-utils.js";
 import { materializeTodosAppliedSnapshots } from "./domain/undo.js";
@@ -8,8 +7,6 @@ import { normalizeWeightsToTotal } from "./domain/auto-split.js";
 import { reconcileYourlsTodos } from "./domain/yourls-actions.js";
 import { markSyncDeleted } from "./io/sync-deletions.js";
 
-const KEY = "buyads_state_v1";
-const UNDO_KEY = "buyads_undo_v1";
 const MAX_UNDO = 8;
 const listeners = new Set();
 function collectAdWeightSyncRows(st) {
@@ -32,12 +29,10 @@ const SYNC_DELETE_TRACKERS = [
   { sheetName: "YOURLS\u57f7\u884c\u7d00\u9304", select: (st) => st.yourls_execution_logs, idOf: (row) => row.log_id },
 ];
 
-// 部署版本 gate:本機 state 若是舊版 build 寫的就在 load 前清掉,
-// 避免舊 shape 餵給新版邏輯 → 推爛資料到雲端。詳見 app/lib/version-gate.js。
-runColdStartGate();
-
-let state = load();
-let undoStack = loadUndo();
+// Runtime state is intentionally memory-only. On reload the app starts from the
+// schema default and the sync layer pulls the current Sheets data.
+let state = migrate(defaultState());
+let undoStack = [];
 
 function collectSyncEntityIds(st) {
   const out = {};
@@ -61,29 +56,6 @@ function markRemovedSyncRows(beforeIds, afterIds) {
     const after = afterIds[tracker.sheetName] || new Set();
     const removed = [...before].filter((id) => !after.has(id));
     if (removed.length > 0) markSyncDeleted(tracker.sheetName, removed);
-  }
-}
-
-function load() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return defaultState();
-    const parsed = JSON.parse(raw);
-    return migrate(parsed);
-  } catch (e) {
-    console.error("state load failed", e);
-    return defaultState();
-  }
-}
-
-function loadUndo() {
-  try {
-    const raw = localStorage.getItem(UNDO_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr.slice(-MAX_UNDO) : [];
-  } catch {
-    return [];
   }
 }
 
@@ -261,21 +233,18 @@ function migrate(st) {
 }
 
 function persist() {
-  let toSave = state;
-  if (isDeployManaged() && state.settings &&
-      (state.settings.sheets_webapp_url || state.settings.sheets_token)) {
-    // 任何途徑(舊 cache / 匯入 / migrate)塞進 state 的本機 URL/token,持久化前清掉
-    toSave = { ...state, settings: { ...state.settings, sheets_webapp_url: "", sheets_token: "" } };
+  if (isDeployManaged() && state.settings) {
+    state.settings.sheets_webapp_url = "";
+    state.settings.sheets_token = "";
   }
-  if (isYourlsWakeDeployManaged() && toSave.settings &&
-      (toSave.settings.yourls_wake_url || toSave.settings.yourls_wake_token)) {
-    toSave = { ...toSave, settings: { ...toSave.settings, yourls_wake_url: "", yourls_wake_token: "" } };
+  if (isYourlsWakeDeployManaged() && state.settings) {
+    state.settings.yourls_wake_url = "";
+    state.settings.yourls_wake_token = "";
   }
-  localStorage.setItem(KEY, JSON.stringify(toSave));
 }
 
 function persistUndo() {
-  try { localStorage.setItem(UNDO_KEY, JSON.stringify(undoStack)); } catch {}
+  // Undo history is memory-only and is cleared by page reload.
 }
 
 // 推進 undo 堆疊（在每次 mutate 前呼叫）。同一秒內連續呼叫會合併（避免細碎 input 灌爆）。

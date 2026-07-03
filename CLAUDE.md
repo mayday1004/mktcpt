@@ -677,18 +677,17 @@ for APP 產品 X:
 - **暫停 auto-sync**:衝突佇列非空時 orchestrator 跳過,使用者解完佇列歸零後自動恢復
 - **錯誤 logging**:同步層所有事件(push 成功/失敗、衝突發生、pull 衝突、網路錯誤、retry)都進 console + in-memory ring buffer。DevTools 打 `__buyadsLog()` 看最近 200 筆 — 給「我明明儲存了卻又被改回去」這類抱怨除錯用([app/lib/sync-log.js](app/lib/sync-log.js))
 
-### 7.2.2 部署版本 gate(2026-05 新增)
+### 7.2.2 部署版本 gate(2026-07 更新)
 
-問題:同事的瀏覽器在我們 deploy 完之後第一次打開,有兩種情境會推爛資料到雲端 —
-(a) **冷啟動**:抓到新 JS 但 localStorage 還是舊版 build 寫的 shape,新邏輯誤判 → 推錯;
-(b) **長 tab**:同事的分頁本來就開著沒 refresh,持續用 in-memory 的舊 JS。
+問題:同事的分頁在 deploy 前就已經開著,refresh 前仍會繼續跑舊 JS。
 
-對應兩道檢查([app/lib/version-gate.js](app/lib/version-gate.js)):
+對應檢查([app/lib/version-gate.js](app/lib/version-gate.js)):
 
 | 檢查 | 觸發時機 | 行為 |
 |---|---|---|
-| **A. 冷啟動 gate** (`runColdStartGate`) | [app/state.js](app/state.js) load 之前同步執行 | 比對 `localStorage.buyads_build` vs build-time 注入的 `__BUYADS_BUILD__`,不同 → 清掉 `buyads_state_v1` / `buyads_sync_meta_v1` / `buyads_server_version_v1` / `buyads_undo_v1` / `buyads_conflicts_v1`,sessionStorage 留訊息給 toast |
-| **B. 長 tab watch** (`initLongTabWatch`) | DOMContentLoaded 後啟動,5 秒後第一次跑、之後每 30 秒 | fetch `/version.txt`,server build ≠ 自己的 BUILD → 右下角 banner「🔄 偵測到新版本 → 立即重整 / 稍後」,**不自動 reload**(避免吞掉沒推的改動) |
+| **長 tab watch** (`initLongTabWatch`) | DOMContentLoaded 後啟動,5 秒後第一次跑、之後每 30 秒 | fetch `/version.txt`,server build ≠ 自己的 BUILD → 右下角 banner「🔄 偵測到新版本 → 立即重整 / 稍後」,**不自動 reload**(避免吞掉沒推的改動) |
+
+2026-07 起,app 不再使用瀏覽器持久化儲存保存 state / sync meta / undo / conflict queue。冷啟動時直接從預設 runtime state 啟動,再由同步層從 Google Sheets 拉回資料。
 
 **build id 來源**:[build.js](build.js) 依序試 `process.env.RAILWAY_GIT_COMMIT_SHA` → `GIT_SHA` → `COMMIT_SHA` → `git rev-parse --short=10 HEAD` → `Date.now().toString(36)`(全跑光的 fallback)。同次 commit 重建會有同 id → 不會誤觸發 gate;不同 commit 則 id 變動。
 

@@ -1,4 +1,4 @@
-const KEY = "buyads_sync_pending_deletions_v1";
+let memoryStore = {};
 
 function normalizeIds(ids) {
   return [...new Set((Array.isArray(ids) ? ids : [ids])
@@ -17,21 +17,11 @@ function sanitize(store) {
 }
 
 function readStore() {
-  if (typeof localStorage === "undefined") return {};
-  try {
-    return sanitize(JSON.parse(localStorage.getItem(KEY) || "{}"));
-  } catch {
-    return {};
-  }
+  return sanitize(memoryStore);
 }
 
 function writeStore(store) {
-  if (typeof localStorage === "undefined") return;
-  const clean = sanitize(store);
-  try {
-    if (Object.keys(clean).length === 0) localStorage.removeItem(KEY);
-    else localStorage.setItem(KEY, JSON.stringify(clean));
-  } catch { /* ignore localStorage failures */ }
+  memoryStore = sanitize(store);
 }
 
 export function loadPendingSyncDeletions() {

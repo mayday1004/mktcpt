@@ -112,7 +112,7 @@ st287t 跑到 5/10 後,破圈不需要繼續了,想把 1,800 RMB 改成全部走
 
 ## Google Sheets 同步
 
-整套系統可以**完全離線跑**(資料存瀏覽器 localStorage),但建議搭配 Google Sheets 同步:
+整套系統以 **Google Sheets 為資料來源**。瀏覽器只保留目前頁面的記憶體狀態,不再用瀏覽器持久化儲存保存資料:
 
 - **備份** — Sheets 是 source of truth,瀏覽器壞掉資料還在
 - **多人共用** — 同一份 Sheets 多裝置 / 多瀏覽器同步
@@ -121,11 +121,11 @@ st287t 跑到 5/10 後,破圈不需要繼續了,想把 1,800 RMB 改成全部走
 設定方式:
 
 1. 依 [apps-script/README.md](apps-script/README.md) 把 `Code.gs` 部署成 Web App
-2. 把 Web App URL + SECRET 填進**設定 → Google Sheets 整合**
-3. 第一次按 **☁️ 同步到 Google 試算表** → Sheets 會自動建出所有需要的分頁
-4. 之後想跨裝置 → 在新瀏覽器填同一組 URL/Token → 按 **⬇️ 從試算表拉下來**
+2. 把 Web App URL + SECRET 填進**設定 → Google Sheets 整合**或部署環境變數
+3. 第一次同步時 Sheets 會自動建出所有需要的分頁
+4. 之後跨裝置時開同一份部署/設定同一組 URL + Token,頁面啟動會從 Sheets 拉回資料
 
-> ⚠️ **拉之前會自動下載目前本機 JSON 備份**,即使誤覆蓋也救得回來。
+> ⚠️ **全量拉回前會自動下載目前畫面 JSON 備份**,即使誤覆蓋也救得回來。
 
 ---
 
@@ -228,7 +228,7 @@ buyads/
 ├── index.html             # SPA 入口
 ├── app/                   # 前端原始碼
 │   ├── main.js            # router / 啟動
-│   ├── state.js           # localStorage + undo
+│   ├── state.js           # memory-only runtime state + undo
 │   ├── schema.js          # 預設值、共用 helpers
 │   ├── lib/               # 通用工具(日期、公式、CSV、deploy config)
 │   ├── domain/            # 業務邏輯

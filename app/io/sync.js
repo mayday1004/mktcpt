@@ -7,7 +7,7 @@
 //   - pull 時若 (server _updated_at 更新) AND (本機 fingerprint 跟 meta 不同) → 進 conflict-store
 //     而非靜默 LWW
 //
-// sync_meta(localStorage `buyads_sync_meta_v1`):
+// sync_meta(memory-only):
 //   { [sheetName]: { [_id]: { _updated_at, _version, fingerprint } } }
 //   fingerprint 為 "__tombstone__" 代表 server 已標記刪除
 //   forcePush 為 true 代表「使用者選了用我的方案,下次 push 強制重推」
@@ -31,7 +31,7 @@ import {
 
 // ===== 同步狀態廣播(給 sidebar status pill 用)=====
 // 統一一份輕量狀態,有變動時 emit 給所有訂閱者(sidebar / debug overlay 等)。
-// 不存到 localStorage,只在記憶體;主要供 UI 即時顯示。
+// 不持久化到瀏覽器;主要供 UI 即時顯示。
 const _statusListeners = new Set();
 let _lastSuccessAt = 0;
 let _lastFailedAt = 0;
@@ -70,12 +70,16 @@ const DEBOUNCE_AFTER_CHANGE_MS = 5000;     // state 改後 5 秒無新變動 →
 const POLL_INTERVAL_MS = 30 * 1000;        // 每 30 秒背景同步一次
 const MIN_GAP_BETWEEN_SYNCS_MS = 5000;     // 同步成功後至少這麼久才再跑
 
-const META_KEY = "buyads_sync_meta_v1";
-const VERSION_KEY = "buyads_server_version_v1";  // server 全域版本號的 last-seen,用來短路 pull
 const META_COLS = ["_id", "_updated_at", "_deleted", "_version"];
 const FP_DELIM = "";  // 不會出現在資料的分隔符
 const TOMBSTONE_FP = "__tombstone__";
 const REMOTE_DELETED_RECREATE_SHEETS = new Set(["廣告權重"]);
+let metaMemory = {};
+let serverVersionMemory = null;
+
+function cloneMeta(meta) {
+  return JSON.parse(JSON.stringify(meta || {}));
+}
 
 function pendingDeleteSet(pendingDeletions, sheetName) {
   return new Set((pendingDeletions?.[sheetName] || []).map((id) => String(id || "")).filter(Boolean));
@@ -102,30 +106,22 @@ function queueRemoteDeletedRecreate(meta, sheetName, id) {
   };
 }
 
-// ===== sync_meta 持久化 =====
+// ===== sync_meta: memory-only for the current page session =====
 function loadMeta() {
-  try {
-    const raw = localStorage.getItem(META_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
+  return cloneMeta(metaMemory);
 }
 function saveMeta(meta) {
-  try { localStorage.setItem(META_KEY, JSON.stringify(meta)); } catch {}
+  metaMemory = cloneMeta(meta);
 }
 function loadServerVersion() {
-  try {
-    const v = localStorage.getItem(VERSION_KEY);
-    return v == null ? null : Number(v);
-  } catch { return null; }
+  return serverVersionMemory;
 }
 function saveServerVersion(v) {
-  try { localStorage.setItem(VERSION_KEY, String(v)); } catch {}
+  serverVersionMemory = v == null ? null : Number(v);
 }
 export function resetSyncMeta() {
-  try {
-    localStorage.removeItem(META_KEY);
-    localStorage.removeItem(VERSION_KEY);
-  } catch {}
+  metaMemory = {};
+  serverVersionMemory = null;
 }
 
 // ===== fingerprint:把資料 row 序列化成穩定字串供比對 =====

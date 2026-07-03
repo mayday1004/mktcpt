@@ -12,31 +12,14 @@
 //     theirs: { dataRow, dataHeaders, version, updatedAt }       // server 的狀態
 //   }
 //
-// 持久化:localStorage,跨頁重整保留,直到使用者處理或清空。
+// 只保留在目前頁面記憶體,避免舊瀏覽器快取讓衝突狀態跨部署殘留。
 //
 // 監聽:supports subscribe(fn) 給 banner / UI 用,有變動時被通知。
 
 import { logInfo, logWarn } from "../lib/sync-log.js";
 
-const STORAGE_KEY = "buyads_conflicts_v1";
 const listeners = new Set();
-
-function load() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
-function save(arr) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); } catch {}
-}
-
-let queue = load();
+let queue = [];
 
 function emit() {
   listeners.forEach((fn) => {
@@ -73,7 +56,6 @@ export function addConflict(conflict) {
     queue.push(enriched);
     logWarn("conflict.detected", { sheet: conflict.sheetName, id: conflict.entityId, source: conflict.source });
   }
-  save(queue);
   emit();
 }
 
@@ -82,7 +64,6 @@ export function removeConflict(conflictId) {
   const before = queue.length;
   queue = queue.filter((c) => c.id !== conflictId);
   if (queue.length < before) {
-    save(queue);
     emit();
     logInfo("conflict.resolved", { conflictId });
   }
@@ -92,6 +73,5 @@ export function clearConflicts() {
   if (queue.length === 0) return;
   logInfo("conflict.clearAll", { count: queue.length });
   queue = [];
-  save(queue);
   emit();
 }
