@@ -12,7 +12,7 @@ import { displayWeightsForAd } from "../domain/spending.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 import { buildYourlsActionPayload } from "../domain/yourls-actions.js";
-import { ELIMINATION_RESTORED_MARKER, extractEliminatedAdCodes } from "../domain/todo-utils.js";
+import { ELIMINATION_RESTORED_MARKER, expandAdCodesToEliminationFamily, extractEliminatedAdCodes } from "../domain/todo-utils.js";
 
 const SHORT_URL_BAG_TYPE = "提包";
 const SHORT_URL_SLOT_OPTIONS = [
@@ -1768,13 +1768,17 @@ function bindHandlers(root, s) {
 }
 
 function restoreEliminatedCodes(codes) {
-  const codeSet = new Set((codes || []).map((code) => String(code || "").trim()).filter(Boolean));
-  if (codeSet.size === 0) return;
+  if (!(codes || []).some((code) => String(code || "").trim())) return;
   const restoredAt = nowTaipeiStamp();
-  const restoredCodeLabel = [...codeSet].join("、");
+  let restoredCodeLabel = "";
+  let restoredCodes = [];
   let restoredAds = 0;
   let markedTodos = 0;
   update((st) => {
+    const codeSet = new Set(expandAdCodesToEliminationFamily(st, codes));
+    if (codeSet.size === 0) return;
+    restoredCodes = [...codeSet];
+    restoredCodeLabel = restoredCodes.join("、");
     for (const ad of (st.ads || [])) {
       if (codeSet.has(ad.ad_code) && ad.eliminated) {
         ad.eliminated = false;
@@ -1782,7 +1786,7 @@ function restoreEliminatedCodes(codes) {
       }
     }
     for (const todo of (st.todos || [])) {
-      const todoCodes = extractEliminatedAdCodes(todo);
+      const todoCodes = extractEliminatedAdCodes(todo, st);
       if (!todoCodes.some((code) => codeSet.has(code))) continue;
       const marker = `${ELIMINATION_RESTORED_MARKER}：${restoredAt}，恢復追蹤：${restoredCodeLabel}`;
       if (!String(todo.description || "").includes(marker)) {
@@ -1792,9 +1796,10 @@ function restoreEliminatedCodes(codes) {
       if ((todo.status || "pending") === "pending") todo.status = "done";
     }
   }, "取消淘汰");
+  if (restoredCodes.length === 0) return;
   toast(restoredAds > 0
-    ? `已恢復追蹤 ${[...codeSet].join("、")}`
-    : `已標記 ${[...codeSet].join("、")} 為非淘汰`, "ok");
+    ? `已恢復追蹤 ${restoredCodes.join("、")}`
+    : `已標記 ${restoredCodes.join("、")} 為非淘汰`, "ok");
   if (markedTodos > 0) {
     toast(`已同步標記 ${markedTodos} 筆淘汰待辦為已取消`, "ok");
   }
@@ -1842,11 +1847,13 @@ async function openEndAd(seg) {
 }
 
 async function openEliminate(seg) {
+  const targetCodes = expandAdCodesToEliminationFamily(getState(), [seg.ad_code]);
+  const isFamilyEliminate = targetCodes.length > 1;
   const ok = await confirmAsync({
-    title: "淘汰廣告",
+    title: isFamilyEliminate ? "淘汰家族廣告" : "淘汰廣告",
     body: "標記為「到期不再投放」— 廣告資料保留供查詢，警告會停止追蹤；若 6 天內到期，廣告頁會保留為「已淘汰」狀態列。可隨時取消淘汰恢復追蹤。",
     details: [
-      `${seg.ad_code} ${seg.ad_name}`,
+      isFamilyEliminate ? `家族代碼 ${targetCodes.join(" / ")}` : `${seg.ad_code} ${seg.ad_name}`,
       `期間 ${seg.start_date} ~ ${seg.end_date}`,
       `每日攤提 ${Math.round(seg.daily_amort_twd || 0).toLocaleString()} TWD`,
     ],
@@ -1854,22 +1861,23 @@ async function openEliminate(seg) {
   });
   if (!ok) return;
   update((st) => {
-    const targetCode = seg.ad_code;
-    const targetIds = st.ads.filter((a) => a.ad_code === targetCode).map((a) => a.id);
+    const liveTargetCodes = expandAdCodesToEliminationFamily(st, [seg.ad_code]);
+    const targetSet = new Set(liveTargetCodes);
+    const targetIds = st.ads.filter((a) => targetSet.has(a.ad_code)).map((a) => a.id);
     const ad_snapshots = captureUndoSnapshot(st, targetIds);
     st.ads.forEach((a) => {
-      if (a.ad_code === targetCode) a.eliminated = true;
+      if (targetSet.has(a.ad_code)) a.eliminated = true;
     });
     st.todos.push({
       id: uid("todo"),
       created_at: nowTaipeiStamp(),
       action_type: "淘汰廣告",
-      description: `${seg.ad_code} ${seg.ad_name}：到期不再續費，已標記為淘汰`,
+      description: `${liveTargetCodes.join(" / ")} ${seg.ad_name}：到期不再續費，已標記為淘汰`,
       status: "pending",
       undo_payload: { ad_snapshots, added_ad_ids: [] },
     });
   }, "淘汰廣告");
-  toast("已淘汰並建立待辦", "ok");
+  toast(isFamilyEliminate ? "已淘汰整組家族並建立待辦" : "已淘汰並建立待辦", "ok");
 }
 
 function esc(v) {

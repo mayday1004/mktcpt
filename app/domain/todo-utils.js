@@ -16,6 +16,62 @@ function restoredEliminationCodes(description) {
   return restored;
 }
 
+function familyBaseOfCode(code) {
+  const c = String(code || "").trim();
+  const lower = c.toLowerCase();
+  if (lower.endsWith("t")) return c.slice(0, -1);
+  if (lower.endsWith("dh")) return c.slice(0, -2);
+  return c;
+}
+
+function tVariantCandidates(base) {
+  const c = String(base || "").trim();
+  if (!c) return [];
+  return [`${c}t`, `${c}T`];
+}
+
+export function expandAdCodesToEliminationFamily(state, codes) {
+  const ads = Array.isArray(state?.ads) ? state.ads : [];
+  const out = new Set((Array.isArray(codes) ? codes : [codes])
+    .map((code) => String(code || "").trim())
+    .filter(Boolean));
+  if (out.size === 0 || ads.length === 0) return [...out];
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const pairIds = new Set();
+    for (const ad of ads) {
+      if (out.has(String(ad.ad_code || "")) && ad.split_pair_id) pairIds.add(ad.split_pair_id);
+    }
+    for (const ad of ads) {
+      if (ad.split_pair_id && pairIds.has(ad.split_pair_id) && ad.ad_code && !out.has(ad.ad_code)) {
+        out.add(ad.ad_code);
+        changed = true;
+      }
+    }
+
+    const existingCodes = new Set(ads.map((ad) => String(ad.ad_code || "")).filter(Boolean));
+    for (const code of [...out]) {
+      const lower = code.toLowerCase();
+      const base = familyBaseOfCode(code);
+      const siblings = lower.endsWith("t")
+        ? [base]
+        : lower.endsWith("dh")
+          ? []
+          : tVariantCandidates(base);
+      for (const sibling of siblings) {
+        if (existingCodes.has(sibling) && !out.has(sibling)) {
+          out.add(sibling);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  return [...out];
+}
+
 export function normalizeTodoCreatedAt(value) {
   const s = String(value || "").trim();
   if (!s) return "";
@@ -32,7 +88,7 @@ export function normalizeTodoCreatedAt(value) {
   return s;
 }
 
-export function extractEliminatedAdCodes(todo) {
+export function extractEliminatedAdCodes(todo, state = null) {
   if (todo?.action_type !== ELIMINATE_AD_ACTION) return [];
 
   const codes = new Set();
@@ -50,9 +106,12 @@ export function extractEliminatedAdCodes(todo) {
     if (code) codes.add(code);
   }
 
-  for (const code of restoredEliminationCodes(desc)) codes.delete(code);
+  const restored = state
+    ? expandAdCodesToEliminationFamily(state, [...restoredEliminationCodes(desc)])
+    : [...restoredEliminationCodes(desc)];
+  for (const code of restored) codes.delete(code);
 
-  return [...codes];
+  return state ? expandAdCodesToEliminationFamily(state, [...codes]) : [...codes];
 }
 
 export function normalizeTodosInState(state) {
@@ -70,7 +129,7 @@ export function applyDoneEliminateTodos(state) {
   const codes = new Set();
   for (const todo of (state.todos || [])) {
     if ((todo.status || "pending") !== "done") continue;
-    for (const code of extractEliminatedAdCodes(todo)) codes.add(code);
+    for (const code of extractEliminatedAdCodes(todo, state)) codes.add(code);
   }
   if (codes.size === 0) return 0;
 
