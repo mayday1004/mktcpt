@@ -353,9 +353,11 @@ export function computeChurnStats(allAds, productFilter, filterStart, filterEnd,
       lifecycleDepth(a, byId) - lifecycleDepth(b, byId)
     );
     const events = [];
+    const lossPeriods = [];
+    const stateById = new Map();
 
     for (const cur of chronological) {
-      if (!cur.start_date || !inRange(cur.start_date)) continue;
+      if (!cur.start_date || !cur.end_date) continue;
       let prev = cur.renewal_of ? byId.get(cur.renewal_of) : null;
       if (!prev) {
         const contiguous = chronological.filter((seg) =>
@@ -363,37 +365,53 @@ export function computeChurnStats(allAds, productFilter, filterStart, filterEnd,
         );
         if (contiguous.length === 1) prev = contiguous[0];
       }
-      if (!prev?.start_date || !prev?.end_date) continue;
 
-      const oldW = Number(prev.weights?.[pid]) || 0;
+      let activeLoss = prev ? (stateById.get(prev.id)?.activeLoss || 0) : 0;
+      const oldW = Number(prev?.weights?.[pid]) || 0;
       const newW = Number(cur.weights?.[pid]) || 0;
-      if (oldW <= newW) continue;
+      if (prev?.start_date && prev?.end_date && inRange(cur.start_date)) {
+        const delta = newW - oldW;
+        if (delta < 0) {
+          activeLoss += Math.abs(delta);
+          events.push({
+            date: cur.start_date,
+            oldW,
+            newW,
+            lostWeight: Math.abs(delta),
+          });
+        } else if (delta > 0) {
+          activeLoss = Math.max(0, activeLoss - delta);
+        }
+      }
 
-      const lostWeight = oldW - newW;
-      const days = overlapDays(cur.start_date, cur.end_date);
-      const daily = Number(cur.daily_amort_twd) || Number(prev.daily_amort_twd) || 0;
-      const contribution = daily * days * (lostWeight / 100);
-      if (contribution <= 0) continue;
+      stateById.set(cur.id, { activeLoss });
 
-      events.push({
-        date: cur.start_date,
-        oldW,
-        newW,
-        lostWeight,
-        days,
-        daily,
-        contribution,
-      });
+      if (activeLoss > 0) {
+        const days = overlapDays(cur.start_date, cur.end_date);
+        const daily = Number(cur.daily_amort_twd) || Number(prev?.daily_amort_twd) || 0;
+        const contribution = daily * days * (activeLoss / 100);
+        if (contribution > 0) {
+          lossPeriods.push({
+            start: cur.start_date,
+            end: cur.end_date,
+            lostWeight: activeLoss,
+            days,
+            daily,
+            contribution,
+          });
+        }
+      }
     }
 
-    if (events.length === 0) return null;
-    const contribution = events.reduce((sum, event) => sum + event.contribution, 0);
-    const days = events.reduce((sum, event) => sum + event.days, 0);
-    const lostWeight = events.reduce((sum, event) => sum + event.lostWeight, 0);
-    const daily = events.reduce((max, event) => Math.max(max, event.daily), 0);
-    const weightLabel = events.length === 1
-      ? `${events[0].lostWeight}%`
-      : events.map((event) => `${event.lostWeight}%`).join(" + ");
+    if (events.length === 0 || lossPeriods.length === 0) return null;
+    const contribution = lossPeriods.reduce((sum, period) => sum + period.contribution, 0);
+    const days = lossPeriods.reduce((sum, period) => sum + period.days, 0);
+    const lostWeight = lossPeriods.reduce((max, period) => Math.max(max, period.lostWeight), 0);
+    const daily = lossPeriods.reduce((max, period) => Math.max(max, period.daily), 0);
+    const periodWeights = [...new Set(lossPeriods.map((period) => period.lostWeight))];
+    const weightLabel = periodWeights.length === 1
+      ? `${periodWeights[0]}%`
+      : periodWeights.map((weight) => `${weight}%`).join(" / ");
     const reason = events
       .map((event) => `權重降低 ${event.oldW}%→${event.newW}% (${event.date})`)
       .join("；");
