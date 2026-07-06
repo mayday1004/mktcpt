@@ -474,8 +474,6 @@ export function computeChurnStats(allAds, productFilter, filterStart, filterEnd,
       totalOverlapDays += days;
       if (daily > sampleDaily) { sampleDaily = daily; sampleWeight = w; }
     }
-    totalSpend += spendForCode;
-
     const productLoss = productFilter !== "all" ? productWeightLoss(segs, productFilter) : null;
     // 淘汰金額:
     //   - 全部產品:停運日落在篩選區間內的已停運廣告,在篩選區間內的花費加總。
@@ -484,6 +482,11 @@ export function computeChurnStats(allAds, productFilter, filterStart, filterEnd,
     const lossElim = !stopElim && productLoss?.contribution > 0;
     const isElim = stopElim || lossElim;
     const elimContribution = stopElim ? spendForCode : (productLoss?.contribution || 0);
+    const basisSpend = productFilter !== "all" && productLoss?.contribution > 0
+      ? spendForCode + productLoss.contribution
+      : spendForCode;
+    totalSpend += basisSpend;
+
     if (isElim) {
       elimSpend += elimContribution;
       elimCount++;
@@ -606,14 +609,14 @@ function renderChurnCard(state, productFilter, filterStart, filterEnd) {
           <div class="ink-3" style="font-size:11px">停運 / 降權落在區間且有花費</div>
         </div>
         <div class="churn-stat">
-          <div class="ink-3" style="font-size:12px">淘汰花費 / 總花費 (TWD)</div>
+          <div class="ink-3" style="font-size:12px">淘汰花費 / ${productFilter === "all" ? "總花費" : "原應攤提"} (TWD)</div>
           <div class="churn-stat-val" style="font-size:18px">${fmtNum(stats.elimSpend)} / ${fmtNum(stats.totalSpend)}</div>
-          <div class="ink-3" style="font-size:11px">區間內每日攤提加總</div>
+          <div class="ink-3" style="font-size:11px">${productFilter === "all" ? "區間內每日攤提加總" : "未降權時的區間攤提"}</div>
         </div>
         <div class="churn-stat">
           <div class="ink-3" style="font-size:12px">淘汰比例</div>
           <div class="churn-stat-val" style="color:${ratioColor}">${fmtPct(stats.elimRatio)}</div>
-          <div class="ink-3" style="font-size:11px">淘汰花費 ÷ 總花費</div>
+          <div class="ink-3" style="font-size:11px">淘汰花費 ÷ ${productFilter === "all" ? "總花費" : "原應攤提"}</div>
         </div>
       </div>
       <details class="churn-details" style="margin-top:14px">
