@@ -370,9 +370,8 @@ export function computeChurnStats(allAds, productFilter, filterStart, filterEnd,
       if (oldW <= newW) continue;
 
       const lostWeight = oldW - newW;
-      const activeEnd = cur.start_date < prev.end_date ? cur.start_date : prev.end_date;
-      const days = overlapDays(prev.start_date, activeEnd);
-      const daily = Number(prev.daily_amort_twd) || 0;
+      const days = overlapDays(cur.start_date, cur.end_date);
+      const daily = Number(cur.daily_amort_twd) || Number(prev.daily_amort_twd) || 0;
       const contribution = daily * days * (lostWeight / 100);
       if (contribution <= 0) continue;
 
@@ -392,10 +391,13 @@ export function computeChurnStats(allAds, productFilter, filterStart, filterEnd,
     const days = events.reduce((sum, event) => sum + event.days, 0);
     const lostWeight = events.reduce((sum, event) => sum + event.lostWeight, 0);
     const daily = events.reduce((max, event) => Math.max(max, event.daily), 0);
+    const weightLabel = events.length === 1
+      ? `${events[0].lostWeight}%`
+      : events.map((event) => `${event.lostWeight}%`).join(" + ");
     const reason = events
       .map((event) => `權重降低 ${event.oldW}%→${event.newW}% (${event.date})`)
       .join("；");
-    return { contribution, days, lostWeight, daily, reason };
+    return { contribution, days, lostWeight, weightLabel, daily, reason };
   };
 
   let newCount = 0;
@@ -503,6 +505,7 @@ export function computeChurnStats(allAds, productFilter, filterStart, filterEnd,
       totalOverlapDays: lossElim ? productLoss.days : totalOverlapDays,
       sampleDaily: lossElim ? productLoss.daily : sampleDaily,
       sampleWeight: lossElim ? productLoss.lostWeight : sampleWeight,
+      sampleWeightLabel: lossElim ? productLoss.weightLabel : `${sampleWeight}%`,
       contribution: isElim ? elimContribution : spendForCode,
     });
   }
@@ -550,7 +553,7 @@ function renderChurnCard(state, productFilter, filterStart, filterEnd) {
         <td class="ink-3 mono" style="font-size:11px">${esc(reason)}</td>
         <td class="num mono">${d.totalOverlapDays.toFixed(0)}</td>
         <td class="num mono">${fmtNum(d.sampleDaily)}</td>
-        <td class="num mono">${d.sampleWeight}%</td>
+        <td class="num mono">${esc(d.sampleWeightLabel || `${d.sampleWeight}%`)}</td>
         <td class="num"><strong>${fmtNum(d.contribution)}</strong></td>
       </tr>`;
     }).join("");
@@ -563,7 +566,7 @@ function renderChurnCard(state, productFilter, filterStart, filterEnd) {
       <td class="ink-3" style="font-size:11px">${esc(d.notElimReason || "—")}</td>
       <td class="num mono">${d.totalOverlapDays.toFixed(0)}</td>
       <td class="num mono">${fmtNum(d.sampleDaily)}</td>
-      <td class="num mono">${d.sampleWeight}%</td>
+      <td class="num mono">${esc(d.sampleWeightLabel || `${d.sampleWeight}%`)}</td>
       <td class="num ink-3">${fmtNum(d.contribution)}</td>
     </tr>`).join("");
 
