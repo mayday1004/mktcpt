@@ -6,7 +6,7 @@ export function formatAppsScriptNonJsonError(text, status) {
 
   if (looksHtml) {
     if (status === 404) {
-      return "Apps Script/Google 回了 HTTP 404 HTML，不是同步資料 JSON。若 URL 沒改，通常是 Google/Apps Script 暫時異常或部署服務短暫失效；也可能是 /exec 部署 URL 已失效。自動同步會先暫停，稍後可用「測試連線」或「立即同步」恢復。";
+      return "Apps Script/Google 回了 HTTP 404 HTML，不是同步資料 JSON。若 URL 沒改，通常是 Google/Apps Script 暫時異常或部署服務短暫失效。自動同步會以退避重試，恢復後會自動接上；若持續 404，請確認 /exec 部署 URL 仍有效。";
     }
     if (status === 401 || status === 403) {
       return "Apps Script Web App 權限被拒。請確認部署權限是「任何人」、執行身分是「我」，並完成授權。";
@@ -27,11 +27,12 @@ export function formatAppsScriptJsonError(error) {
 
 export function isAppsScriptConfigErrorMessage(message) {
   const msg = String(message || "");
+  // 注意:HTTP 404 HTML 不算「設定錯誤」。它通常是 Google/Apps Script 暫時異常,
+  // 應該走一般退避重試(恢復後自動接上),而不是永久暫停自動同步。
   return msg.includes("Web App URL")
     || msg.includes("不是 Apps Script 網頁應用程式網址")
     || msg.includes("網址結尾要是 /exec")
     || msg.includes("Token 不一致")
     || msg === "invalid token"
-    || msg.includes("HTTP 404")
     || msg.includes("權限被拒");
 }

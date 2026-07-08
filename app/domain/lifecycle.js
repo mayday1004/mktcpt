@@ -64,37 +64,57 @@ function spawnFrom(source, patch) {
 // 「轉移」事件已併入此函式（CLAUDE.md §3.4），新段一律 renewal_reason='權重調整'，
 // 跨產品的細節在備註欄記錄。
 export function buildWeightAdjust(source, effectiveDate, newWeights, notes) {
-  if (effectiveDate < source.start_date || effectiveDate >= source.end_date) {
-    throw new Error(`生效日 ${effectiveDate} 必須落在原段區間 (${source.start_date} ~ ${source.end_date}) 之間`);
-  }
-  // 邊界 case:生效日 = 段第一天 → 直接覆寫 source 的 weights、不切段
-  // (避免產生長度 0 的空段,並讓「續費當天改權重」這種常見情境自然處理)
-  // renewal_reason 保留原值(例:剛續費那段仍標「續費」),todo 仍會記錄權重變化
-  if (effectiveDate === source.start_date) {
-    const updated = {
+  // 權重調整不再硬性要求生效日落在段區間內。
+  // (CLAUDE.md §5.7 使用者回饋:續費「送天數」造成兩段間有空檔時,使用者仍想在空檔日改權重;
+  //  空檔日本來就沒有這段的花費,0 天 × 權重 = 0,不影響任何計算,所以放行。)
+  // 依生效日與段區間的關係分三種處理:
+  const appendNotes = (obj) => {
+    if (notes != null && String(notes).trim()) {
+      const trimmed = String(notes).trim();
+      obj.notes = (source.notes || "").trim() ? `${source.notes}\n${trimmed}` : trimmed;
+    }
+    return obj;
+  };
+
+  // (1) 生效日 <= 段起始日:新權重涵蓋整段 → 直接覆寫 source 的 weights、不切段。
+  //     (避免產生長度 0 的空段;涵蓋「續費當天改權重」與「先續費、再回頭把更早生效日
+  //      套到續費段」兩種常見情境。renewal_reason 保留原值,todo 仍會記錄權重變化。)
+  if (effectiveDate <= source.start_date) {
+    const updated = appendNotes({
       ...source,
       weights: { ...newWeights },
       purchase_mode: pickPurchaseMode(newWeights),
-    };
-    if (notes != null && String(notes).trim()) {
-      const trimmed = String(notes).trim();
-      updated.notes = (source.notes || "").trim()
-        ? `${source.notes}\n${trimmed}`
-        : trimmed;
-    }
+    });
     return { closed: updated, segments: [] };
   }
-  const closed = trimEnd(source, effectiveDate);
+
+  // (2) 生效日落在段區間內:切成兩段(生效日前沿用舊權重,生效日起套新權重)。
+  if (effectiveDate < source.end_date) {
+    const closed = trimEnd(source, effectiveDate);
+    const patch = {
+      start_date: effectiveDate,
+      end_date: source.end_date,
+      weights: { ...newWeights },
+      renewal_reason: "權重調整",
+      code_at_creation: source.ad_code,
+    };
+    if (notes != null && String(notes).trim()) patch.notes = String(notes).trim();
+    const newSeg = spawnFrom(source, patch);
+    return { closed, segments: [newSeg] };
+  }
+
+  // (3) 生效日 >= 段結束日:此段已整段結束,歷史不重算 → 舊段保持不動,
+  //     另開一個從生效日起承載新權重的新段(長度可為 0,之後續費可延長)。
   const patch = {
     start_date: effectiveDate,
-    end_date: source.end_date,
+    end_date: effectiveDate,
     weights: { ...newWeights },
     renewal_reason: "權重調整",
     code_at_creation: source.ad_code,
   };
   if (notes != null && String(notes).trim()) patch.notes = String(notes).trim();
   const newSeg = spawnFrom(source, patch);
-  return { closed, segments: [newSeg] };
+  return { closed: source, segments: [newSeg] };
 }
 
 // 自動拆 t / 配對(2026-05 新增,CLAUDE.md §5.7.2):
@@ -117,9 +137,6 @@ export function buildWeightAdjust(source, effectiveDate, newWeights, notes) {
 //   }
 export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, newWeights, options) {
   const { notes, allSegsOfSource } = options || {};
-  if (effectiveDate < source.start_date || effectiveDate >= source.end_date) {
-    throw new Error(`生效日 ${effectiveDate} 必須落在原段區間 (${source.start_date} ~ ${source.end_date}) 之間`);
-  }
   const products = state.products || [];
   const detect = detectFamilyCollision(newWeights, products);
   const isAlreadyPaired = !!source.split_pair_id;
@@ -136,8 +153,16 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
     return { mode: "plain", ...out };
   }
 
+  // 生效日 >= 段結束日:此段已整段結束,對「過去段」做拆 t 沒意義 →
+  // 直接開一個 forward 段(不拆),與 buildWeightAdjust 的 (3) 一致。
+  if (effectiveDate >= source.end_date) {
+    const out = buildWeightAdjust(source, effectiveDate, newWeights, notes);
+    return { mode: "plain", ...out };
+  }
+
   // Case C: 沒在 pair + 有碰撞 → 觸發拆 t
-  // 若生效日等於段起始日,source 留在原語意側並補另一側,不產生空段。
+  // 若生效日 <= 段起始日,新權重涵蓋整段 → 用段起始日當切點(等同 sameStart),不產生空段。
+  const cutDate = effectiveDate < source.start_date ? source.start_date : effectiveDate;
   const afterSides = splitWeightsByFamily(newWeights, products);
   const { normalSum, poquanSum } = afterSides;
   if (normalSum <= 0 || poquanSum <= 0) {
@@ -148,7 +173,7 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
 
   const { parentCode, tVariantCode } = deriveSplitCodes(source.ad_code);
   const pairId = `pair_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-  const sameStart = effectiveDate === source.start_date;
+  const sameStart = cutDate === source.start_date;
   const beforeSides = splitWeightsByFamily(source.weights || {}, products);
   const sourceRole = /[tT]$/.test(String(source.ad_code || "")) ? "t_variant" : "parent";
   const otherRole = sourceRole === "parent" ? "t_variant" : "parent";
@@ -219,19 +244,19 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
   if (sameStart) {
     sourceReplacement = {
       ...source,
-      ...makeSidePatch(afterSides, sourceRole, effectiveDate, originalEnd, source.renewal_of || null, source.renewal_reason || "權重調整", { preserveSourceFlags: true }),
+      ...makeSidePatch(afterSides, sourceRole, cutDate, originalEnd, source.renewal_of || null, source.renewal_reason || "權重調整", { preserveSourceFlags: true }),
     };
   } else {
     sourceReplacement = {
       ...source,
-      ...makeSidePatch(beforeSides, sourceRole, source.start_date, effectiveDate, source.renewal_of || null, source.renewal_reason || "初始", {
+      ...makeSidePatch(beforeSides, sourceRole, source.start_date, cutDate, source.renewal_of || null, source.renewal_reason || "初始", {
         preserveSourceFlags: true,
         notes: source.notes || "",
       }),
     };
     sourcePostSeg = {
       id: uid("ad"),
-      ...makeSidePatch(afterSides, sourceRole, effectiveDate, originalEnd, source.id, "權重調整", { preserveSourceFlags: true }),
+      ...makeSidePatch(afterSides, sourceRole, cutDate, originalEnd, source.id, "權重調整", { preserveSourceFlags: true }),
     };
     if (sourceSideAfter.sum > 0) addedSegments.push(sourcePostSeg);
   }
@@ -239,7 +264,7 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
   if (!sameStart && otherSideBefore.sum > 0) {
     otherPreSeg = {
       id: uid("ad"),
-      ...makeSidePatch(beforeSides, otherRole, source.start_date, effectiveDate, null, source.renewal_reason || "初始", {
+      ...makeSidePatch(beforeSides, otherRole, source.start_date, cutDate, null, source.renewal_reason || "初始", {
         notes: `自動拆 t 配對(由 ${source.ad_code} 歷史段補正,${source.start_date} 起)`,
       }),
     };
@@ -250,8 +275,8 @@ export function buildWeightAdjustWithAutoSplit(state, source, effectiveDate, new
     const otherRenewalOf = otherPreSeg?.id || null;
     addedSegments.push({
       id: uid("ad"),
-      ...makeSidePatch(afterSides, otherRole, effectiveDate, originalEnd, otherRenewalOf, otherRenewalOf ? "權重調整" : "拆t改名", {
-        notes: `自動拆 t 配對(由 ${source.ad_code} 觸發,${effectiveDate} 起)`,
+      ...makeSidePatch(afterSides, otherRole, cutDate, originalEnd, otherRenewalOf, otherRenewalOf ? "權重調整" : "拆t改名", {
+        notes: `自動拆 t 配對(由 ${source.ad_code} 觸發,${cutDate} 起)`,
       }),
     });
   }

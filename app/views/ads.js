@@ -3156,7 +3156,9 @@ function openWeightAdjust(seg) {
   const html = `
     <h2>權重調整：${esc(seg.ad_code)} ${esc(seg.ad_name)}</h2>
     <p class="ink-2" style="font-size:13px">原段 ${seg.start_date} ~ ${seg.end_date}，金額／攤提天數沿用，僅生效日後權重變動。</p>
-    <div class="field"><label>生效日（新段起日）</label><input id="eff" type="date" value="${defEff}" min="${seg.start_date}" max="${seg.end_date}" /></div>
+    <div class="field"><label>生效日（新段起日）</label><input id="eff" type="date" value="${defEff}" />
+      <div class="ink-3" style="font-size:11px;margin-top:4px">生效日可落在段區間外（例：續費送天數造成的空檔日）。落在區間前＝整段套新權重；落在區間後＝另開新段承載新權重，空檔期間 0 天 × 權重 = 0 花費，不影響計算。</div>
+    </div>
 
     <h3 class="mt-16">新權重</h3>
     <div id="weights"></div>
