@@ -657,8 +657,9 @@ function computeFamilyTotal(allAds, familyBase, filterRange) {
   // filterRange = { start, end }(可選)— 若給,優先選 parent 在此期間內 active 的最後段
   const familyAds = allAds.filter((a) => familyBaseOf(a.ad_code) === familyBase);
   if (familyAds.length === 0) return 0;
-  const hasPoquan = familyAds.some((a) => familyRoleOf(a.ad_code) === "破圈");
-  if (hasPoquan) {
+  // carve-out 總額算法只在成員真有 split_pair_id 配對時用;沒配對的獨立採買走下方兄弟加總
+  const carveOut = familyAds.some((a) => familyRoleOf(a.ad_code) === "破圈") && familyHasSplitPair(familyAds);
+  if (carveOut) {
     // 規則:
     //   - parent 最後段(若有 filterRange,先選跟它 overlap 的最後段,否則 fallback 取全段最新)
     //   - 其他 code 只有最後段跟 parent 最後段 overlap 時才算進總額
@@ -894,6 +895,20 @@ function familyRoleOf(code) {
   return "一般";
 }
 
+// 家族成員間是否真的有 split_pair_id 配對(同一個 pair id 出現在 ≥2 個不同 ad_code 上)。
+// §5.3.5:carve-out(一張合約拆一般/破圈)只認 split_pair_id,不靠代碼 t 後綴 —
+// 同基碼但各自獨立採買的 1012 / 1012t 沒配對,要走兄弟廣告畫法(各自 100%,只顯示合計)。
+function familyHasSplitPair(segs) {
+  const codesByPair = new Map();
+  for (const s of segs || []) {
+    if (!s?.split_pair_id) continue;
+    if (!codesByPair.has(s.split_pair_id)) codesByPair.set(s.split_pair_id, new Set());
+    codesByPair.get(s.split_pair_id).add(s.ad_code);
+  }
+  for (const codes of codesByPair.values()) if (codes.size >= 2) return true;
+  return false;
+}
+
 // 把 groupByCode 出的 groups 再依「家族」聚合
 // 回傳 [{ familyBase, members: [{code, segs}], hasMultipleMembers }]
 function groupByFamily(groups) {
@@ -938,14 +953,16 @@ function renderFamily(fam, products) {
   if (!hasMultipleMembers) {
     return renderGroup(members[0], products, {});
   }
-  // 共購家族(有破圈成員,如 stXXXt):一般 + 破圈 = 合約總額(carve-out),套 familyScale
-  // 兄弟廣告(無破圈,只有一般 + 第二位 dh 等):各自獨立採買,不套 scale,各權重維持 100%
+  // 共購家族(parent + t-variant 有 split_pair_id 配對):一般 + 破圈 = 合約總額(carve-out),套 familyScale
+  // 兄弟廣告(沒配對:一般 + 第二位 dh、或同基碼各自獨立採買的 1012/1012t):不套 scale,各權重維持 100%
+  // §5.3.5:carve-out 只認 split_pair_id,不靠代碼 t 後綴
   const hasPoquan = members.some((g) => familyRoleOf(g.code) === "破圈");
+  const carveOut = hasPoquan && familyHasSplitPair(members.flatMap((g) => g.segs));
 
   let totalContractRmb = 0;
   let poquanRmb = 0;
   let generalRmb = 0;
-  if (hasPoquan) {
+  if (carveOut) {
     // carve-out:以 parent 最後一段(優先在 filter 範圍內)當「當前合約期間」參考。
     // t-variant 只在最後段跟 parent 最後段 overlap 時才加入,否則視為已停運/已回流到 parent。
     const inFilter = (s) =>
@@ -997,19 +1014,19 @@ function renderFamily(fam, products) {
       }
     }
   }
-  const poquanPct = hasPoquan && totalContractRmb > 0 ? Math.round(poquanRmb / totalContractRmb * 100) : 0;
-  const generalPct = hasPoquan && totalContractRmb > 0 ? Math.round(generalRmb / totalContractRmb * 100) : 0;
+  const poquanPct = carveOut && totalContractRmb > 0 ? Math.round(poquanRmb / totalContractRmb * 100) : 0;
+  const generalPct = carveOut && totalContractRmb > 0 ? Math.round(generalRmb / totalContractRmb * 100) : 0;
   // 家族名稱 = 一般成員的 ad_name(去掉 t 後綴);沒一般時用第一個 member
   const generalMember = members.find((g) => familyRoleOf(g.code) === "一般") || members[0];
   const generalLatest = latestSegForCurrentFilter(generalMember.segs) || generalMember.segs[generalMember.segs.length - 1];
   const baseName = generalLatest?.ad_name || "";
-  const totalLabel = hasPoquan ? "總額" : "合計";
+  const totalLabel = carveOut ? "總額" : "合計";
 
   // 家族列「權重調整」按鈕(§5.7.2):
   // 只當家族裡有 split_pair 配對成員(parent + t-variant 同時存在)才顯示。
   // 兄弟廣告(stXXX + stXXXdh,各自獨立 split_pair_id=null)走 per-ad 按鈕,不需家族視角。
   let familyPairId = "";
-  if (hasPoquan) {
+  if (carveOut) {
     const parentMember = members.find((g) => familyRoleOf(g.code) === "一般");
     const parentLast = parentMember
       ? parentMember.segs.slice().reverse().find((s) => s.split_pair_id) : null;
@@ -1032,7 +1049,7 @@ function renderFamily(fam, products) {
           <strong class="family-base-name">${esc(familyBase)}</strong>
           ${baseName ? `<span class="family-ad-name">${esc(baseName)}</span>` : ""}
           <span class="family-meta">${totalLabel} ${Math.round(totalContractRmb).toLocaleString()} RMB</span>
-          ${hasPoquan ? `<span class="family-meta family-poquan-pct" title="破圈金額 ${Math.round(poquanRmb).toLocaleString()} RMB / 一般 ${Math.round(generalRmb).toLocaleString()} RMB(時間加權)">一般 ${generalPct}% · 破圈 ${poquanPct}%</span>` : ""}
+          ${carveOut ? `<span class="family-meta family-poquan-pct" title="破圈金額 ${Math.round(poquanRmb).toLocaleString()} RMB / 一般 ${Math.round(generalRmb).toLocaleString()} RMB(時間加權)">一般 ${generalPct}% · 破圈 ${poquanPct}%</span>` : ""}
           <span class="family-roles">
             ${members.map((g) => `<span class="family-role-pill family-role-${familyRoleOf(g.code) === "一般" ? "normal" : familyRoleOf(g.code) === "破圈" ? "poquan" : "secondary"}">${esc(g.code)} <span class="family-role-tag">${familyRoleOf(g.code)}</span></span>`).join("")}
           </span>
@@ -1041,11 +1058,11 @@ function renderFamily(fam, products) {
       </td>
     </tr>
   `;
-  // 共購家族才套 familyScale;兄弟廣告各權重維持 100%
+  // 共購家族(有配對)才套 familyScale;兄弟廣告各權重維持 100%
   const memberRows = members.map((m, idx) => {
     const isLast = idx === members.length - 1;
     let familyScale;
-    if (hasPoquan) {
+    if (carveOut) {
       const lastSeg = latestSegForCurrentFilter(m.segs) || m.segs[m.segs.length - 1];
       const lastAmt = Number(lastSeg.amount_cny) || 0;
       familyScale = totalContractRmb > 0 ? lastAmt / totalContractRmb : 1;
