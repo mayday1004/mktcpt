@@ -2120,6 +2120,10 @@ function openRenewalWizard(adCode) {
   const validateStep = (idx) => {
     const step = steps[idx];
     if (step.eliminate) return null;
+    // 續費是整段複製上一段(含權重):來源段無權重會複製出同樣無權重的新段,
+    // 新段不會分攤到任何產品的每日花費 — 擋下來,要求先補權重
+    const hasWeights = Object.values(step.src.weights || {}).some((w) => Number(w) > 0);
+    if (!hasWeights) return `來源段(${step.src.start_date} ~ ${step.src.end_date})沒有任何產品權重,續費會複製出無權重的新段。請先對該段做「權重調整」補權重,或勾選淘汰`;
     const f = step.form;
     if (!f.start_date || !f.end_date) return "起訖日期必填";
     if (f.end_date <= f.start_date) return "結束日需晚於開始日";
