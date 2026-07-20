@@ -377,7 +377,11 @@ export async function syncOnce(onProgress, options = {}) {
             // 的最大兇手在這:當 meta 還沒對齊時 knownFP 是 undefined,單純比 knownFP 會誤判 dirty)
             const serverFP = !sr._deleted ? fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) : null;
             const sameContent = localFP != null && serverFP != null && localFP === serverFP;
-            const localDirty = !sameContent && localFP != null && localFP !== knownFP && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__";
+            // 沒有基準指紋(knownFP undefined = 本 session 第一次看到這筆)不算 dirty:
+            // 冷啟動時 state 是預設 runtime 值(例 usdt_to_cny_rate=7),跟 server 不同純屬
+            // 「還沒拉過」,不是使用者改過 — 之前少了這個 guard,預設值 ≠ server 值的設定列
+            // 每次開頁都會誤跳「拉取衝突」。與下方一般合併路徑的 localDirty 判定一致。
+            const localDirty = !sameContent && localFP != null && !!knownFP && localFP !== knownFP && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__";
             const serverChanged = !knownFP || sr._updated_at > (sheetMeta[sr._id]?._updated_at || "");
 
             if (localDirty && serverChanged && !sr._deleted) {
@@ -427,8 +431,9 @@ export async function syncOnce(onProgress, options = {}) {
           const knownFP = sheetMeta[sr._id]?.fingerprint;
           const serverFP = !sr._deleted ? fingerprintDataRow(sr.dataRow, spec.dataHeaders, sr._id) : null;
           const sameContent = localFP != null && serverFP != null && localFP === serverFP;
-          if (!sameContent && localFP != null && localFP !== knownFP && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__"
-              && (!knownFP || sr._updated_at > (sheetMeta[sr._id]?._updated_at || ""))
+          // 與上方 localDirty 同步:沒基準指紋(第一次看到)不算 dirty,不進衝突
+          if (!sameContent && localFP != null && !!knownFP && localFP !== knownFP && knownFP !== TOMBSTONE_FP && knownFP !== "__force_push__"
+              && sr._updated_at > (sheetMeta[sr._id]?._updated_at || "")
               && !sr._deleted) {
             conflictedIds.add(sr._id);
           }
