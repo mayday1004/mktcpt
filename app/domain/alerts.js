@@ -34,6 +34,33 @@ export function evaluatePoorPerf(state, ad) {
   return result.length > 0 ? result : null;
 }
 
+// 共購廣告同代碼理論上只有一條續約鏈(§2.3)。若同代碼還存在「結束日更晚」的其他共購段
+// (孤兒段 / 斷檔再採買沒串鏈 / J-import 多 cycle),較早結束的那段就不是續費決策的入口:
+// 合約已由較晚的段延續,到期提醒與金額一律以最晚結束的段為準,避免同一張合約被加總兩次。
+// 獨立採買(purchase_mode='independent')同代碼多份各自成鏈,不在此規則內。
+function supersededSharedTailIds(ads) {
+  const SKIP_REASONS = new Set(["送天數", "送天數結束"]);
+  const latestByCode = new Map();
+  for (const a of ads) {
+    if ((a.purchase_mode || "shared") === "independent") continue;
+    if (!a.end_date || a.eliminated || SKIP_REASONS.has(a.renewal_reason)) continue;
+    const cur = latestByCode.get(a.ad_code);
+    if (!cur ||
+        a.end_date > cur.end_date ||
+        (a.end_date === cur.end_date && (a.start_date || "") > (cur.start_date || ""))) {
+      latestByCode.set(a.ad_code, a);
+    }
+  }
+  const out = new Set();
+  for (const a of ads) {
+    if ((a.purchase_mode || "shared") === "independent") continue;
+    if (!a.end_date) continue;
+    const best = latestByCode.get(a.ad_code);
+    if (best && best.id !== a.id) out.add(a.id);
+  }
+  return out;
+}
+
 // 計算當下要關心的事。回傳 [{kind, severity, msg, link, linkText}]
 //   kind:    "budget" / "band" / "expiry" / "todo"
 //   severity: "bad" / "warn" / "info"
@@ -93,10 +120,11 @@ export function computeAlerts(state, ymd /* today YYYY-MM-DD */) {
   // 超過 5 支廣告時改為單一摘要列，避免警告區被同類訊息淹沒；詳見「即將到期」卡。
   const horizon = addDays(today, 10);
   const renewed = new Set(state.ads.map((a) => a.renewal_of).filter(Boolean));
+  const superseded = supersededSharedTailIds(state.ads);
   const expiryByName = new Map();
   for (const a of state.ads) {
     if (a.eliminated) continue;  // 已淘汰：使用者明確不再追蹤
-    if (a.end_date < today || a.end_date > horizon || renewed.has(a.id)) continue;
+    if (a.end_date < today || a.end_date > horizon || renewed.has(a.id) || superseded.has(a.id)) continue;
     const key = a.ad_name || a.ad_code;
     const days = Math.max(0, Math.round((Date.parse(a.end_date) - Date.parse(today)) / 86400000));
     if (!expiryByName.has(key) || days < expiryByName.get(key).days) {
@@ -170,6 +198,7 @@ export function expiringAds(state, days = 10, todayYmd, options = {}) {
   const renewed = new Set(state.ads
     .filter((a) => a.renewal_of && a.renewal_reason !== "權重調整")
     .map((a) => a.renewal_of));
+  const superseded = supersededSharedTailIds(state.ads);
 
   const out = [];
   for (const a of state.ads) {
@@ -183,6 +212,8 @@ export function expiringAds(state, days = 10, todayYmd, options = {}) {
       if (includeHandledWithinDays < 0 || daysLeft > includeHandledWithinDays) continue;
     } else if (referenced.has(a.id)) {
       continue;  // 不是鏈尾:已被後續段取代
+    } else if (superseded.has(a.id)) {
+      continue;  // 同代碼共購有更晚結束的段(孤兒段/未串鏈續買)→ 續費決策以那段為準
     }
 
     out.push({

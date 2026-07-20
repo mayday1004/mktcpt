@@ -1198,8 +1198,44 @@ function renderGroup(group, products, opts = {}) {
             prevSeg: pos > 0 ? timeline.items[pos - 1].seg : null,
           })).join("")}
         </div>
+        ${renderOrphanSegments(segs, latest, products)}
       </td>
     </tr>
+  `;
+}
+
+// 「未串鏈段」偵測與警示(共購限定):
+// 共購廣告同代碼理論上只有一條續約鏈(§2.3)。不在最新段續約鏈上、期間又跟鏈上任一段
+// 重疊的共購段 = 孤兒段(重複套用權重調整 / 同步衝突殘留),它的每日攤提會跟鏈上段
+// 重複計算,到期卡金額也會被加總兩次。時間軸只畫鏈上段,孤兒段在 UI 上原本完全隱形,
+// 這裡列出來讓使用者確認後編輯或從 ⋯ 選單刪除。
+// 獨立採買(purchase_mode='independent')同代碼多份各自成鏈、本來就會重疊,不算孤兒。
+function renderOrphanSegments(segs, referenceSeg, products) {
+  const chainIds = lifecycleAncestorIds(referenceSeg, segs);
+  if (referenceSeg?.id) chainIds.add(referenceSeg.id);
+  const chainSegs = segs.filter((s) => chainIds.has(s.id));
+  const orphans = segs.filter((s) =>
+    !chainIds.has(s.id) &&
+    (s.purchase_mode || "shared") !== "independent" &&
+    chainSegs.some((c) => rangesOverlap(c, s))
+  );
+  if (orphans.length === 0) return "";
+  return `
+    <div class="seg-orphan-panel">
+      <div class="seg-orphan-title">⚠ 未串鏈段(${orphans.length})
+        <span class="ink-2">不在上方續約鏈上、期間又與鏈上段重疊 — 攤提與到期金額會重複計算,請確認後編輯,或從 ⋯ 選單「刪除此段」</span>
+      </div>
+      ${orphans.map((seg) => `
+        <div class="seg-orphan-item">
+          <span class="${reasonClass(seg.renewal_reason)}" style="font-size:11px">${esc(seg.renewal_reason || "—")}</span>
+          <span class="mono ink-2" style="font-size:12px">#${segs.indexOf(seg) + 1} ${seg.start_date} → ${seg.end_date}</span>
+          <span>${seg.currency === "USDT" ? `${Math.round(seg.amount_orig || 0).toLocaleString()} USDT` : `${Math.round(seg.amount_cny || 0).toLocaleString()} RMB`}</span>
+          <span>每日攤提 ${Math.round(seg.daily_amort_twd || 0).toLocaleString()}</span>
+          <span>${weightSummary(seg, products, "inline", {})}</span>
+          <span class="tl-actions">${actionButtons(seg, /*compact=*/true)}</span>
+        </div>
+      `).join("")}
+    </div>
   `;
 }
 
