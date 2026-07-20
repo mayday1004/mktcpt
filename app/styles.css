@@ -1576,6 +1576,14 @@ tr.ad-eliminated td:last-child { opacity: 1; }  /* 動作按鈕保持可讀 */
 }
 .seg-orphan-item + .seg-orphan-item { margin-top: 4px; }
 .seg-orphan-item .tl-actions { padding-top: 0; margin-left: auto; }
+/* 無權重殘留段:不影響計算,降為中性灰資訊 */
+.seg-orphan-panel-inert {
+  background: #f6f7f9;
+  border-color: #dfe3e9;
+  border-left-color: #aab3bf;
+}
+.seg-orphan-panel-inert .seg-orphan-title { color: var(--ink-2); }
+.seg-orphan-panel-inert .seg-orphan-item { border-color: #e4e8ee; }
 
 /* 送天數資訊卡 (CLAUDE.md §5.8.1) */
 .gift-day-card { border-left: 3px solid #ffc107; }

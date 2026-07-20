@@ -1220,10 +1220,17 @@ function renderOrphanSegments(segs, referenceSeg, products) {
     chainSegs.some((c) => rangesOverlap(c, s))
   );
   if (orphans.length === 0) return "";
+  // 分兩級:有權重的孤兒段會真的重複計算攤提(橘色警告);
+  // 無權重的孤兒段(常見:舊版同步中斷,Ads 列推上去了、AdWeights 沒推 → 權重遺失的
+  // 重複副本)不參與任何計算,只是殘留資料 — 降為灰色資訊提示,避免誤報「重複計算」。
+  const hasWeights = (s) => Object.values(s.weights || {}).some((w) => Number(w) > 0);
+  const anyCounted = orphans.some(hasWeights);
   return `
-    <div class="seg-orphan-panel">
-      <div class="seg-orphan-title">⚠ 未串鏈段(${orphans.length})
-        <span class="ink-2">不在上方續約鏈上、期間又與鏈上段重疊 — 攤提與到期金額會重複計算,請確認後編輯,或從 ⋯ 選單「刪除此段」</span>
+    <div class="seg-orphan-panel ${anyCounted ? "" : "seg-orphan-panel-inert"}">
+      <div class="seg-orphan-title">${anyCounted ? "⚠ 未串鏈段" : "🧹 未串鏈殘留段"}(${orphans.length})
+        <span class="ink-2">${anyCounted
+          ? "不在上方續約鏈上、期間又與鏈上段重疊 — 有權重的段其攤提與到期金額會重複計算,請確認後編輯,或從 ⋯ 選單「刪除此段」"
+          : "不在上方續約鏈上的重複副本,權重是空的,不影響任何計算 — 建議從 ⋯ 選單「刪除此段」清掉資料"}</span>
       </div>
       ${orphans.map((seg) => `
         <div class="seg-orphan-item">
@@ -1231,7 +1238,7 @@ function renderOrphanSegments(segs, referenceSeg, products) {
           <span class="mono ink-2" style="font-size:12px">#${segs.indexOf(seg) + 1} ${seg.start_date} → ${seg.end_date}</span>
           <span>${seg.currency === "USDT" ? `${Math.round(seg.amount_orig || 0).toLocaleString()} USDT` : `${Math.round(seg.amount_cny || 0).toLocaleString()} RMB`}</span>
           <span>每日攤提 ${Math.round(seg.daily_amort_twd || 0).toLocaleString()}</span>
-          <span>${weightSummary(seg, products, "inline", {})}</span>
+          <span>${hasWeights(seg) ? weightSummary(seg, products, "inline", {}) : `<span class="ink-3">(無權重 · 不列入計算)</span>`}</span>
           <span class="tl-actions">${actionButtons(seg, /*compact=*/true)}</span>
         </div>
       `).join("")}
