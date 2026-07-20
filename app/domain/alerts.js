@@ -38,7 +38,8 @@ export function evaluatePoorPerf(state, ad) {
 // (孤兒段 / 斷檔再採買沒串鏈 / J-import 多 cycle),較早結束的那段就不是續費決策的入口:
 // 合約已由較晚的段延續,到期提醒與金額一律以最晚結束的段為準,避免同一張合約被加總兩次。
 // 獨立採買(purchase_mode='independent')同代碼多份各自成鏈,不在此規則內。
-function supersededSharedTailIds(ads) {
+// (續費精靈 findRenewalTails 也用同一套判定,讓孤兒段不會被拉成續費步驟)
+export function supersededSharedTailIds(ads) {
   const SKIP_REASONS = new Set(["送天數", "送天數結束"]);
   const latestByCode = new Map();
   for (const a of ads) {

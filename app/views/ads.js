@@ -2,7 +2,7 @@ import { getState, update, uid } from "../state.js";
 import { suggestWeights } from "../domain/suggest.js";
 import { evalFormula } from "../lib/formula.js";
 import { compareProductOrder, getExpenseRate, getUsdtToCnyRate } from "../schema.js";
-import { expiringAds } from "../domain/alerts.js";
+import { expiringAds, supersededSharedTailIds } from "../domain/alerts.js";
 import { renderGiftDayInfo } from "./dashboard.js";
 import { todayTaipei, nowTaipeiStamp, addDays } from "../lib/dates.js";
 import { buildWeightAdjust, buildWeightAdjustWithAutoSplit } from "../domain/lifecycle.js";
@@ -2037,7 +2037,10 @@ function findRenewalTails(state, adCode) {
   const sameCode = state.ads.filter((a) => a.ad_code === adCode && !a.eliminated);
   if (sameCode.length === 0) return [];
   const referenced = new Set(state.ads.map((a) => a.renewal_of).filter(Boolean));
-  const tails = sameCode.filter((a) => !referenced.has(a.id));
+  // 同代碼共購只有一條續約鏈:被更晚結束的段取代的尾段(孤兒段)不當續費來源,
+  // 與到期卡同一套判定(supersededSharedTailIds),獨立採買多份不受影響
+  const superseded = supersededSharedTailIds(state.ads);
+  const tails = sameCode.filter((a) => !referenced.has(a.id) && !superseded.has(a.id));
   tails.sort((a, b) => (a.end_date || "").localeCompare(b.end_date || ""));
   return tails;
 }
