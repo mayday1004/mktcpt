@@ -5,6 +5,7 @@ import { applyDoneEliminateTodos, normalizeTodosInState } from "./domain/todo-ut
 import { materializeTodosAppliedSnapshots } from "./domain/undo.js";
 import { normalizeWeightsToTotal } from "./domain/auto-split.js";
 import { reconcileYourlsTodos } from "./domain/yourls-actions.js";
+import { pruneResidualSegments } from "./domain/cleanup.js";
 import { markSyncDeleted } from "./io/sync-deletions.js";
 
 const MAX_UNDO = 8;
@@ -281,6 +282,9 @@ export function update(mutator, label) {
   const beforeSyncIds = collectSyncEntityIds(state);
   pushUndo(label);
   mutator(state);
+  // 未串鏈殘留段自動清理(domain/cleanup.js):放在 markRemovedSyncRows 之前,
+  // 被清掉的列會由 before/after 差異自動登記進同步刪除佇列
+  pruneResidualSegments(state);
   markRemovedSyncRows(beforeSyncIds, collectSyncEntityIds(state));
   reconcileDerivedState(state);
   persist();
@@ -289,11 +293,25 @@ export function update(mutator, label) {
 
 // sync.js 專用：套用伺服器 LWW 合併。不進 undo（避免「同步」灌爆 ↶ 復原）；
 // 仍會 persist + emit 讓畫面更新。
+// 注意:這裡「不跑」殘留段清理 — applySync 在 pull 時逐 sheet 呼叫,
+// Ads 先到、AdWeights 後到的半套狀態會讓清理誤判;清理走 pruneResidualsAfterSync,
+// 由 sync.js 在「全部 sheet 合併完、無衝突」之後呼叫一次。
 export function applySync(mutator) {
   mutator(state);
   reconcileDerivedState(state);
   persist();
   emit();
+}
+
+// 同步拉回完成後的殘留段清理:不進 undo;刪除登記進同步刪除佇列,下次 push 推 tombstone
+export function pruneResidualsAfterSync() {
+  const beforeSyncIds = collectSyncEntityIds(state);
+  const removed = pruneResidualSegments(state);
+  if (removed === 0) return 0;
+  markRemovedSyncRows(beforeSyncIds, collectSyncEntityIds(state));
+  persist();
+  emit();
+  return removed;
 }
 
 export function subscribe(fn) {

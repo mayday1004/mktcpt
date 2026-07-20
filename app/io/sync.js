@@ -15,7 +15,7 @@
 // 衝突處理:
 //   有衝突待處理時自動同步暫停(避免一直跳警告)。使用者開 conflict-resolver 處理後 sync 恢復。
 
-import { getState, applySync, subscribe } from "../state.js";
+import { getState, applySync, subscribe, pruneResidualsAfterSync } from "../state.js";
 import { getEffectiveSheetsUrl, getEffectiveSheetsToken, assertValidSheetsUrl } from "../lib/deploy-config.js";
 import { showSyncBanner, markSyncDone } from "../lib/sync-banner.js";
 import { TABLE_SYNC_SPECS } from "./sync-specs.js";
@@ -538,6 +538,13 @@ export async function syncOnce(onProgress, options = {}) {
 
     saveServerVersion(serverVersion);
     logInfo("sync.pulled", { server_version: serverVersion, conflicts: getConflictCount() });
+
+    // 全部 sheet 合併完成後清理未串鏈殘留段(domain/cleanup.js)。
+    // 有衝突時跳過(state 是半套用狀態);刪除會登記進同步刪除佇列,由 push 推 tombstone。
+    if (getConflictCount() === 0) {
+      const pruned = pruneResidualsAfterSync();
+      if (pruned > 0) logInfo("sync.pruned_residual_segments", { count: pruned });
+    }
   }
 
   // 拉完發現有衝突 → 不要 push,等使用者處理
