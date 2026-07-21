@@ -3,7 +3,7 @@ import { nowTaipeiTime } from "./lib/dates.js";
 import { isDeployManaged, isYourlsWakeDeployManaged } from "./lib/deploy-config.js";
 import { applyDoneEliminateTodos, normalizeTodosInState } from "./domain/todo-utils.js";
 import { materializeTodosAppliedSnapshots } from "./domain/undo.js";
-import { normalizeWeightsToTotal } from "./domain/auto-split.js";
+import { normalizeWeightsToTotal, reconcileSplitPairs } from "./domain/auto-split.js";
 import { reconcileYourlsTodos } from "./domain/yourls-actions.js";
 import { pruneResidualSegments } from "./domain/cleanup.js";
 import { markSyncDeleted } from "./io/sync-deletions.js";
@@ -193,26 +193,11 @@ function migrate(st) {
       }
     });
 
-    // 自動配對:既有的 st287 + st287t 樣式廣告。判定:
-    //   - t-variant 代碼結尾為 't' (case-insensitive,參考 CLAUDE.md §5.3.5 命名約定)
-    //   - 去掉結尾的 't' 後存在另一支廣告(parent)
-    //   - 兩邊都還沒寫過 split_pair_id
-    //   - 排除 'dh' 結尾(第二位)等其他語意尾綴
-    const codeSet = new Set();
-    for (const a of st.ads) if (a.ad_code) codeSet.add(a.ad_code);
-    const codeArr = [...codeSet];
-    for (const code of codeArr) {
-      const lower = code.toLowerCase();
-      if (!lower.endsWith("t") || lower.endsWith("dh")) continue;
-      const parentCode = code.slice(0, -1);
-      if (!codeSet.has(parentCode)) continue;
-      const tAds = st.ads.filter((a) => a.ad_code === code);
-      const pAds = st.ads.filter((a) => a.ad_code === parentCode);
-      if (tAds.some((a) => a.split_pair_id) || pAds.some((a) => a.split_pair_id)) continue;
-      const pairId = `pair_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}_${code}`;
-      for (const a of pAds) { a.split_pair_id = pairId; a.split_role = "parent"; }
-      for (const a of tAds) { a.split_pair_id = pairId; a.split_role = "t_variant"; }
-    }
+    // X/Xt 配對整理(domain/auto-split.js):
+    //   - 只在「兩側真正同家族母+破圈碰撞」時自動配對 st287 + st287t 樣式廣告
+    //   - 解除舊版依代碼硬配、實為獨立採買的錯誤配對(例 1012 黃油圈 + 1012t 破圈)
+    //   - 獨立採買單列多產品全 100% 拆成 per-product 副本
+    reconcileSplitPairs(st);
     normalizeLegacySplitPairWeights(st);
   }
   normalizeTodosInState(st);
@@ -282,8 +267,9 @@ export function update(mutator, label) {
   const beforeSyncIds = collectSyncEntityIds(state);
   pushUndo(label);
   mutator(state);
-  // 未串鏈殘留段自動清理(domain/cleanup.js):放在 markRemovedSyncRows 之前,
-  // 被清掉的列會由 before/after 差異自動登記進同步刪除佇列
+  // X/Xt 配對整理 + 未串鏈殘留段自動清理:放在 markRemovedSyncRows 之前,
+  // 被清掉/拆分的列會由 before/after 差異自動登記進同步刪除佇列
+  reconcileSplitPairs(state);
   pruneResidualSegments(state);
   markRemovedSyncRows(beforeSyncIds, collectSyncEntityIds(state));
   reconcileDerivedState(state);
@@ -303,15 +289,16 @@ export function applySync(mutator) {
   emit();
 }
 
-// 同步拉回完成後的殘留段清理:不進 undo;刪除登記進同步刪除佇列,下次 push 推 tombstone
+// 同步拉回完成後的配對整理 + 殘留段清理:不進 undo;刪除登記進同步刪除佇列,下次 push 推 tombstone
 export function pruneResidualsAfterSync() {
   const beforeSyncIds = collectSyncEntityIds(state);
+  const reconciled = reconcileSplitPairs(state);
   const removed = pruneResidualSegments(state);
-  if (removed === 0) return 0;
+  if (removed === 0 && reconciled === 0) return 0;
   markRemovedSyncRows(beforeSyncIds, collectSyncEntityIds(state));
   persist();
   emit();
-  return removed;
+  return removed + reconciled;
 }
 
 export function subscribe(fn) {

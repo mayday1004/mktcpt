@@ -249,7 +249,7 @@
   - 命名約定:**未來廣告代碼不要混用「語意尾綴 + 後台 noise 尾綴」**(例 `st100tH` / `st100Hdh`),會造成歧義(目前演算法會當 noise 砍掉)。如果系統內已經建了 `st100t`,後台應該叫它 `st100t` / `st100T` / `dhst100t`,不要再加額外尾綴。
   - **何時需要 `t` 尾綴**(2026-05 重訂):**唯一觸發條件 = 同支廣告的 weights 同時含「某家族的母 + 破圈」**(`AV9` + `av9_poquan` 或 `JK` + `jk_poquan`)。觸發時系統自動拆 pair,所有破圈進 t-variant、所有一般留 parent(§5.7.2)。其餘情境一律**不加 t**:
     1. 純一般(可多家族,例 `{AV9:30, JK:20, PJ8:50}`) → 一支 `st123`
-    2. 純破圈(可多家族,例 `{av9_poquan:60, jk_poquan:40}`) → 一支 `st123`(**不加 t**;儀表板靠 weights 內容判定,不靠代碼)
+    2. 純破圈(可多家族,例 `{av9_poquan:60, jk_poquan:40}`) → 一支,代碼自動帶 `t` 尾綴(`st123t`,命名慣例、與同基碼一般側視覺分組;2026-07-21 修訂);**不建立配對**,儀表板靠 weights 內容判定,不靠代碼
     3. 跨家族混合,沒撞母產品(例 `{AV9:60, jk_poquan:40}`,沒 av9_poquan) → 一支 `st123`
     4. 同家族碰撞(例 `{AV9:50, av9_poquan:50}`) → **觸發拆 t**:parent `st123` + t-variant `st123t`,共用 `split_pair_id`
     - 一旦拆 pair 觸發,**所有破圈一律進 t-variant**(包括跟母產品沒撞的破圈,例 jk_poquan 在前述 AV9 家族碰撞情境下也會放進 `st123t`)
@@ -257,7 +257,7 @@
   - 家族卡片邏輯(儀表板 / 成效報表):**不靠代碼 t 後綴判定**,改靠 weights 內容 + `split_pair_id` 聚合。跨家族純破圈共存的廣告(例 `st123` av9_poquan 70% + jk_poquan 30%)會同時被 AV9 家族卡 + JK 家族卡計入,各依該產品 weight 份額
   - 範例:
     - 純一般採買 → `st123`
-    - 純破圈採買(任何家族單側或多家族共存) → `st123`(**不加 t**!)
+    - 純破圈採買(任何家族單側或多家族共存) → `st123t`(代碼自動加 t;不配對、權重照實 100%)
     - 純破圈 → 後續加入同家族母產品 → 觸發拆 t:整支 `st123` 改名為 `st123t`,新建 `st123` 給一般側,共用 `split_pair_id`(§5.7.2)
     - 從 day 1 就同家族混合(`AV9:70, av9_poquan:30`) → 系統依新增廣告當下偵測到觸發條件,直接建 pair:parent `st123` `{AV9:70}` + t-variant `st123t` `{av9_poquan:30}`
     - 跨家族混合不撞母(`AV9:60, jk_poquan:40`) → 一支 `st123`,不拆
@@ -817,6 +817,7 @@ for APP 產品 X:
 - **縮網址依站長分組 + 通知狀態追蹤**(2026-05 新增):縮網址頁面依 `contact_info`(站長聯繫資料)把同站長的廣告分組,**多筆同站長**(≥2)會插入群組 header 列(藍底),內含群組通知狀態(✅ 已通知 / ⏳ 未通知)、「📋 通知此站長 (N)」與手動 toggle 按鈕;按下 📋 把整組廣告併在一份模板裡複製(同一句開場 + 每支廣告自己的 block,block 間空一行),並把所有 segments 的 `ad.short_url_notified` 標為 true。空 `contact_info` 或單筆站長的廣告維持原本 per-row 操作(📋 + 狀態 + toggle 在 row 內)。「💾 套用為新網址」cascade 時自動把所有廣告通知狀態重置為 false;另有「↺ 全部標記未通知」按鈕單獨重置(不動網址)。schema 新增 ad 欄位 `縮網址已通知`(Y/空)。[app/views/short-urls.js](app/views/short-urls.js) `groupByContact` / `buildGroupCopyText` / `renderGroupHeader`。
 - **權重調整生效日不受段區間限制(0 天 forward 段)**(2026-07-08 放寬,2026-07-21 使用者確認保留):生效日 < 段起始日 → 整段覆寫不切段;落在區間內 → 切兩段;**≥ 段結束日 → 保留原段、另開 `start = end = 生效日` 的 0 天 forward 段**承載新權重(`renewal_of` 串上原段)。0 天段花費為 0,不影響任何計算。人員慣用流程「合約到期 → 先做未來生效日的權重調整 → 再按續費」靠它成立:續費精靈以 0 天段為來源,新段沿用新權重並從生效日起延長。配套防呆:到期提醒與續費精靈只認同代碼結束日最晚的共購段(見下一條)、續費來源段無權重會被擋([app/domain/lifecycle.js](app/domain/lifecycle.js) `buildWeightAdjust`)。
 - **到期提醒同代碼共購只認最晚結束段 + 未串鏈段警示**(2026-07 新增):共購廣告同代碼理論上只有一條續約鏈(§2.3)。若資料出現「不在鏈上的孤兒段」(重複套用權重調整殘留 / 同步衝突 / 斷檔再採買沒串鏈),概覽到期警示與「即將到期」卡一律以同代碼**結束日最晚**的共購段為續費決策入口,其餘 pending 尾段跳過 — 到期卡金額不再把同一張合約加總兩次(`supersededSharedTailIds` in [app/domain/alerts.js](app/domain/alerts.js))。獨立採買(`purchase_mode='independent'`)同代碼多份各自成鏈,不受此規則影響。廣告列表展開的時間軸下方新增「⚠ 未串鏈段」警示區([app/views/ads.js](app/views/ads.js) `renderOrphanSegments`):列出不在最新段續約鏈上、期間又與鏈上段重疊的共購段(這種段的每日攤提會與鏈上段重複計算),提供編輯 / ⋯ 刪除入口讓使用者修資料。**殘留段自動清理**(2026-07 後續新增,[app/domain/cleanup.js](app/domain/cleanup.js) `pruneResidualSegments`):兩類可證明不影響計算的殘留段由系統自動刪除、不靠使用者手動處理 — (a) 無權重殘留副本(舊版同步中斷造成 Ads 有推、AdWeights 沒推);(b) 被旁路的 0 天權重載體(start=end,續費沒從它開出)。共同前提缺一不可:共購段、未被任何 renewal_of 引用、同代碼存在結束日嚴格更晚的段;無權重副本另要求同代碼存在有權重的段(防 AdWeights 分頁未載入時誤殺)。掛在 `state.update()` 與每次 pull 全部合併完成後(有衝突時跳過);刪除自動登記同步刪除佇列、下次 push 推 tombstone。警示面板因此只剩「有權重的重疊孤兒段」(系統無法判定哪份是真資料)才會出現。
+- **X/Xt 兄弟廣告 vs split pair 嚴格分離**(2026-07-21 新增,kisuacg 1012/1012t 案例):split pair(金額連動 carve-out、rebalance、權重按金額占比縮放顯示)**只該存在於「同家族母+破圈碰撞」拆出的配對**。修正三件事:(a) `detectFamilyCollision` 回復同家族限定 — 之前被改成「任何一般 + 任何破圈同支就觸發」,導致 §5.3.5 案例 3(跨家族混合不撞母,例 `{HYC, av9_poquan, jk_poquan}`)被錯誤拆 pair;(b) 載入時的 X/Xt 自動配對改為「兩側真正同家族碰撞才綁」,並自動解除既有的非碰撞錯誤配對(獨立採買的 1012 黃油圈 + 1012t 破圈曾被依代碼硬配,權重被縮放顯示成 41%/60%/59%);(c) 獨立採買「單列多產品全 100%」(只可能來自表單外輸入)自動拆成 per-product 副本 — 語意 = **每個產品各買一份完整的**(單列金額即每份價格,kisuacg 1012t:兩個破圈各 220 USDT、合計 440),每份副本保留完整金額、副本 id = 原 id + 產品代碼(確定性,多 client 收斂)、首份保留原 id、`renewal_of` 依產品重接。沒配對的同基碼 X/Xt 走「兄弟廣告」畫法:視覺放同一組、權重各自如實 100%、金額不縮放。純破圈新廣告代碼仍自動帶 `t` 尾綴(命名慣例,修訂 §5.3.5 原「不加 t」條),但不建立配對。整理邏輯 `reconcileSplitPairs` in [app/domain/auto-split.js](app/domain/auto-split.js),掛在 `state.update()`、同步 pull 全部合併完成後與 `migrate()`(冪等)。
 - **同步協定升 v4:Row-level CAS + 衝突 modal**(2026-05 新增):取代原本的 row-level LWW silent overwrite。每筆 row 多 `_version` 欄,push 時帶 `_expected_version`,server CAS 不符就回 `conflicts` 不寫入;pull 時若雙方都改過(本機 fingerprint ≠ sync_meta + server `_updated_at` 更新)也視為衝突。衝突進 [conflict-store](app/io/conflict-store.js) 並彈出 [conflict-resolver](app/io/conflict-resolver.js) modal:per-field diff、三快捷(🟢 全用我的 / 🔵 全用對方 / 🟡 逐欄選擇)+ 全域「全部用我的 / 全部用對方」。「用我的」會把 sync_meta 標 `__force_push__` 並對齊 theirs.version,下次 push CAS 通過;「用對方的」直接套進本機 state 並對齊 sync_meta。衝突未解前 auto-sync 暫停,解完自動恢復。錯誤紀錄走 [sync-log.js](app/lib/sync-log.js),DevTools 打 `__buyadsLog()` 可看最近 200 筆,給「我明明儲存了卻又被改回去」這類抱怨除錯用。Apps Script `Code.gs` 升 v4(`META_COLS` = `_id, _updated_at, _deleted, _version`),首次跑會自動 migrate header(整片清掉 → client resync)。詳見 [§7.2 / §7.2.1](#7-儲存與同步)。
 
 ---
