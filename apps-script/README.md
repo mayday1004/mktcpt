@@ -2,10 +2,39 @@
 
 > 💡 **完整步驟與複製按鈕在應用程式內** — 開啟網頁 → **設定** 頁 → 「☁️ Google Sheets 同步」卡片 → 點「⚙️ 一次性設定步驟」。
 
-本資料夾保留兩個檔案作為參考／版控:
+本資料夾的檔案:
 
-- [Code.gs](Code.gs) — 貼到 Apps Script 編輯器的內容(記得把 `SECRET` 改成自己的隨機字串)
-- [appsscript.json](appsscript.json) — 時區與執行時期設定
+- [Code.gs](Code.gs) — Apps Script 程式碼(SECRET 讀「指令碼屬性」,見下方)
+- [appsscript.json](appsscript.json) — 時區、執行時期、webapp 存取設定(API 部署時的「任何人」來自這裡)
+- [deployment.json](deployment.json) — 目前使用中的 deployment ID(= /exec 網址中 `/macros/s/` 後那串)
+
+## 自動部署(clasp)
+
+改了 Code.gs 之後**不用再進 Apps Script 編輯器手動部署**:
+
+```
+npm run as:deploy        # clasp push + 更新同一個 deployment → /exec 網址永遠不變
+npm run as:rotate-url    # 只在 Google 對舊網址持續 404 時用:開新網址 + 自動更新 Railway 變數
+```
+
+- `as:deploy` 沿用 [deployment.json](deployment.json) 裡的 deployment ID → **網址不變,Railway 不用動**
+- `as:rotate-url` 建全新 deployment(新網址)→ 驗證活著 → 寫回 deployment.json → 更新 `.env.local` → 用 Railway CLI 改 `SHEETS_WEBAPP_URL`(觸發自動重佈)。舊 deployment 不刪,同事重整頁面後才切到新網址
+- push 到 GitHub `main` 且 `apps-script/**` 有改動時,[GitHub Action](../.github/workflows/deploy-apps-script.yml) 也會自動跑 `as:deploy`(需設定 `CLASPRC_JSON` secret,見下)
+
+### 一次性設定
+
+1. **啟用 Apps Script API**:https://script.google.com/home/usersettings → 開啟
+2. **登入 clasp**:`npx @google/clasp login`(用擁有這份試算表的 Google 帳號)
+3. **填 scriptId**:Apps Script 編輯器 → ⚙️ 專案設定 → 複製「指令碼 ID」→ 貼進 repo 根目錄 [.clasp.json](../.clasp.json)
+4. **把 SECRET 搬到指令碼屬性**:Apps Script 編輯器 → ⚙️ 專案設定 → 指令碼屬性 → 新增 `SECRET` = 你的隨機字串(要跟 Railway 的 `SHEETS_TOKEN` 一致)。Code.gs 優先讀這裡,真正的 token 不進 git,自動部署覆寫檔案也不會弄丟
+5. **(rotate 用)登入 Railway CLI**:`npx @railway/cli login`,然後在 repo 目錄 `npx @railway/cli link` 選對 project/service
+6. **(選用,GitHub 自動部署)**:本機 `clasp login` 完成後,把 `~/.clasprc.json` 整份內容存成 GitHub repo secret `CLASPRC_JSON`
+
+### 為什麼網址可以永遠不變
+
+`/exec` 網址長這樣:`https://script.google.com/macros/s/<deploymentId>/exec` — 網址就是 deployment ID。
+「管理部署 → 編輯 → 新版本」(= `clasp deploy -i <同一個ID>`)只換程式碼版本、不換 ID → 網址不變。
+只有「新增部署作業」(= `clasp deploy` 不帶 ID)才會生出新網址 — 所以平常一律用 `as:deploy`,新網址只留給路由故障時的 `as:rotate-url`。
 
 ## 同步協定版本
 
@@ -75,7 +104,7 @@ server 比對:不符就回 conflicts(不寫入)、相符就 +1 寫入。比 v3 �
 
 - **invalid token**:Apps Script 裡的 `SECRET` 跟設定頁的 Token 不一致
 - **Apps Script 回了 HTML 頁面**:通常是 Google/Apps Script 暫時錯誤、沒授權完成、部署時存取權沒選「任何人」、或 URL 不是 `/exec`
-- **改了代碼但沒生效**:要到「管理部署 → 編輯 → 版本:新版本 → 部署」
+- **改了代碼但沒生效**:跑 `npm run as:deploy`(或手動「管理部署 → 編輯 → 版本:新版本 → 部署」)
 - **`headers must include _id, _updated_at, _deleted, _version`**:升 v4 後客戶端漏帶 `_version` 欄
 
 ## 客戶端看 sync log

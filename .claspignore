@@ -1,0 +1,4 @@
+# 白名單:只推這兩個檔案到 Apps Script,其餘(README / deployment.json 等)不推
+**/**
+!appsscript.json
+!Code.gs

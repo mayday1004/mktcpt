@@ -26,7 +26,9 @@
 // 第一次跑 upsertRows 時若 sheet header 沒有 metadata 四欄會自動 migrate 補上。
 // v3 → v4 migration:既有 row 沒有 _version 欄 → 視為 _version = 0,首次 CAS 寫入時開始計數。
 
-const SECRET = 'CHANGE_ME_TO_A_RANDOM_STRING';
+// SECRET 優先讀「專案設定 → 指令碼屬性」的 SECRET(這樣真正的 token 不用進 git;
+// clasp 自動部署會整份覆寫這個檔案,寫死在這裡的值會被 repo 版蓋掉)。
+const SECRET = PropertiesService.getScriptProperties().getProperty('SECRET') || 'CHANGE_ME_TO_A_RANDOM_STRING';
 
 const META_COLS = ['_id', '_updated_at', '_deleted', '_version'];
 const SYNC_META_SHEET = '_sync_meta';

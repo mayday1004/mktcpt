@@ -1,0 +1,34 @@
+# apps-script/ 有改動時,push 到 main 就自動部署 Apps Script(同 deployment ID,/exec 網址不變)。
+# 需要先設定 repo secret CLASPRC_JSON(內容 = 本機 clasp login 後的 ~/.clasprc.json 全文);
+# 沒設定時只顯示警告、不會讓 CI 紅燈。設定步驟見 apps-script/README.md「自動部署(clasp)」。
+name: Deploy Apps Script
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps-script/**"
+      - ".clasp.json"
+      - ".claspignore"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Restore clasp credentials
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          if [ -z "$CLASPRC_JSON" ]; then
+            echo "::warning::CLASPRC_JSON secret 未設定,跳過 Apps Script 自動部署(見 apps-script/README.md)"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          else
+            printf '%s' "$CLASPRC_JSON" > ~/.clasprc.json
+          fi
+      - name: Push + deploy (same deployment ID)
+        if: env.SKIP != '1'
+        run: node scripts/deploy-apps-script.mjs
