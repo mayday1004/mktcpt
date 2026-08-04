@@ -1,4 +1,7 @@
-# 白名單:只推這兩個檔案到 Apps Script,其餘(README / deployment.json 等)不推
+# 白名單:只推這幾個檔案到 Apps Script,其餘(README / deployment.json 等)不推
+# ⚠️ clasp push 是「整個專案檔案集同步」:線上有、但這份白名單沒有的檔案會被刪掉。
+#    線上專案若新增 .gs 檔,務必同步加進 repo + 這份白名單。
 **/**
 !appsscript.json
 !Code.gs
+!後台成效輸入.js
