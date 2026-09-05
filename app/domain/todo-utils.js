@@ -17,10 +17,12 @@ function restoredEliminationCodes(description) {
 }
 
 function familyBaseOfCode(code) {
-  const c = String(code || "").trim();
+  let c = String(code || "").trim();
+  if (/^h5dh/i.test(c)) c = c.slice(4);
+  else if (/^dh/i.test(c)) c = c.slice(2);
   const lower = c.toLowerCase();
-  if (lower.endsWith("t")) return c.slice(0, -1);
-  if (lower.endsWith("dh")) return c.slice(0, -2);
+  if (lower.endsWith("t") && c.length > 1) return c.slice(0, -1);
+  if (lower.endsWith("dh") && c.length > 2) return c.slice(0, -2);
   return c;
 }
 

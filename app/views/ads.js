@@ -879,12 +879,20 @@ function groupByCode(ads) {
 
 // 取 ad_code 的「家族 base」:
 //   st287 / st287t / st287dh 三個都屬於 base = "st287" 的家族
+//   dhst304 / st304 正規化後也是同一家族（開頭 dh／h5dh 是渠道噪音，不是另一支廣告）
+function stripChannelNoisePrefix(code) {
+  const raw = String(code || "");
+  if (/^h5dh/i.test(raw)) return raw.slice(4);
+  if (/^dh/i.test(raw)) return raw.slice(2);
+  return raw;
+}
+
 function familyBaseOf(code) {
-  const c = code || "";
-  const lower = c.toLowerCase();
-  if (lower.endsWith("t")) return c.slice(0, -1);
-  if (lower.endsWith("dh")) return c.slice(0, -2);
-  return c;
+  const stripped = stripChannelNoisePrefix(code);
+  const lower = stripped.toLowerCase();
+  if (lower.endsWith("t") && stripped.length > 1) return stripped.slice(0, -1);
+  if (lower.endsWith("dh") && stripped.length > 2) return stripped.slice(0, -2);
+  return stripped;
 }
 
 // 家族角色:一般 / 破圈 / 第二位 — UI 用來顯示 badge label
@@ -1038,9 +1046,12 @@ function renderFamily(fam, products) {
   const familyEditBtn = familyPairId
     ? `<button class="family-edit-btn" data-fam-edit-pair="${esc(familyPairId)}" title="編輯整筆配對廣告資料">編輯</button>`
     : "";
-  const familyActions = familyEditBtn || familyWeightBtn
-    ? `<span class="family-actions">${familyEditBtn}${familyWeightBtn}</span>`
+  const memberCodes = members.map((g) => g.code).join(",");
+  const familyRenewBtn = `<button class="family-renew-btn" data-fam-renew="${esc(memberCodes)}" title="一般與破圈一起續費">續費</button>`;
+  const familyDeleteBtn = hasMultipleMembers || familyPairId
+    ? `<button class="family-delete-btn" data-fam-delete="${esc(memberCodes)}" title="刪除這筆家族底下全部段">刪除整筆</button>`
     : "";
+  const familyActions = `<span class="family-actions">${familyRenewBtn}${familyEditBtn}${familyWeightBtn}${familyDeleteBtn}</span>`;
 
   const familyHeader = `
     <tr class="family-head-row">
@@ -1888,6 +1899,37 @@ function bindHandlers(root, s) {
   root.querySelectorAll("[data-fam-weight-pair]").forEach((el) => {
     el.onclick = () => openFamilyWeightAdjust(el.dataset.famWeightPair);
   });
+  root.querySelectorAll("[data-fam-renew]").forEach((el) => {
+    el.onclick = () => {
+      const codes = String(el.dataset.famRenew || "").split(",").map((code) => code.trim()).filter(Boolean);
+      if (codes.length === 0) return;
+      openRenewalWizard(codes[0], codes.slice(1));
+    };
+  });
+  root.querySelectorAll("[data-fam-delete]").forEach((el) => {
+    el.onclick = async () => {
+      const codes = new Set(String(el.dataset.famDelete || "").split(",").map((code) => code.trim()).filter(Boolean));
+      if (codes.size === 0) return;
+      const segs = (getState().ads || []).filter((ad) => codes.has(ad.ad_code));
+      if (segs.length === 0) return;
+      const ok = await confirmAsync({
+        title: "刪除整筆家族廣告",
+        body: `會刪除 ${[...codes].join("／")} 底下全部 ${segs.length} 段（含一般／破圈）。刪完才能用同一代碼重建。`,
+        details: deleteTargetDetails(segs),
+        okText: "全部刪除",
+        danger: true,
+      });
+      if (!ok) return;
+      update((st) => {
+        const ids = new Set();
+        for (const seg of segs) {
+          for (const extra of deleteTargetsForSegment(st.ads, seg)) ids.add(extra.id);
+        }
+        st.ads = st.ads.filter((ad) => !ids.has(ad.id));
+      }, "刪除整筆家族廣告");
+      toast("已刪除整筆", "ok");
+    };
+  });
 
   // 即將到期清單：續費 / 淘汰
   root.querySelectorAll("[data-expiring-red-toggle]").forEach((el) => {
@@ -2059,14 +2101,20 @@ function productLabelOfWeights(weights, products) {
   return entries.map(([pid, w]) => `${nameOf[pid] || pid} ${w}%`).join(" / ");
 }
 
-function openRenewalWizard(adCode) {
+function openRenewalWizard(adCode, extraCodes = []) {
   const s = getState();
   // 排除「結束超過 14 天」的斷檔鏈尾:同代碼可能有歷史的兄弟鏈早就停了
   // (例 st287 有 4/8-4/10 那條老鏈,跟現在 5/13-5/22 在跑的鏈無關),
   // 不該被續費 wizard 一起拉進來變成多步驟。
   const today = todayTaipei();
   const cutoff = addDays(today, -14);
-  const allTails = findRenewalTails(s, adCode);
+  const codes = [...new Set([adCode, ...(extraCodes || [])].filter(Boolean))];
+  const seenTail = new Set();
+  const allTails = codes.flatMap((code) => findRenewalTails(s, code)).filter((seg) => {
+    if (!seg?.id || seenTail.has(seg.id)) return false;
+    seenTail.add(seg.id);
+    return true;
+  });
   const tails = allTails.filter((a) => (a.end_date || "") >= cutoff);
   if (tails.length === 0) {
     if (allTails.length > 0) {
@@ -2167,6 +2215,14 @@ function openRenewalWizard(adCode) {
         <span class="pill" style="background:#dfe7f5;color:#2a4d7a;font-weight:700">(${cur + 1}/${steps.length}) ${esc(adName)}</span>
       </h2>
       <div style="display:flex;align-items:center;gap:6px;margin:6px 0 14px">${stepBadges}</div>
+      ${steps.length > 1 && isFirst && steps.every((st) => !st.isUsdt) ? `
+      <div style="padding:10px;background:#f0f7ff;border:1px solid #cfe1f5;border-radius:6px;margin:0 0 12px;font-size:12px;line-height:1.6">
+        一般與破圈是同一筆合約拆開。填整筆總額會依目前金額比例分到各段，之後仍可逐步改。
+        <div class="field" style="margin-top:8px">
+          <label>整筆總額（RMB）</label>
+          <input id="f-family-total" type="number" step="1" value="${Math.round(steps.reduce((sum, st) => sum + (Number(st.form.amount_cny) || 0), 0))}" />
+        </div>
+      </div>` : ""}
       <p class="ink-2" style="font-size:13px;margin:0 0 10px">
         本步驟產品:<strong>${esc(productLabel)}</strong>
         <span class="ink-3" style="margin-left:8px">(代碼 ${esc(src.ad_code)})</span>
@@ -2267,6 +2323,39 @@ function openRenewalWizard(adCode) {
     });
     dlg.querySelector("#f-start").addEventListener("change", syncDays);
     dlg.querySelector("#f-end").addEventListener("change", syncDays);
+    const familyTotalEl = dlg.querySelector("#f-family-total");
+    if (familyTotalEl) {
+      familyTotalEl.addEventListener("change", () => {
+        const total = Math.round(Number(familyTotalEl.value) || 0);
+        if (total <= 0) return;
+        const live = steps.filter((st) => !st.eliminate && !st.isUsdt);
+        const weights = live.map((st) => Number(st.src.amount_cny) || 0);
+        const sum = weights.reduce((acc, value) => acc + value, 0);
+        if (sum <= 0) return;
+        const raw = live.map((_, index) => (weights[index] / sum) * total);
+        const floors = raw.map((value) => Math.floor(value));
+        let rem = total - floors.reduce((acc, value) => acc + value, 0);
+        const order = raw.map((value, index) => ({ index, frac: value - floors[index] }))
+          .sort((a, b) => b.frac - a.frac || a.index - b.index);
+        const parts = [...floors];
+        for (const item of order) {
+          if (rem <= 0) break;
+          parts[item.index] += 1;
+          rem -= 1;
+        }
+        live.forEach((st, index) => {
+          const amount = Math.max(1, parts[index] || 0);
+          st.form.amount_cny = amount;
+          st.form.amount_orig = amount;
+        });
+        const current = dlg.querySelector("#f-cny");
+        if (current && live[cur] && !live[cur].isUsdt) {
+          const currentLiveIndex = live.indexOf(steps[cur]);
+          if (currentLiveIndex >= 0) current.value = String(live[currentLiveIndex].form.amount_cny);
+        }
+        recalc();
+      });
+    }
     recalc();
 
     dlg.querySelector("#f-eliminate").onchange = () => {
