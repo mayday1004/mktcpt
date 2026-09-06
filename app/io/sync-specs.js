@@ -17,6 +17,7 @@ import { METRICS, RENEWAL_REASONS, PRODUCT_TYPES } from "../schema.js";
 import { applyDoneEliminateTodos, normalizeTodoCreatedAt } from "../domain/todo-utils.js";
 import { materializeTodosAppliedSnapshots } from "../domain/undo.js";
 import { normalizeAdCode } from "./sheets-schema.js";
+import { isAdDeleted, markAdDeleted, restoreAdId } from "../domain/ad-deletions.js";
 import {
   YOURLS_ACTION_SHEET,
   YOURLS_EXEC_LOG_SHEET,
@@ -404,6 +405,7 @@ export const TABLE_SYNC_SPECS = [
         return;
       }
 
+      restoreAdId(_id);
       const a = ensureAd(state, _id);
       const currency = String(obj["幣別"] || "CNY").toUpperCase() === "USDT" ? "USDT" : "CNY";
       const amountOrig = numOr(obj["原幣金額"], cny);
@@ -455,6 +457,7 @@ export const TABLE_SYNC_SPECS = [
       applyDoneEliminateTodos(state);
     },
     removeFromState(state, _id) {
+      markAdDeleted(_id);
       state.ads = (state.ads || []).filter((a) => a.id !== _id);
     },
     legacyParse(headers, rows) {
@@ -529,7 +532,7 @@ export const TABLE_SYNC_SPECS = [
     upsertInState(state, _id, obj) {
       const [adId, pid] = _id.split("::");
       const w = numOr(obj["權重%"]);
-      if (!adId || !pid || w <= 0) return;
+      if (!adId || !pid || w <= 0 || isAdDeleted(adId)) return;
       const a = ensureAd(state, adId);
       a.weights = a.weights || {};
       a.weights[pid] = w;

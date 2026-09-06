@@ -7,6 +7,7 @@ import { normalizeWeightsToTotal, reconcileSplitPairs } from "./domain/auto-spli
 import { reconcileYourlsTodos } from "./domain/yourls-actions.js";
 import { pruneResidualSegments } from "./domain/cleanup.js";
 import { markSyncDeleted } from "./io/sync-deletions.js";
+import { markAdDeleted, restoreAdId } from "./domain/ad-deletions.js";
 
 const MAX_UNDO = 8;
 const listeners = new Set();
@@ -56,6 +57,10 @@ function markRemovedSyncRows(beforeIds, afterIds) {
     const before = beforeIds[tracker.sheetName] || new Set();
     const after = afterIds[tracker.sheetName] || new Set();
     const removed = [...before].filter((id) => !after.has(id));
+    if (tracker.sheetName === "廣告") {
+      removed.forEach(markAdDeleted);
+      for (const id of after) restoreAdId(id);
+    }
     if (removed.length > 0) markSyncDeleted(tracker.sheetName, removed);
   }
 }
@@ -125,6 +130,8 @@ function reconcileDerivedState(st) {
 // Migrate older state shapes to current schema. Non-destructive.
 function migrate(st) {
   if (!st || typeof st !== "object") return defaultState();
+  // 匯入與明確復原的完整廣告可重新啟用該 ID。
+  for (const ad of (st.ads || [])) restoreAdId(ad.id);
   // v1/v2 → v3: move per-product monthly_budget_twd into monthly_budgets[pid][ym]
   if (!st.monthly_budgets) st.monthly_budgets = {};
   if (!st.daily_budgets) st.daily_budgets = {};

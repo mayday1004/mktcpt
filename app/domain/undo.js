@@ -17,6 +17,8 @@
 
 // 在 update() 內呼叫,在開始異動之前先 snapshot
 //   adIds: string[] — 將要被改的 ad id 列表
+import { isAdDeleted, restoreAdId } from "./ad-deletions.js";
+
 export function captureUndoSnapshot(state, adIds) {
   const snapshots = [];
   const seen = new Set();
@@ -207,6 +209,7 @@ export function applyUndo(state, payload) {
   // 2. 用快照覆寫回原本的廣告
   let restoredCount = 0;
   for (const snap of ad_snapshots) {
+    restoreAdId(snap.id);
     const i = state.ads.findIndex((a) => a.id === snap.id);
     if (i >= 0) {
       state.ads[i] = JSON.parse(JSON.stringify(snap));
@@ -282,7 +285,7 @@ export function materializeTodoAppliedSnapshots(state, todo) {
 
   for (const snap of applied) {
     const id = String(snap?.id || "");
-    if (!id) continue;
+    if (!id || isAdDeleted(id)) continue;
     const idx = state.ads.findIndex((ad) => String(ad?.id || "") === id);
     if (idx < 0) {
       state.ads.push(clone(snap));
