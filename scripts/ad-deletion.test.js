@@ -5,10 +5,30 @@ import { getState, replaceState, update, applySync, undo } from "../app/state.js
 import { materializeTodosAppliedSnapshots } from "../app/domain/undo.js";
 import { TABLE_SYNC_SPECS } from "../app/io/sync-specs.js";
 import { clearSyncDeleted, getPendingSyncDeletedIds } from "../app/io/sync-deletions.js";
+import { pairedTargetsForSegment } from "../app/domain/ad-segment-targets.js";
 
 const adsSpec = TABLE_SYNC_SPECS.find((s) => s.sheetName === "廣告");
 const weightsSpec = TABLE_SYNC_SPECS.find((s) => s.sheetName === "廣告權重");
 const todosSpec = TABLE_SYNC_SPECS.find((s) => s.sheetName === "待辦");
+
+test("個別段刪除會連動 st304t，但保留前後期與其他配對", () => {
+  const segment = (id, code, pair, start = "2026-09-02", end = "2026-09-08") => ({
+    id, ad_code: code, split_pair_id: pair, start_date: start, end_date: end,
+  });
+  const ads = [
+    segment("parent", "st304", "pair-st"),
+    segment("variant", "st304t", "pair-st"),
+    segment("previous", "st304t", "pair-st", "2026-09-01", "2026-09-02"),
+    segment("next", "st304t", "pair-st", "2026-09-08", "2026-10-08"),
+    segment("dh-parent", "dhst304", "pair-dh"),
+    segment("dh-variant", "dhst304t", "pair-dh"),
+  ];
+  assert.deepEqual(pairedTargetsForSegment(ads, ads[0]).map((a) => a.id), ["parent", "variant"]);
+  assert.deepEqual(pairedTargetsForSegment(ads, ads[1]).map((a) => a.id), ["variant", "parent"]);
+  const ids = new Set(pairedTargetsForSegment(ads, ads[0]).map((a) => a.id));
+  assert.deepEqual(ads.filter((a) => !ids.has(a.id)).map((a) => a.id),
+    ["previous", "next", "dh-parent", "dh-variant"]);
+});
 function fixture(prefix) {
   const state = defaultState();
   state.ads = ["dhst304", "dhst304", "st304"].map((code, i) => ({

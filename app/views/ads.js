@@ -11,6 +11,7 @@ import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes, normaliz
 import { displayWeightsForAd } from "../domain/spending.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
+import { pairedTargetsForSegment } from "../domain/ad-segment-targets.js";
 import { buildYourlsActionPayload } from "../domain/yourls-actions.js";
 import { ELIMINATION_RESTORED_MARKER, expandAdCodesToEliminationFamily, extractEliminatedAdCodes } from "../domain/todo-utils.js";
 
@@ -1049,7 +1050,7 @@ function renderFamily(fam, products) {
   const memberCodes = members.map((g) => g.code).join(",");
   const familyRenewBtn = `<button class="family-renew-btn" data-fam-renew="${esc(memberCodes)}" title="一般與破圈一起續費">續費</button>`;
   const familyDeleteBtn = hasMultipleMembers || familyPairId
-    ? `<button class="family-delete-btn" data-fam-delete="${esc(memberCodes)}" title="刪除這筆家族底下全部代碼與段">刪除全家族</button>`
+    ? `<button class="family-delete-btn" data-fam-delete="${esc(memberCodes)}" title="刪除這筆家族底下全部代碼與段">刪除整筆</button>`
     : "";
   const familyActions = `<span class="family-actions">${familyRenewBtn}${familyEditBtn}${familyWeightBtn}${familyDeleteBtn}</span>`;
 
@@ -1185,7 +1186,6 @@ function renderGroup(group, products, opts = {}) {
       <td class="actions-cell right nowrap">
         ${eliminated ? `<button data-restore-eliminated="${esc(code)}" title="改回非淘汰狀態">恢復追蹤</button>` : ""}
         ${actionButtons(latest, /*compact=*/true)}
-        <button data-delete-code="${esc(code)}" title="刪除 ${esc(code)} 全部段；實際配對段會列於確認清單">刪除此代碼全部段</button>
       </td>
     </tr>
   `;
@@ -1724,24 +1724,6 @@ function rangesOverlap(a, b) {
     a.start_date < b.end_date && b.start_date < a.end_date);
 }
 
-function pairedTargetsForSegment(allAds, seg) {
-  if (!seg) return [];
-  const targets = [seg];
-  if (seg.split_pair_id) {
-    for (const ad of (allAds || [])) {
-      if (ad.id === seg.id) continue;
-      if (ad.split_pair_id === seg.split_pair_id && rangesOverlap(ad, seg)) targets.push(ad);
-    }
-  }
-  const seen = new Set();
-  return targets.filter((ad) => {
-    const id = String(ad?.id || "");
-    if (!id || seen.has(id)) return false;
-    seen.add(id);
-    return true;
-  });
-}
-
 function deleteTargetsForSegment(allAds, seg) {
   return pairedTargetsForSegment(allAds, seg);
 }
@@ -1907,10 +1889,9 @@ function bindHandlers(root, s) {
       openRenewalWizard(codes[0], codes.slice(1));
     };
   });
-  root.querySelectorAll("[data-fam-delete], [data-delete-code]").forEach((el) => {
+  root.querySelectorAll("[data-fam-delete]").forEach((el) => {
     el.onclick = async () => {
-      const singleCode = el.dataset.deleteCode;
-      const codes = new Set(singleCode ? [singleCode] : String(el.dataset.famDelete || "").split(",").map((code) => code.trim()).filter(Boolean));
+      const codes = new Set(String(el.dataset.famDelete || "").split(",").map((code) => code.trim()).filter(Boolean));
       if (codes.size === 0) return;
       const allAds = getState().ads || [];
       // 依完整代碼選取，不能使用成效匯入的模糊比對；確認清單包含真正配對段。
@@ -1920,7 +1901,7 @@ function bindHandlers(root, s) {
       }
       const segs = [...targets.values()];
       if (segs.length === 0) return;
-      const label = singleCode ? "刪除此代碼全部段" : "刪除整筆家族廣告";
+      const label = "刪除整筆家族廣告";
       const ok = await confirmAsync({
         title: label,
         body: `會刪除 ${[...new Set(segs.map((ad) => ad.ad_code))].join("／")} 共 ${segs.length} 段，範圍如下。`,
