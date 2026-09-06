@@ -1049,7 +1049,7 @@ function renderFamily(fam, products) {
   const memberCodes = members.map((g) => g.code).join(",");
   const familyRenewBtn = `<button class="family-renew-btn" data-fam-renew="${esc(memberCodes)}" title="一般與破圈一起續費">續費</button>`;
   const familyDeleteBtn = hasMultipleMembers || familyPairId
-    ? `<button class="family-delete-btn" data-fam-delete="${esc(memberCodes)}" title="刪除這筆家族底下全部段">刪除整筆</button>`
+    ? `<button class="family-delete-btn" data-fam-delete="${esc(memberCodes)}" title="刪除這筆家族底下全部代碼與段">刪除全家族</button>`
     : "";
   const familyActions = `<span class="family-actions">${familyRenewBtn}${familyEditBtn}${familyWeightBtn}${familyDeleteBtn}</span>`;
 
@@ -1185,6 +1185,7 @@ function renderGroup(group, products, opts = {}) {
       <td class="actions-cell right nowrap">
         ${eliminated ? `<button data-restore-eliminated="${esc(code)}" title="改回非淘汰狀態">恢復追蹤</button>` : ""}
         ${actionButtons(latest, /*compact=*/true)}
+        <button data-delete-code="${esc(code)}" title="刪除 ${esc(code)} 全部段；實際配對段會列於確認清單">刪除此代碼全部段</button>
       </td>
     </tr>
   `;
@@ -1906,27 +1907,32 @@ function bindHandlers(root, s) {
       openRenewalWizard(codes[0], codes.slice(1));
     };
   });
-  root.querySelectorAll("[data-fam-delete]").forEach((el) => {
+  root.querySelectorAll("[data-fam-delete], [data-delete-code]").forEach((el) => {
     el.onclick = async () => {
-      const codes = new Set(String(el.dataset.famDelete || "").split(",").map((code) => code.trim()).filter(Boolean));
+      const singleCode = el.dataset.deleteCode;
+      const codes = new Set(singleCode ? [singleCode] : String(el.dataset.famDelete || "").split(",").map((code) => code.trim()).filter(Boolean));
       if (codes.size === 0) return;
-      const segs = (getState().ads || []).filter((ad) => codes.has(ad.ad_code));
+      const allAds = getState().ads || [];
+      // 依完整代碼選取，不能使用成效匯入的模糊比對；確認清單包含真正配對段。
+      const targets = new Map();
+      for (const seg of allAds.filter((ad) => codes.has(ad.ad_code))) {
+        for (const ad of deleteTargetsForSegment(allAds, seg)) targets.set(ad.id, ad);
+      }
+      const segs = [...targets.values()];
       if (segs.length === 0) return;
+      const label = singleCode ? "刪除此代碼全部段" : "刪除整筆家族廣告";
       const ok = await confirmAsync({
-        title: "刪除整筆家族廣告",
-        body: `會刪除 ${[...codes].join("／")} 底下全部 ${segs.length} 段（含一般／破圈）。刪完才能用同一代碼重建。`,
+        title: label,
+        body: `會刪除 ${[...new Set(segs.map((ad) => ad.ad_code))].join("／")} 共 ${segs.length} 段，範圍如下。`,
         details: deleteTargetDetails(segs),
         okText: "全部刪除",
         danger: true,
       });
       if (!ok) return;
       update((st) => {
-        const ids = new Set();
-        for (const seg of segs) {
-          for (const extra of deleteTargetsForSegment(st.ads, seg)) ids.add(extra.id);
-        }
+        const ids = new Set(segs.map((ad) => ad.id));
         st.ads = st.ads.filter((ad) => !ids.has(ad.id));
-      }, "刪除整筆家族廣告");
+      }, label);
       toast("已刪除整筆", "ok");
     };
   });
