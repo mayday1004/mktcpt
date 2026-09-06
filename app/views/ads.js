@@ -11,7 +11,7 @@ import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes, normaliz
 import { displayWeightsForAd } from "../domain/spending.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
-import { pairedTargetsForSegment } from "../domain/ad-segment-targets.js";
+import { pairedTargetsForSegment, deleteTargetsForSegment } from "../domain/ad-segment-targets.js";
 import { buildYourlsActionPayload } from "../domain/yourls-actions.js";
 import { ELIMINATION_RESTORED_MARKER, expandAdCodesToEliminationFamily, extractEliminatedAdCodes } from "../domain/todo-utils.js";
 
@@ -1722,10 +1722,6 @@ function actionButtons(seg, compact, opts = {}) {
 function rangesOverlap(a, b) {
   return !!(a?.start_date && a?.end_date && b?.start_date && b?.end_date &&
     a.start_date < b.end_date && b.start_date < a.end_date);
-}
-
-function deleteTargetsForSegment(allAds, seg) {
-  return pairedTargetsForSegment(allAds, seg);
 }
 
 function editTargetsForSegment(allAds, seg) {

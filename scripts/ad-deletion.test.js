@@ -5,11 +5,25 @@ import { getState, replaceState, update, applySync, undo } from "../app/state.js
 import { materializeTodosAppliedSnapshots } from "../app/domain/undo.js";
 import { TABLE_SYNC_SPECS } from "../app/io/sync-specs.js";
 import { clearSyncDeleted, getPendingSyncDeletedIds } from "../app/io/sync-deletions.js";
-import { pairedTargetsForSegment } from "../app/domain/ad-segment-targets.js";
+import { deleteTargetsForSegment } from "../app/domain/ad-segment-targets.js";
 
 const adsSpec = TABLE_SYNC_SPECS.find((s) => s.sheetName === "廣告");
 const weightsSpec = TABLE_SYNC_SPECS.find((s) => s.sheetName === "廣告權重");
 const todosSpec = TABLE_SYNC_SPECS.find((s) => s.sheetName === "待辦");
+
+test("四個代碼共用舊配對 ID 時，個別刪除仍只選原代碼與 t 側", () => {
+  const ads = ["dhst304", "dhst304t", "st304", "st304t"].map((code, i) => ({
+    id: `shared-pair-${i}`, ad_code: code, split_pair_id: "legacy-shared-pair",
+    start_date: i < 2 ? "2026-09-01" : "2026-09-02", end_date: "2026-09-08",
+  }));
+  for (let i = 0; i < ads.length; i++) {
+    const expected = i < 2 ? ["dhst304", "dhst304t"] : ["st304", "st304t"];
+    const selected = deleteTargetsForSegment(ads, ads[i]);
+    assert.deepEqual(selected.map((a) => a.ad_code).sort(), expected.sort());
+    const removed = new Set(selected.map((a) => a.id));
+    assert.equal(ads.filter((a) => !removed.has(a.id)).length, 2);
+  }
+});
 
 test("個別段刪除會連動 st304t，但保留前後期與其他配對", () => {
   const segment = (id, code, pair, start = "2026-09-02", end = "2026-09-08") => ({
@@ -23,9 +37,9 @@ test("個別段刪除會連動 st304t，但保留前後期與其他配對", () =
     segment("dh-parent", "dhst304", "pair-dh"),
     segment("dh-variant", "dhst304t", "pair-dh"),
   ];
-  assert.deepEqual(pairedTargetsForSegment(ads, ads[0]).map((a) => a.id), ["parent", "variant"]);
-  assert.deepEqual(pairedTargetsForSegment(ads, ads[1]).map((a) => a.id), ["variant", "parent"]);
-  const ids = new Set(pairedTargetsForSegment(ads, ads[0]).map((a) => a.id));
+  assert.deepEqual(deleteTargetsForSegment(ads, ads[0]).map((a) => a.id), ["parent", "variant"]);
+  assert.deepEqual(deleteTargetsForSegment(ads, ads[1]).map((a) => a.id), ["variant", "parent"]);
+  const ids = new Set(deleteTargetsForSegment(ads, ads[0]).map((a) => a.id));
   assert.deepEqual(ads.filter((a) => !ids.has(a.id)).map((a) => a.id),
     ["previous", "next", "dh-parent", "dh-variant"]);
 });

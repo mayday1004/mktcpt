@@ -18,3 +18,13 @@ export function pairedTargetsForSegment(allAds, seg) {
     return true;
   });
 }
+
+// 舊資料可能讓 dhst304 / st304 四側共用同一配對 ID。
+// 刪除此段只連動原代碼的另一側，保留渠道前綴，不擴大成整個家族。
+export function deleteTargetsForSegment(allAds, seg) {
+  const code = String(seg?.ad_code || "").trim().toLowerCase();
+  const counterpart = code.endsWith("t") ? code.slice(0, -1) : `${code}t`;
+  return pairedTargetsForSegment(allAds, seg).filter((ad) =>
+    ad.id === seg.id || (code && String(ad.ad_code || "").trim().toLowerCase() === counterpart)
+  );
+}
