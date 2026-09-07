@@ -533,7 +533,9 @@ export const TABLE_SYNC_SPECS = [
       const [adId, pid] = _id.split("::");
       const w = numOr(obj["權重%"]);
       if (!adId || !pid || w <= 0 || isAdDeleted(adId)) return;
-      const a = ensureAd(state, adId);
+      // 廣告主表先於權重載入；殘留的子表列不能重新建立已刪除的廣告。
+      const a = state.ads?.find((ad) => ad.id === adId);
+      if (!a) return;
       a.weights = a.weights || {};
       a.weights[pid] = w;
     },

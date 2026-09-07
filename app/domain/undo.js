@@ -287,11 +287,10 @@ export function materializeTodoAppliedSnapshots(state, todo) {
     const id = String(snap?.id || "");
     if (!id || isAdDeleted(id)) continue;
     const idx = state.ads.findIndex((ad) => String(ad?.id || "") === id);
-    if (idx < 0) {
-      state.ads.push(clone(snap));
-      changed += 1;
-      continue;
-    }
+    // 後端 deleteRows 會實體刪列，冷啟動不一定有 tombstone。
+    // 待辦只是歷史快照，不能把主表已不存在的 ID 當作同步缺漏重建。
+    // 使用者明確按撤回仍由 applyUndo 還原。
+    if (idx < 0) continue;
 
     const existing = state.ads[idx];
     const before = beforeById.get(id);

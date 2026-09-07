@@ -85,6 +85,7 @@ test("整筆刪除 dhst304 後重複同步待辦仍保留完整 st304", () => {
 test("重新載入的伺服器刪除標記阻擋舊權重及待辦快照", () => {
   const source = fixture("reload");
   const state = defaultState();
+  state.ads = structuredClone(source.ads.slice(1));
   adsSpec.removeFromState(state, "reload-0");
   weightsSpec.upsertInState(state, "reload-0::AV9", { "權重%": 100 });
   state.todos = source.todos;
@@ -98,10 +99,42 @@ test("重新載入的伺服器刪除標記阻擋舊權重及待辦快照", () =>
   assert.equal(state.ads.find((a) => a.id === "reload-0").weights.AV9, 100);
 });
 
-test("沒有刪除標記時仍可修復同步缺漏的廣告", () => {
+test("後端實體刪列後冷啟動，舊待辦不能建立缺少主表的廣告", () => {
   const state = fixture("repair");
   state.ads = [];
-  assert.equal(materializeTodosAppliedSnapshots(state), 3);
+  assert.equal(materializeTodosAppliedSnapshots(state), 0);
+  assert.deepEqual(state.ads, []);
+});
+
+test("整筆實體刪除再重建，舊權重與待辦回載不復活舊代碼", () => {
+  const old = fixture("hard-delete");
+  const state = defaultState();
+  // 模擬重開頁面：只有新建的 st304 主表列，完全沒有舊 ID 的刪除標記。
+  const fresh = { ...old.ads[2], id: "rebuilt-st304" };
+  const adRow = adsSpec.flatten({ ads: [fresh] })[0];
+  adsSpec.upsertInState(state, adRow._id,
+    Object.fromEntries(adsSpec.dataHeaders.map((h, i) => [h, adRow.dataRow[i]])));
+  for (const ad of old.ads) {
+    weightsSpec.upsertInState(state, `${ad.id}::AV9`, { "權重%": 100 });
+  }
+  weightsSpec.upsertInState(state, "rebuilt-st304::AV9", { "權重%": 100 });
+  const kept = structuredClone(state.ads);
+  const row = todosSpec.flatten(old)[0];
+  const data = Object.fromEntries(todosSpec.dataHeaders.map((h, i) => [h, row.dataRow[i]]));
+  todosSpec.upsertInState(state, row._id, data);
+  materializeTodosAppliedSnapshots(state);
+  assert.deepEqual(state.ads.map((a) => a.id), ["rebuilt-st304"]);
+  assert.deepEqual(state.ads, kept);
+  assert.equal(adsSpec.flatten(state).length, 1);
+  assert.equal(weightsSpec.flatten(state).length, 1);
+});
+
+test("主表仍存在的缺欄段可由快照補齊", () => {
+  const state = fixture("sparse");
+  state.ads = [{ id: "sparse-0", weights: { AV9: 100 } }];
+  assert.equal(materializeTodosAppliedSnapshots(state), 1);
+  assert.equal(state.ads[0].ad_code, "dhst304");
+  assert.equal(state.ads.length, 1);
 });
 
 test("明確復原可還原剛刪除的段", async () => {
