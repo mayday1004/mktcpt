@@ -8,7 +8,7 @@ import { todayTaipei, nowTaipeiStamp, addDays } from "../lib/dates.js";
 import { buildWeightAdjust, buildWeightAdjustWithAutoSplit } from "../domain/lifecycle.js";
 import { rebalanceSplitPair } from "../domain/split-pair.js";
 import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes, normalizeWeightsToTotal } from "../domain/auto-split.js";
-import { displayWeightsForAd } from "../domain/spending.js";
+import { displayWeightsForAd, splitPairDisplayScale } from "../domain/spending.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 import { pairedTargetsForSegment, deleteTargetsForSegment } from "../domain/ad-segment-targets.js";
@@ -1356,7 +1356,10 @@ function renderWeightDetailRow(seg, products, opts = {}) {
   `;
 }
 
-function renderTimelineNode(seg, idx, segs, products, opts = {}) {
+export function renderTimelineNode(seg, idx, segs, products, opts = {}) {
+  // 歷史段使用當時的配對金額，不能沿用家族表頭最新一期的比例。
+  const allAds = opts.allAds || getState().ads;
+  opts = { ...opts, allAds, familyScale: splitPairDisplayScale(seg, allAds, seg.start_date) };
   const prev = Object.prototype.hasOwnProperty.call(opts, "prevSeg")
     ? opts.prevSeg
     : (idx > 0 ? segs[idx - 1] : null);
@@ -1373,7 +1376,7 @@ function renderTimelineNode(seg, idx, segs, products, opts = {}) {
   const isCollapsed = canCollapse && !expandedTimelineNodes.has(seg.id);
   const extraInfo = isReference && !isCollapsed ? renderAdExtras(seg) : "";
   const showHistory = !isCollapsed && (isWeightChain ? pos > 0 : isReference);
-  const weightHistory = showHistory ? renderWeightHistoryPanel(seg, products, { allSegs: segs, referenceSeg: seg, familyScale: opts.familyScale }) : "";
+  const weightHistory = showHistory ? renderWeightHistoryPanel(seg, products, { allSegs: segs, allAds, referenceSeg: seg, familyScale: opts.familyScale }) : "";
   const collapsedSummary = isCollapsed
     ? `<span class="tl-collapsed-summary">${weightSummary(seg, products, "inline", { familyScale: opts.familyScale })}</span>`
     : "";
@@ -1619,9 +1622,9 @@ function mapRoundedWeights(entries, scale) {
   return { entries: visibleEntries, map };
 }
 
-function weightDeltaEntries(currentEntries, previousEntries, scale) {
+function weightDeltaEntries(currentEntries, previousEntries, scale, previousScale) {
   const current = mapRoundedWeights(currentEntries, scale);
-  const previous = mapRoundedWeights(previousEntries, scale);
+  const previous = mapRoundedWeights(previousEntries, previousScale);
   const orderedPids = [...new Set([
     ...current.entries.map((entry) => entry.pid),
     ...previous.entries.map((entry) => entry.pid),
@@ -1640,8 +1643,8 @@ function weightDeltaEntries(currentEntries, previousEntries, scale) {
   }).filter((entry) => entry.delta !== 0);
 }
 
-function renderWeightDeltaLine(currentEntries, previous, label, cls, scale) {
-  const deltas = weightDeltaEntries(currentEntries, previous.entries, scale);
+function renderWeightDeltaLine(currentEntries, previous, label, cls, scale, previousScale) {
+  const deltas = weightDeltaEntries(currentEntries, previous.entries, scale, previousScale);
   const date = formatWeightHistoryDate(previous.referenceSeg?.start_date);
   const reason = previous.referenceSeg?.renewal_reason || "";
   const title = `${label}${previous.referenceSeg?.start_date ? ` ${previous.referenceSeg.start_date}` : ""}${reason ? ` · ${reason}` : ""}`;
@@ -1667,10 +1670,11 @@ function renderWeightHistoryPanel(seg, products, opts = {}) {
     ? previousWeightSnapshotForReference(opts.allSegs, products, { referenceSeg: opts.referenceSeg || seg })
     : null;
   if (!previous) return "";
+  const previousScale = splitPairDisplayScale(previous.referenceSeg, opts.allAds || getState().ads, previous.referenceSeg.start_date);
   const currentEntries = productWeightEntries(seg, products);
   return `
     <div class="tl-weight-history">
-      ${renderWeightDeltaLine(currentEntries, previous, "較上筆", "delta", scale)}
+      ${renderWeightDeltaLine(currentEntries, previous, "較上筆", "delta", scale, previousScale)}
     </div>
   `;
 }

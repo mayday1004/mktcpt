@@ -31,7 +31,7 @@ function activePairSegments(ad, ymd, allAds) {
   return pairSegmentsFor(ad, allAds).filter((a) => isInRange(ymd, a.start_date, a.end_date));
 }
 
-function splitPairDisplayScale(ad, allAds, ymd = null) {
+export function splitPairDisplayScale(ad, allAds, ymd = null) {
   const pairSegs = ymd ? activePairSegments(ad, ymd, allAds) : pairSegmentsFor(ad, allAds);
   if (pairSegs.length <= 1) return null;
 
