@@ -99,12 +99,9 @@ export function displayWeightsForAd(ad, allAds, ymd = null) {
 
 export function dailySpendForAd(ad, ymd, allAds = null) {
   if (!isInRange(ymd, ad.start_date, ad.end_date)) return {};
-  const activePair = activePairSegments(ad, ymd, allAds);
-  const isActiveSplitPair = activePair.length > 1;
-  const totalDaily = isActiveSplitPair
-    ? activePair.reduce((sum, seg) => sum + dailyAmount(seg), 0)
-    : dailyAmount(ad);
-  const weights = isActiveSplitPair ? displayWeightsForAd(ad, allAds, ymd) : (ad.weights || {});
+  // canonical 配對每側存自己的金額及內部權重；顯示用整數百分比不可拿來算錢。
+  const totalDaily = dailyAmount(ad);
+  const weights = ad.weights || {};
   const result = {};
   for (const [pid, w] of Object.entries(weights || {})) {
     result[pid] = totalDaily * (Number(w) / 100);

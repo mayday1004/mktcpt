@@ -3,7 +3,7 @@ import { nowTaipeiTime } from "./lib/dates.js";
 import { isDeployManaged, isYourlsWakeDeployManaged } from "./lib/deploy-config.js";
 import { applyDoneEliminateTodos, normalizeTodosInState } from "./domain/todo-utils.js";
 import { materializeTodosAppliedSnapshots } from "./domain/undo.js";
-import { normalizeWeightsToTotal, reconcileSplitPairs } from "./domain/auto-split.js";
+import { normalizeSplitWeights, reconcileSplitPairs } from "./domain/auto-split.js";
 import { reconcileYourlsTodos } from "./domain/yourls-actions.js";
 import { pruneResidualSegments } from "./domain/cleanup.js";
 import { markSyncDeleted } from "./io/sync-deletions.js";
@@ -113,7 +113,7 @@ function normalizeLegacySplitPairWeights(st) {
       const amountSharePct = ownAmount / totalAmount * 100;
       if (Math.abs(sum - amountSharePct) > 1.5) continue;
 
-      const normalized = normalizeWeightsToTotal(ad.weights, 100);
+      const normalized = normalizeSplitWeights(ad.weights);
       if (Object.keys(normalized).length === 0) continue;
       ad.weights = normalized;
       ad.purchase_mode = purchaseModeFor(normalized);

@@ -12,6 +12,7 @@
 // 副作用:會修改 state.ads(trim linked active 段、push linked 新段、可能 mutate sourceNewSeg 的金額/權重)
 
 import { uid } from "../state.js";
+import { normalizeSplitWeights } from "./auto-split.js";
 
 function isPoquanProduct(state, pid) {
   return state?.products?.find((p) => p.id === pid)?.is_poquan === true;
@@ -33,30 +34,6 @@ function findActiveSegment(segments, effective) {
   if (candidates.length === 0) return null;
   // 取 start_date 最晚那一段(最新的)
   return candidates.sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""))[0];
-}
-
-// 把 per-product allocation 物件 normalize 成整數 % 權重(和 = 100)
-// 採用 largest-remainder 法,避免四捨五入累積誤差
-function normalizeAllocation(alloc) {
-  const total = Object.values(alloc).reduce((s, v) => s + v, 0);
-  if (total <= 0) return {};
-  const entries = Object.entries(alloc)
-    .filter(([, v]) => v > 0)
-    .map(([pid, v]) => ({ pid, pct: v / total * 100 }));
-  if (entries.length === 0) return {};
-  entries.forEach((e) => { e.floor = Math.floor(e.pct); e.rem = e.pct - e.floor; });
-  let assigned = entries.reduce((s, e) => s + e.floor, 0);
-  let deficit = 100 - assigned;
-  entries.sort((a, b) => b.rem - a.rem);
-  for (let i = 0; i < entries.length && deficit > 0; i++) {
-    entries[i].floor += 1;
-    deficit--;
-  }
-  const result = {};
-  for (const e of entries) {
-    if (e.floor > 0) result[e.pid] = e.floor;
-  }
-  return result;
 }
 
 // 比較兩個 weights map 是否完全相同
@@ -109,8 +86,8 @@ export function rebalanceSplitPair(state, sourceNewSeg) {
 
   const newParentAmount = Math.round(generalTotal * 100) / 100;
   const newTAmount = Math.round(poquanTotal * 100) / 100;
-  const newParentWeights = normalizeAllocation(generalAlloc);
-  const newTWeights = normalizeAllocation(poquanAlloc);
+  const newParentWeights = normalizeSplitWeights(generalAlloc);
+  const newTWeights = normalizeSplitWeights(poquanAlloc);
 
   // 1) 修改 sourceNewSeg(已經 push 進 state.ads)
   const sourceTargetAmount = role === "parent" ? newParentAmount : newTAmount;

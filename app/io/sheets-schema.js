@@ -276,7 +276,7 @@ export const TABLES = [
       const nameOf = Object.fromEntries((s.products || []).map((p) => [p.id, p.name]));
       return (s.ads || []).filter(hasMeaningfulAdData).flatMap((a) =>
         positiveWeightEntries(a.weights).map(({ pid, weight }) => [
-          a.id, a.ad_code, a.ad_name, pid, nameOf[pid] || "", Math.round(weight),
+          a.id, a.ad_code, a.ad_name, pid, nameOf[pid] || "", Number(weight),
         ])
       );
     },

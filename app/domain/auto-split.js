@@ -85,6 +85,12 @@ export function normalizeWeightsToTotal(weights, target = 100) {
 // 根據 weights 拆成「一般側」與「破圈側」兩塊。
 // normal / poquan 保留使用者輸入的整體合約 %,用於金額切分與 todo 顯示。
 // normalInternal / poquanInternal 則各自 normalize 到 100%,用於 split pair 內部儲存。
+export function normalizeSplitWeights(weights) {
+  const entries = Object.entries(weights || {}).filter(([, w]) => Number(w) > 0);
+  const total = entries.reduce((sum, [, w]) => sum + Number(w), 0);
+  return Object.fromEntries(entries.map(([pid, w]) => [pid, Number(w) / total * 100]));
+}
+
 export function splitWeightsByFamily(weights, products) {
   const normal = {};
   const poquan = {};
@@ -96,8 +102,8 @@ export function splitWeightsByFamily(weights, products) {
   }
   const normalSum = Object.values(normal).reduce((s, v) => s + v, 0);
   const poquanSum = Object.values(poquan).reduce((s, v) => s + v, 0);
-  const normalInternal = normalizeWeightsToTotal(normal, 100);
-  const poquanInternal = normalizeWeightsToTotal(poquan, 100);
+  const normalInternal = normalizeSplitWeights(normal);
+  const poquanInternal = normalizeSplitWeights(poquan);
   return { normal, poquan, normalSum, poquanSum, normalInternal, poquanInternal };
 }
 

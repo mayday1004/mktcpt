@@ -7,7 +7,7 @@ import { renderGiftDayInfo } from "./dashboard.js";
 import { todayTaipei, nowTaipeiStamp, addDays } from "../lib/dates.js";
 import { buildWeightAdjust, buildWeightAdjustWithAutoSplit } from "../domain/lifecycle.js";
 import { rebalanceSplitPair } from "../domain/split-pair.js";
-import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes, normalizeWeightsToTotal } from "../domain/auto-split.js";
+import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes, normalizeSplitWeights } from "../domain/auto-split.js";
 import { displayWeightsForAd, splitPairDisplayScale } from "../domain/spending.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
@@ -3738,8 +3738,8 @@ function openFamilyWeightAdjust(pairId) {
     // 任一側為 0 時代表該側從生效日起結束,不是錯誤。
     const newParentAmount = Math.round(totalAmt * normalSum / 100 * 100) / 100;
     const newTvAmount = Math.round(totalAmt * poquanSum / 100 * 100) / 100;
-    const newParentInternal = normalSum > 0 ? normalizeWeightsToTotal(normalW, 100) : {};
-    const newTvInternal = poquanSum > 0 ? normalizeWeightsToTotal(poquanW, 100) : {};
+    const newParentInternal = normalizeSplitWeights(normalW);
+    const newTvInternal = normalizeSplitWeights(poquanW);
     const remainsPair = normalSum > 0 && poquanSum > 0;
 
     if (eff < parentSeg.start_date || eff >= parentSeg.end_date) {

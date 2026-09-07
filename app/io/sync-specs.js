@@ -523,7 +523,7 @@ export const TABLE_SYNC_SPECS = [
           if (!Number.isFinite(weight) || weight <= 0) continue;
           out.push({
             _id: `${a.id}::${pid}`,
-            dataRow: [a.id, a.ad_code || "", a.ad_name || "", pid, nameOf[pid] || "", Math.round(weight)],
+            dataRow: [a.id, a.ad_code || "", a.ad_name || "", pid, nameOf[pid] || "", weight],
           });
         }
       }
