@@ -558,7 +558,7 @@ export const TABLE_SYNC_SPECS = [
         .filter((x) => x.adId && x.pid && x.w > 0)
         .map((x) => ({
           _id: `${x.adId}::${x.pid}`,
-          dataRow: [x.adId, x.adCode, x.adName, x.pid, x.pname, Math.round(x.w)],
+          dataRow: [x.adId, x.adCode, x.adName, x.pid, x.pname, x.w],
         }));
     },
   },

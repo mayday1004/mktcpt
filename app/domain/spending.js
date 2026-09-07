@@ -24,7 +24,13 @@ function overlaps(a, b) {
 
 function pairSegmentsFor(ad, allAds) {
   if (!ad?.split_pair_id || !Array.isArray(allAds)) return [];
-  return allAds.filter((a) => a.split_pair_id === ad.split_pair_id);
+  const code = String(ad.ad_code || "").trim().toLowerCase();
+  if (!code) return [];
+  const counterpart = code.endsWith("t") ? code.slice(0, -1) : `${code}t`;
+  return allAds.filter((a) => {
+    const candidate = String(a.ad_code || "").trim().toLowerCase();
+    return a.split_pair_id === ad.split_pair_id && (candidate === code || candidate === counterpart);
+  });
 }
 
 function activePairSegments(ad, ymd, allAds) {

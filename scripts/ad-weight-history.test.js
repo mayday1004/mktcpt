@@ -43,3 +43,20 @@ test("調權後歷史段保留 20/40/40，增減各依前後期比例", () => {
   assert.ok(Math.abs(daily.HYC - totalDaily * 0.4) < 1e-8);
   assert.deepEqual(allAds, before);
 });
+
+
+test("同配對 ID 的 dhst304 不得縮放 st304 的歷史或目前比例", () => {
+  const parent = { id: "p", ad_code: "st304", split_pair_id: "shared-id", split_role: "parent",
+    start_date: "2026-09-01", end_date: "2026-10-01", amount_cny: 24000,
+    weights: { AV9: 100 / 3, HYC: 200 / 3 } };
+  const variant = { ...parent, id: "t", ad_code: "st304t", split_role: "t_variant",
+    amount_cny: 16000, weights: { av9_poquan: 100 } };
+  const unrelated = [{ ...parent, id: "dhp", ad_code: "dhst304" },
+    { ...variant, id: "dht", ad_code: "dhst304t" }];
+  for (const allAds of [[parent, variant, ...unrelated], [...unrelated, variant, parent]]) {
+    for (const day of [null, "2026-09-01"]) {
+      assert.deepEqual(displayWeightsForAd(parent, allAds, day), { AV9: 20, HYC: 40 });
+      assert.deepEqual(displayWeightsForAd(variant, allAds, day), { av9_poquan: 40 });
+    }
+  }
+});

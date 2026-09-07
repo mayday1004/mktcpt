@@ -64,3 +64,25 @@ test("40000 合約 9/2 調權、同步三次後仍保留各期分配和每日花
   assert.deepEqual(source.weights, initial);
   assert.equal(source.end_date, "2026-10-01");
 });
+
+
+test("舊格式權重匯入再同步，不可把 20/40/40 取整成 19.8/40/40.2", () => {
+  const parts = splitWeightsByFamily(initial, products);
+  const spec = TABLE_SYNC_SPECS.find((s) => s.sheetName === "廣告權重");
+  let state = { products, ads: [{ ...source, id: "legacy-parent", amount_cny: 24000,
+    amount_twd: 117600, daily_amort_twd: 3920, weights: parts.normalInternal }] };
+  for (let cycle = 0; cycle < 3; cycle++) {
+    const legacy = spec.flatten(state).map((row) => row.dataRow);
+    const rows = spec.legacyParse(spec.dataHeaders, legacy);
+    const restored = JSON.parse(JSON.stringify(state));
+    restored.ads[0].weights = {};
+    for (const row of rows) spec.upsertInState(restored, row._id,
+      Object.fromEntries(spec.dataHeaders.map((header, i) => [header, row.dataRow[i]])));
+    state = restored;
+    near(state.ads[0].amount_cny * state.ads[0].weights.AV9 / 100, 8000);
+    near(state.ads[0].amount_cny * state.ads[0].weights.HYC / 100, 16000);
+    const daily = dailySpendForAd(state.ads[0], "2026-09-01", state.ads);
+    near(daily.AV9, 8000 * 4.9 / 30);
+    near(daily.HYC, 16000 * 4.9 / 30);
+  }
+});
