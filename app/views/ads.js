@@ -9,16 +9,7 @@ import { buildWeightAdjust, buildWeightAdjustWithAutoSplit } from "../domain/lif
 import { rebalanceSplitPair } from "../domain/split-pair.js";
 import { detectFamilyCollision, splitWeightsByFamily, deriveSplitCodes, normalizeSplitWeights } from "../domain/auto-split.js";
 import { displayWeightsForAd, splitPairDisplayScale } from "../domain/spending.js";
-import {
-  cohortWeightMap,
-  describePlacements,
-  placementLines,
-  placementsAllFull,
-  previousPlacementCohort,
-  productsIntersect,
-  sumLines,
-  weightSum,
-} from "../domain/placements.js";
+import { describePlacements, productsIntersect } from "../domain/placements.js";
 import { normalizeForSearch, adMatchesQuery } from "../lib/search.js";
 import { captureUndoSnapshot } from "../domain/undo.js";
 import { pairedTargetsForSegment, deleteTargetsForSegment } from "../domain/ad-segment-targets.js";
@@ -1146,16 +1137,6 @@ function renderGroup(group, products, opts = {}) {
       latestRmb = computeFamilyTotal(allAds, opts.familyBase);
     }
   }
-  const placement = describePlacements(segs, latest);
-  let placementDaily = null;
-  const carveOut = opts.familyScale > 0 && opts.familyScale < 1;
-  if (placement.parallel && !carveOut) {
-    const totals = sumLines(placement.positions.flatMap((item) => placementLines(item.seg)));
-    latestRmb = totals.rmb;
-    placementDaily = totals.daily;
-  }
-  const rowStart = placement.parallel ? placement.contractStart : latest.start_date;
-  const rowEnd = placement.parallel ? placement.contractEnd : latest.end_date;
   const isOpen = expanded.has(code);
   const weightsOpen = expandedWeights.has(code);
   const isMulti = segs.length > 1;
@@ -1200,8 +1181,8 @@ function renderGroup(group, products, opts = {}) {
       </td>
       <td>${esc(latest.group || "—")}</td>
       <td class="num">${Math.round(latestRmb).toLocaleString()}</td>
-      <td class="date-compact mono nowrap">${formatCompactDateRange(rowStart, rowEnd)}</td>
-      <td class="num">${Math.round(placementDaily != null ? placementDaily : (latest.daily_amort_twd || 0)).toLocaleString()}</td>
+      <td class="date-compact mono nowrap">${formatCompactDateRange(latest.start_date, latest.end_date)}</td>
+      <td class="num">${Math.round(latest.daily_amort_twd || 0).toLocaleString()}</td>
       <td>${weightSummary(latest, products, "bar", { code, open: weightsOpen, allSegs: segs, referenceSeg: latest, familyScale: opts.familyScale })}</td>
       <td class="actions-cell right nowrap">
         ${eliminated ? `<button data-restore-eliminated="${esc(code)}" title="改回非淘汰狀態">恢復追蹤</button>` : ""}
@@ -1215,28 +1196,26 @@ function renderGroup(group, products, opts = {}) {
   if (!isOpen) return headRow + weightDetailRow;
 
   const timeline = timelineSegsForReference(segs, latest);
-  const coveredIds = new Set(placement.coveredIds);
+  // 同期版位若沒被這條續約鏈畫出來，用原本的節點補上各自的區間。不另做版面。
+  const placement = describePlacements(segs, latest);
+  const shownIds = new Set(timeline.items.map((item) => item.seg.id));
   const duplicateIds = new Set(placement.duplicateIds);
-  const timelineHtml = placement.parallel
-    ? renderPlacementTimeline(placement, segs, products, { referenceSeg: latest }) +
-      timeline.items
-        .filter(({ seg }) => !coveredIds.has(seg.id) && !duplicateIds.has(seg.id))
-        .map(({ seg, index }, pos, rest) => renderTimelineNode(seg, index, segs, products, {
-          familyScale: opts.familyScale,
-          referenceSeg: latest,
-          timelineMode: "snapshot",
-          timelinePos: pos,
-          timelineCount: rest.length,
-          prevSeg: null,
-        })).join("")
-    : timeline.items.map(({ seg, index }, pos) => renderTimelineNode(seg, index, segs, products, {
-        familyScale: opts.familyScale,
-        referenceSeg: latest,
-        timelineMode: timeline.mode,
-        timelinePos: pos,
-        timelineCount: timeline.items.length,
-        prevSeg: pos > 0 ? timeline.items[pos - 1].seg : null,
-      })).join("");
+  const extraItems = placement.parallel
+    ? placement.coveredIds
+        .filter((id) => !shownIds.has(id) && !duplicateIds.has(id))
+        .map((id) => ({ seg: segs.find((s) => s.id === id), index: segs.findIndex((s) => s.id === id) }))
+        .filter((item) => item.seg && item.index >= 0)
+        .sort((a, b) => (a.seg.start_date || "").localeCompare(b.seg.start_date || "") || a.index - b.index)
+    : [];
+  const timelineItems = [...timeline.items, ...extraItems];
+  const timelineHtml = timelineItems.map(({ seg, index }, pos) => renderTimelineNode(seg, index, segs, products, {
+    familyScale: opts.familyScale,
+    referenceSeg: latest,
+    timelineMode: pos < timeline.items.length ? timeline.mode : "snapshot",
+    timelinePos: pos < timeline.items.length ? pos : 0,
+    timelineCount: pos < timeline.items.length ? timeline.items.length : 1,
+    prevSeg: pos > 0 && pos < timeline.items.length ? timeline.items[pos - 1].seg : null,
+  })).join("");
   // 展開時:即使單段也顯示 timeline node(讓備註 / 廣告文案 / 站長 / 短網址資訊有地方看)
   return headRow + weightDetailRow + `
     <tr class="seg-timeline-row">
@@ -1396,197 +1375,6 @@ function renderWeightDetailRow(seg, products, opts = {}) {
       </td>
     </tr>
   `;
-}
-
-function shortMd(ymd) {
-  if (!ymd || ymd.length < 10) return ymd || "";
-  return `${parseInt(ymd.slice(5, 7), 10)}/${parseInt(ymd.slice(8, 10), 10)}`;
-}
-
-function placementRateLabel(segments) {
-  const list = segments.filter(Boolean);
-  if (list.length === 0) return "";
-  const usdt = list.every((seg) => seg.currency === "USDT");
-  if (!usdt) return "";
-  const rate = list[0].currency_rate;
-  return rate ? `@ ${rate}` : "";
-}
-
-function renderPlacementDelta(currentMap, previousMap, products) {
-  const pids = [...new Set([...currentMap.keys(), ...previousMap.keys()])].sort(compareWeightPids);
-  const chips = [];
-  for (const pid of pids) {
-    const cur = Math.round(currentMap.get(pid) || 0);
-    const prev = Math.round(previousMap.get(pid) || 0);
-    if (cur === prev) continue;
-    const name = products.find((item) => item.id === pid)?.name || pid;
-    if (cur === 0) {
-      chips.push(`<span class="weight-delta-chip down"><span class="delta-arrow">▼</span>${esc(name)} 0%</span>`);
-    } else {
-      const delta = cur - prev;
-      const up = delta > 0;
-      chips.push(`<span class="weight-delta-chip ${up ? "up" : "down"}"><span class="delta-arrow">${up ? "▲" : "▼"}</span>${esc(name)} ${up ? "+" : ""}${delta}%</span>`);
-    }
-  }
-  if (chips.length === 0) return "";
-  return `
-    <div class="tl-weight-history">
-      <div class="weight-history-row">
-        <span class="weight-history-label">本次變動</span>
-        <div class="weight-history-chips">${chips.join("")}</div>
-      </div>
-    </div>
-  `;
-}
-
-function renderPlacementCheck(segments) {
-  const ok = placementsAllFull(segments.map((seg) => ({ seg })));
-  if (ok) return `<span class="tl-pos-ok">各版位 100% ✓</span>`;
-  const detail = segments
-    .map((seg) => `${Math.round(weightSum(seg))}%`)
-    .join(" / ");
-  return `<span class="tl-pos-bad" title="有版位的權重加總不是 100%">各版位未滿 100%（${esc(detail)}）</span>`;
-}
-
-function renderPlacementPills(lines, products) {
-  return lines.slice().sort((a, b) => compareWeightPids(a.pid, b.pid)).map((line) => {
-    const name = products.find((item) => item.id === line.pid)?.name || line.pid;
-    return `<span class="pill" style="border-left:3px solid ${productColor(line.pid)};padding-left:6px">${esc(name)} ${Math.round(line.weight)}%</span>`;
-  }).join(" ");
-}
-
-function renderPositionLines(seg, products, until, contractStart) {
-  const lines = placementLines(seg);
-  const multi = lines.length > 1 ? " multi" : "";
-  const rows = lines.map((line) => {
-    const name = products.find((item) => item.id === line.pid)?.name || line.pid;
-    const money = seg.currency === "USDT"
-      ? `USDT ${line.usdt.toLocaleString()}`
-      : `${line.rmb.toLocaleString()} RMB`;
-    const untilHtml = until
-      ? `<span class="tl-pos-until">只到 ${shortMd(until)}（${daysBetween(contractStart, until)}天）</span>`
-      : "";
-    return `
-      <div class="tl-pos-line">
-        <span class="tl-pos-name">${esc(name)}</span>
-        <span>${money}</span>
-        <span>每日攤提 ${line.daily.toLocaleString()} NTD</span>
-        ${untilHtml}
-      </div>
-    `;
-  }).join("");
-  const note = seg.notes && !/^V2 /.test(String(seg.notes).trim())
-    ? `<div class="tl-pos-note">📝 ${esc(seg.notes)}</div>`
-    : "";
-  return `
-    <div class="tl-pos-block${multi}">
-      ${rows}
-      ${note}
-      <div class="tl-actions">${actionButtons(seg, true)}</div>
-    </div>
-  `;
-}
-
-function renderPlacementNode(opts) {
-  const { reason, start, end, segments, lines, products, deltaHtml, dayNote, extraHtml } = opts;
-  const span = daysBetween(start, end);
-  const totals = sumLines(lines);
-  const usdt = segments.every((seg) => seg.currency === "USDT");
-  const rate = placementRateLabel(segments);
-  const amount = usdt
-    ? `USDT ${totals.usdt.toLocaleString()}`
-    : `${totals.rmb.toLocaleString()} RMB`;
-  const contractDays = Number(segments[0]?.amortize_days) || span;
-  const dayText = dayNote || (contractDays !== span
-    ? `${span}天，實際合約天數 ${contractDays}天`
-    : `${span}天`);
-  const index = opts.indexLabel ? `#${opts.indexLabel} ` : "";
-  return `
-    <div class="tl-node">
-      <div class="tl-rail"></div>
-      <div class="tl-dot"></div>
-      <div class="tl-content">
-        <div class="tl-title">
-          <span class="${reasonClass(reason)}" style="font-size:11px">${esc(reason || "—")}</span>
-          <span class="mono ink-2" style="font-size:12px;margin-left:8px">${index}${shortMd(start)} → ${shortMd(end)}</span>
-          ${deltaHtml ? `<span class="ink-3" style="font-size:11px;margin-left:8px">△ 權重變更</span>` : ""}
-        </div>
-        <div class="tl-meta">
-          <span>${dayText}${rate ? ` ${rate}` : ""}</span>
-          <span>${amount}</span>
-          <span>每日攤提 ${totals.daily.toLocaleString()} NTD</span>
-        </div>
-        <div class="tl-pos-list">
-          ${opts.bodyHtml || ""}
-        </div>
-        <div class="tl-pos-weights">
-          ${renderPlacementPills(lines, products)}
-          ${renderPlacementCheck(segments)}
-        </div>
-        ${deltaHtml || ""}
-        ${extraHtml || ""}
-      </div>
-    </div>
-  `;
-}
-
-export function renderPlacementTimeline(placement, segs, products, opts = {}) {
-  if (!placement?.parallel) return "";
-  const { positions, adjusts, contractStart, contractEnd } = placement;
-  const lines = positions.flatMap((item) => placementLines(item.seg));
-  const previous = previousPlacementCohort(segs, contractStart);
-  const deltaHtml = renderPlacementDelta(
-    cohortWeightMap(positions.map((item) => item.seg)),
-    cohortWeightMap(previous),
-    products,
-  );
-  const indexes = positions
-    .map((item) => segs.indexOf(item.seg))
-    .filter((index) => index >= 0);
-  const indexLabel = indexes.length ? Math.min(...indexes) + 1 : "";
-  const reason = positions.find((item) => item.seg.renewal_reason && item.seg.renewal_reason !== "初始")?.seg.renewal_reason
-    || positions[0]?.seg.renewal_reason
-    || "續頁";
-  const reference = opts.referenceSeg;
-  const copySource = positions.find((item) => item.seg.id === reference?.id)?.seg
-    || positions.find((item) => item.seg.ad_copy)?.seg
-    || positions[0]?.seg;
-  const bodyHtml = positions.map((item) =>
-    renderPositionLines(item.seg, products, item.until, contractStart)
-  ).join("");
-  const contractNode = renderPlacementNode({
-    reason,
-    start: contractStart,
-    end: contractEnd,
-    segments: positions.map((item) => item.seg),
-    lines,
-    products,
-    deltaHtml,
-    indexLabel,
-    bodyHtml,
-    extraHtml: copySource ? renderAdExtras(copySource) : "",
-  });
-  const adjustNodes = adjusts.map(({ seg, parent }) => {
-    const adjustLines = placementLines(seg);
-    const adjustDelta = renderPlacementDelta(
-      cohortWeightMap([seg]),
-      cohortWeightMap(parent ? [parent] : []),
-      products,
-    );
-    const no = segs.indexOf(seg);
-    return renderPlacementNode({
-      reason: seg.renewal_reason || "權重調整",
-      start: seg.start_date,
-      end: seg.end_date,
-      segments: [seg],
-      lines: adjustLines,
-      products,
-      deltaHtml: adjustDelta,
-      indexLabel: no >= 0 ? no + 1 : "",
-      bodyHtml: renderPositionLines(seg, products, "", seg.start_date),
-    });
-  }).join("");
-  return contractNode + adjustNodes;
 }
 
 export function renderTimelineNode(seg, idx, segs, products, opts = {}) {
@@ -1954,11 +1742,6 @@ function actionButtons(seg, compact, opts = {}) {
     ${weightBtn}
     ${moreBtn}
   `;
-}
-
-function rangesOverlap(a, b) {
-  return !!(a?.start_date && a?.end_date && b?.start_date && b?.end_date &&
-    a.start_date < b.end_date && b.start_date < a.end_date);
 }
 
 function editTargetsForSegment(allAds, seg) {

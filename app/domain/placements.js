@@ -1,16 +1,12 @@
 // 同一支廣告、同一期合約上的「版位」。
-// 每個版位是一段自己的金額與權重（單產品 100%，或多產品共購但加總 100%）。
-// 它們日期重疊是因為同時在跑，不是前後續約，也不能當成未串鏈的重複段。
-// 版位中途改權重（renewal_reason = 權重調整）才是下一個時間軸節點。
+// 用來判斷未串鏈：日期重疊但產品不重疊的是同期版位，不是重複段。
+// 同一產品又日期重疊的共購段才是會把錢算兩次的未串鏈。
+// 版位中途的權重調整仍掛在原版位後面，時間軸沿用原本的節點。
 
 export function positiveWeights(seg) {
   return Object.entries(seg?.weights || {})
     .map(([pid, weight]) => ({ pid, weight: Number(weight) || 0 }))
     .filter((entry) => entry.weight > 0);
-}
-
-export function weightSum(seg) {
-  return positiveWeights(seg).reduce((sum, entry) => sum + entry.weight, 0);
 }
 
 export function productIds(seg) {
@@ -112,59 +108,3 @@ export function describePlacements(segs, referenceSeg) {
   };
 }
 
-export function placementLines(seg) {
-  const usdt = seg?.currency === "USDT";
-  const orig = Number(seg?.amount_orig) || 0;
-  const rmb = Number(seg?.amount_cny) || 0;
-  const daily = Number(seg?.daily_amort_twd) || 0;
-  return positiveWeights(seg).map(({ pid, weight }) => {
-    const ratio = weight / 100;
-    return {
-      pid,
-      weight,
-      usdt: usdt ? Math.round(orig * ratio) : null,
-      rmb: Math.round(rmb * ratio),
-      daily: Math.round(daily * ratio),
-    };
-  });
-}
-
-export function sumLines(lines) {
-  return {
-    usdt: lines.reduce((sum, line) => sum + (line.usdt || 0), 0),
-    rmb: lines.reduce((sum, line) => sum + line.rmb, 0),
-    daily: lines.reduce((sum, line) => sum + line.daily, 0),
-  };
-}
-
-export function daysBetween(start, end) {
-  if (!start || !end) return 0;
-  return Math.max(0, Math.round((Date.parse(end) - Date.parse(start)) / 86400000));
-}
-
-export function placementsAllFull(positions) {
-  return positions.length > 0 && positions.every((item) => Math.abs(weightSum(item.seg ?? item) - 100) <= 0.5);
-}
-
-export function cohortWeightMap(segments) {
-  const map = new Map();
-  for (const seg of segments || []) {
-    for (const { pid, weight } of positiveWeights(seg)) map.set(pid, weight);
-  }
-  return map;
-}
-
-// 合約開始日之前、結束日最晚的那一期版位（結束日貼著新合約開始日也算上一期）。
-export function previousPlacementCohort(segs, contractStart) {
-  const earlier = (segs || []).filter((seg) =>
-    seg.start_date && seg.end_date && seg.end_date <= contractStart && !isAdjust(seg)
-  );
-  if (earlier.length === 0) return [];
-  const maxEnd = earlier.map((seg) => seg.end_date).sort().at(-1);
-  const start = earlier
-    .filter((seg) => seg.end_date === maxEnd)
-    .map((seg) => seg.start_date)
-    .sort()
-    .at(-1);
-  return earlier.filter((seg) => seg.start_date === start);
-}
